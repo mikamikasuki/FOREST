@@ -1,0 +1,81 @@
+name: forest
+x-forest-environment: &forest-environment
+  FOREST_DATA_DIR: /data
+  FOREST_DATABASE_PASSWORD_FILE: /run/secrets/database_password
+  FOREST_DATABASE_HOST: postgres
+  FOREST_OWNER_TOKEN_FILE: /run/secrets/owner_token
+x-forest-service: &forest-service
+  image: forest:local
+  build:
+    context: .
+    target: runtime
+  restart: unless-stopped
+  init: true
+  environment: *forest-environment
+  secrets: [database_password, owner_token]
+  volumes: [research:/data]
+  read_only: true
+  tmpfs: [/tmp:size=1g, /home/forest/.cache:size=512m]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  stop_grace_period: 30s
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: forest
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+      POSTGRES_DB: forest
+    secrets: [database_password]
+    volumes: [postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U forest -d forest']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 30s
+  data-init:
+    image: forest:local
+    build:
+      context: .
+      target: runtime
+    user: '0:0'
+    entrypoint: [python, -c]
+    command: ['import os; os.chown("/data",10001,10001)']
+    volumes: [research:/data]
+    restart: 'no'
+  api:
+    <<: *forest-service
+    ports: ['127.0.0.1:${FOREST_PORT:-8000}:8000']
+    depends_on:
+      postgres: {condition: service_healthy}
+      data-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+  worker:
+    <<: *forest-service
+    command: [python, -m, services.worker.main]
+    environment:
+      <<: *forest-environment
+      FOREST_WORKER_CONCURRENCY: ${FOREST_WORKER_CONCURRENCY:-2}
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, /forest/scripts/container_entrypoint.py, python, /forest/scripts/worker_health.py]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+volumes:
+  postgres:
+  research:
+secrets:
+  database_password:
+    file: ${FOREST_SECRETS_DIR:-./var/deployment/secrets}/database_password
+  owner_token:
+    file: ${FOREST_SECRETS_DIR:-./var/deployment/secrets}/owner_token

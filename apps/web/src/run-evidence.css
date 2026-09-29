@@ -1,0 +1,26 @@
+.run-evidence { border-bottom: 1px solid var(--line); color: var(--text); font-size: 12px; }
+.run-evidence > summary { display: flex; align-items: center; gap: 7px; padding: 9px 12px; cursor: pointer; font-weight: 600; }
+.run-evidence-content { padding: 0 12px 12px; max-height: 360px; overflow: auto; }
+.run-evidence-toolbar, .run-evidence-status, .run-evidence-session, .run-evidence-dependencies { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+.run-evidence-toolbar { justify-content: space-between; }
+.run-evidence .button { min-height: 26px; padding: 4px 8px; font-size: 11px; }
+.run-evidence-select { display: flex; align-items: center; gap: 8px; }
+.run-evidence-select select { min-width: 0; max-width: 100%; flex: 1; padding: 5px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); }
+.run-evidence-status, .run-evidence-session { color: var(--muted); }
+.run-evidence-session strong { color: var(--text); }
+.run-evidence-session p { flex-basis: 100%; margin: 2px 0; }
+.run-evidence-dependencies button { padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: var(--surface); cursor: pointer; }
+.run-evidence-attempts, .run-evidence-files { margin-top: 10px; }
+.run-evidence-attempts > summary, .run-evidence-files > summary { cursor: pointer; padding: 3px 0; }
+.run-evidence-attempts ol { padding-left: 18px; }
+.run-evidence-attempts li { margin: 8px 0; }
+.run-evidence-attempts li > span { display: inline-block; margin-left: 8px; color: var(--muted); }
+.run-evidence-attempts p { margin: 4px 0; overflow-wrap: anywhere; }
+.run-evidence-files input { width: 100%; margin: 7px 0; padding: 5px 7px; font-size: 12px; }
+.run-evidence-files ul, .run-evidence-freshness { list-style: none; padding: 0; margin: 4px 0; }
+.run-evidence-files li, .run-evidence-freshness li { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.run-evidence-files a { display: flex; align-items: center; gap: 5px; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.run-evidence-files a > svg { flex-shrink: 0; }
+.run-evidence-files small { white-space: nowrap; color: var(--muted); }
+.run-evidence-freshness code { overflow-wrap: anywhere; }
+.run-evidence-error { color: #ab3d35; overflow-wrap: anywhere; }

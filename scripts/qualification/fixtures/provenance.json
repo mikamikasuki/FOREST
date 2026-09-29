@@ -1,0 +1,57 @@
+{
+  "source_id": "qualification-digits",
+  "kind": "actual_saved_execution_outputs",
+  "dataset": "scikit-learn bundled handwritten digits",
+  "split": "train_test_split, test_size=0.25, random_state=19, stratify=labels",
+  "runs": {
+    "long17": {
+      "run_id": "2bc0ab7c-d74f-4ab0-a2f1-69440b3250a2",
+      "project_id": "988df481-e1e8-4b12-aa01-86cb7048a8ab",
+      "source_path": "var/projects/988df481-e1e8-4b12-aa01-86cb7048a8ab/runs/2bc0ab7c-d74f-4ab0-a2f1-69440b3250a2/workspace/predictions.csv",
+      "metrics": {
+        "dataset": "sklearn_digits",
+        "seed": 17,
+        "regularization": 0.0001,
+        "epochs": 159447,
+        "resumed_from_epoch": 0,
+        "accuracy": 0.98,
+        "log_loss": 0.09141797937241831,
+        "n_test": 450,
+        "elapsed_seconds": 180.00065545800317
+      }
+    },
+    "short18": {
+      "run_id": "7189edd7-41e2-4ecb-b607-89db63183f56",
+      "project_id": "988df481-e1e8-4b12-aa01-86cb7048a8ab",
+      "source_path": "var/projects/988df481-e1e8-4b12-aa01-86cb7048a8ab/runs/7189edd7-41e2-4ecb-b607-89db63183f56/workspace/predictions.csv",
+      "metrics": {
+        "dataset": "sklearn_digits",
+        "seed": 18,
+        "regularization": 0.0002,
+        "epochs": 8,
+        "resumed_from_epoch": 0,
+        "accuracy": 0.9133333333333333,
+        "log_loss": 0.5409436338798995,
+        "n_test": 450,
+        "elapsed_seconds": 0.0084921670058975
+      }
+    },
+    "short19": {
+      "run_id": "03a3ca3f-d5b8-4b2e-85ee-4aac65926027",
+      "project_id": "988df481-e1e8-4b12-aa01-86cb7048a8ab",
+      "source_path": "var/projects/988df481-e1e8-4b12-aa01-86cb7048a8ab/runs/03a3ca3f-d5b8-4b2e-85ee-4aac65926027/workspace/predictions.csv",
+      "metrics": {
+        "dataset": "sklearn_digits",
+        "seed": 19,
+        "regularization": 0.00030000000000000003,
+        "epochs": 8,
+        "resumed_from_epoch": 0,
+        "accuracy": 0.9066666666666666,
+        "log_loss": 0.5287926792780188,
+        "n_test": 450,
+        "elapsed_seconds": 0.009552458010148257
+      }
+    }
+  },
+  "limitations": "Same held-out observations. Short runs have equal epoch counts but different random seeds and regularization. The long run has a different compute budget. These are runtime qualification runs, not a controlled scientific comparison or novelty evidence."
+}

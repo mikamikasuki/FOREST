@@ -1,0 +1,91 @@
+"""Explicit research judgments and protocols, independent of model/provider code.
+
+Validation reports structure and provenance; it never invents a scientific verdict.
+All records remain ordinary editable dictionaries.
+"""
+from __future__ import annotations
+
+import math
+from copy import deepcopy
+
+LABELS = {'MEASURED', 'REPORTED', 'INFERRED', 'ESTIMATED', 'SPECULATIVE'}
+DUTIES = {'effectiveness', 'mechanism', 'scenario_value', 'alternative_explanation'}
+JUDGMENT_FIELDS = ('best_estimate', 'confidence', 'why', 'against', 'decisive_unknown', 'cheapest_resolution')
+BASE_CASE_TEXT = ('most_likely_outcome', 'current_best_estimate', 'pre_experiment_bet',
+                  'biggest_reason_to_work', 'biggest_reason_to_fail', 'first_experiment')
+BASE_CASE_PROBABILITIES = ('probability_any_signal', 'probability_meaningful_improvement',
+                           'probability_publishable_finding')
+
+
+def probability_range(value, field='probability_range'):
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f'{field} must contain a lower and upper probability')
+    if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in value):
+        raise ValueError(f'{field} must contain finite numbers')
+    if not 0 <= value[0] < value[1] <= 1:
+        raise ValueError(f'{field} must be a nonzero-width interval within [0, 1]')
+    return list(value)
+
+
+def _text(record, fields, prefix=''):
+    for field in fields:
+        if not isinstance(record.get(field), str) or not record[field].strip():
+            raise ValueError(f'{prefix}{field} must state a concrete judgment or explicitly identify missing evidence')
+
+
+def validate_idea(idea):
+    """Validate mandatory judgments, without assigning the model a probability."""
+    if not isinstance(idea, dict):
+        raise ValueError('A research idea must be an object')
+    result = deepcopy(idea)
+    _text(result, JUDGMENT_FIELDS + ('title', 'claim', 'baseline', 'experiment', 'metric'))
+    if result['confidence'] not in {'High', 'Medium', 'Low'}:
+        raise ValueError('confidence must be High, Medium or Low')
+    if result.get('evidence_label') != 'ESTIMATED':
+        raise ValueError('Idea judgments and probability ranges must be explicitly labeled ESTIMATED')
+    result['probability_range'] = probability_range(result.get('probability_range'))
+    if result.get('experiment_duty') not in DUTIES:
+        raise ValueError('Every proposed experiment requires an explicit argumentative duty')
+    base = result.get('base_case')
+    if not isinstance(base, dict):
+        raise ValueError('base_case must include all nine required conclusions')
+    _text(base, BASE_CASE_TEXT, 'base_case.')
+    for field in BASE_CASE_PROBABILITIES:
+        base[field] = probability_range(base.get(field), 'base_case.' + field)
+    if base['probability_meaningful_improvement'][0] > base['probability_any_signal'][1]:
+        raise ValueError('A meaningful positive improvement cannot be more probable than any positive signal')
+    result['probability_interpretation'] = 'Subjective forecast, not a measured frequency or conference acceptance prediction'
+    return result
+
+
+def validate_experiment(plan):
+    """A modifiable protocol; changes never prevent editing or exploration."""
+    result = deepcopy(plan)
+    _text(result, ('research_question', 'hypothesis', 'baseline', 'candidate', 'metric',
+                   'statistical_unit', 'split_policy', 'selection_policy', 'decision_rule'))
+    if result.get('argumentative_duty') not in DUTIES:
+        raise ValueError('argumentative_duty must be effectiveness, mechanism, scenario_value or alternative_explanation')
+    threshold = result.get('meaningful_effect')
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or threshold < 0:
+        raise ValueError('meaningful_effect must be an explicit nonnegative finite threshold')
+    if result.get('phase') not in {'exploratory', 'confirmatory'}:
+        raise ValueError('phase must explicitly distinguish exploratory and confirmatory analysis')
+    if result['phase'] == 'confirmatory' and result.get('test_used_for_selection') is not False:
+        raise ValueError('Confirmatory analysis must explicitly state that its evaluation data was not used for selection')
+    result['editing_policy'] = 'Editable; record changed decisions and their affected evidence'
+    return result
+
+
+def validate_claims(claims, evidence_ids):
+    """Check evidence references, never label entailment as mechanically verified."""
+    available = set(evidence_ids)
+    for claim in claims:
+        _text(claim, ('id', 'statement', 'scope'))
+        if claim.get('evidence_label') not in LABELS:
+            raise ValueError(f"Claim {claim['id']} requires an evidence label")
+        if not claim.get('supporting_evidence'):
+            raise ValueError(f"Claim {claim['id']} has no supporting evidence")
+        for ref in claim.get('supporting_evidence', []) + claim.get('contrary_evidence', []):
+            if ref not in available:
+                raise ValueError(f"Claim {claim['id']} refers to unavailable evidence {ref}")
+    return deepcopy(claims)

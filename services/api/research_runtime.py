@@ -1,0 +1,150 @@
+"""Editable research session, evidence lineage and run recovery views."""
+import json
+import filecmp
+from fastapi import APIRouter, Body
+from sqlalchemy import select
+from .db import *
+from .common import get,project_dir,safe_path,emit,error
+router=APIRouter()
+
+@router.get('/api/writing-policy')
+def writing_policy():
+    from research.paper.style import writing_profile, writing_contract
+    return {**writing_profile(), 'manuscript_contract':writing_contract(), 'revision_contract':writing_contract('revision')}
+
+@router.get('/api/projects/{ident}/research')
+def research_state(ident:str):
+    with Session() as s:
+        p=get(s,Project,ident)
+        decisions=list(s.scalars(select(Hypothesis).where(Hypothesis.project_id==ident).order_by(Hypothesis.created_at.desc())))
+        runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident).order_by(TaskRun.created_at.desc())))
+        active=[{'id':r.id,'kind':r.kind,'status':r.status,'node_id':r.node_id,'resource':r.resource} for r in runs if r.status in ('queued','running','waiting','waiting_input','paused','pausing','budget_exhausted')]
+        from research.planning.scoreboard import compare_trials
+        trials=compare_trials([{'id':r.id,'kind':r.kind,'status':r.status,'metrics':r.metrics,'config':r.config,'created_at':r.created_at} for r in runs],p.config.get('objective'))
+        return {'objective':p.config.get('objective',{}),'trials':trials,'controller':p.config.get('controller',{}),'active_runs':active,'decisions':[asdict(x) for x in decisions if x.data.get('origin')=='research_controller'], 'counts':{'runs':len(runs),'completed':sum(r.status=='completed' for r in runs),'failed':sum(r.status in ('failed','interrupted') for r in runs)}}
+
+@router.get('/api/runs/{ident}/lineage')
+def run_lineage(ident:str):
+    with Session() as s:
+        original=get(s,TaskRun,ident); pending=[ident]; seen=set(); rows=[]
+        while pending:
+            rid=pending.pop()
+            if rid in seen: continue
+            seen.add(rid); r=s.get(TaskRun,rid)
+            if not r or r.project_id!=original.project_id:
+                rows.append({'id':rid,'missing':True}); continue
+            n=s.get(Node,r.node_id) if r.node_id else None
+            cfg={k:v for k,v in r.config.items() if k not in ('provider_snapshot','env')}
+            files=[]; root=project_dir(r.project_id); folder=safe_path(root,r.output_path)
+            if folder.exists():
+                files=[{'path':str(x.relative_to(root)),'bytes':x.stat().st_size} for x in folder.rglob('*') if x.is_file() and not x.is_symlink()]
+            freshness=[]
+            branch=s.get(Branch,r.branch_id) if r.branch_id else None
+            if branch:
+                working=safe_path(root,branch.workspace)
+                for saved in (folder/'workspace').rglob('*'):
+                    if saved.is_file() and not saved.is_symlink() and not any(x.startswith('.') for x in saved.relative_to(folder/'workspace').parts):
+                        relative=saved.relative_to(folder/'workspace'); current=safe_path(working,str(relative))
+                        if current.is_file():
+                            same=filecmp.cmp(saved,current,shallow=False)
+                            freshness.append({'path':str(relative),'current':same,'status':'matches_working_file' if same else 'working_file_changed'})
+            rows.append({'source_freshness':freshness,'id':r.id,'node_id':r.node_id,'node_title':cfg.get('node_title'),'status':r.status,'node_revision':r.node_revision,'current_node_revision':n.revision if n else None,'current':bool(n and n.revision==r.node_revision and n.extra.get('results_current',True)),'dependencies':r.dependencies,'config':cfg,'metrics':r.metrics,'resource':r.resource,'files':files})
+            pending.extend(r.dependencies)
+        return {'run_id':ident,'project_id':original.project_id,'runs':rows}
+
+@router.get('/api/runs/{ident}/session')
+def agent_session(ident:str,summary:bool=False):
+    with Session() as s:
+        run=get(s,TaskRun,ident); folder=safe_path(project_dir(run.project_id),run.output_path+'/workspace')
+        path=folder/'agent_session.json'
+        if not path.exists(): return {'run_id':ident,'status':run.status,'session':None}
+        data=json.loads(path.read_text())
+        if summary: data={**{k:data.get(k) for k in ('status','totals','active_seconds','wait_for','updated_at','budget_reason')},'transcript_count':len(data.get('transcript',[]))}
+        return {'run_id':ident,'status':run.status,'session':data}
+
+@router.patch('/api/runs/{ident}/configuration')
+def configure_run(ident:str,body:dict=Body(...)):
+    with Session.begin() as s:
+        run=get(s,TaskRun,ident)
+        # Execution identities belong to the runner; research parameters remain editable.
+        blocked={'provider_snapshot','execution_attempt','resolved_inputs','project_goal'}
+        if blocked & body.keys(): error('INVALID_CONFIGURATION','Execution identity fields are managed by the runner',422)
+        run.config={**run.config,**body}
+        emit(s,run.project_id,'run_changed',{'run_id':ident,'status':run.status,'configuration_updated':True})
+        return {'run_id':ident,'config':{k:v for k,v in run.config.items() if k not in ('provider_snapshot','env')}}
+
+@router.get('/api/projects/{ident}/graph/page')
+def graph_page(ident:str,offset:int=0,limit:int=100,branch_id:str|None=None,query:str=''):
+    with Session() as s:
+        p=get(s,Project,ident); stmt=select(Node).where(Node.project_id==ident)
+        if branch_id: stmt=stmt.where(Node.branch_id==branch_id)
+        if query: stmt=stmt.where(Node.title.ilike('%'+query+'%'))
+        nodes=list(s.scalars(stmt.order_by(Node.created_at,Node.id).offset(max(offset,0)).limit(min(max(limit,1),500))))
+        ids={n.id for n in nodes}
+        edges=list(s.scalars(select(Edge).where(Edge.project_id==ident)))
+        return {'revision':p.revision,'offset':offset,'nodes':[asdict(n) for n in nodes],'edges':[asdict(e) for e in edges if e.source in ids or e.target in ids],'next_offset':offset+len(nodes) if len(nodes)==min(max(limit,1),500) else None}
+
+@router.post('/api/projects/{ident}/protocol/validate')
+def validate_protocol(ident:str,body:dict=Body(...)):
+    from research.validation.protocol import validate_experiment
+    with Session() as s: get(s,Project,ident)
+    try: return {'protocol':validate_experiment(body),'status':'structurally_checked'}
+    except ValueError as exc: error('INVALID_PROTOCOL',str(exc),422)
+
+@router.post('/api/projects/{ident}/writing/review')
+def review_writing(ident:str,body:dict=Body(...)):
+    from research.paper.writing import review_defensive_writing
+    with Session() as s: get(s,Project,ident)
+    return review_defensive_writing(body.get('source',''))
+
+@router.post('/api/projects/{ident}/graph/batch')
+def graph_batch(ident:str,body:dict=Body(...)):
+    from copy import deepcopy
+    from research.kernel import GraphCommandService
+    from .common import graph_from_db,save_graph
+    with Session.begin() as s:
+        p=s.scalar(select(Project).where(Project.id==ident).with_for_update())
+        if not p: error('NOT_FOUND','Project does not exist',404)
+        old=s.scalar(select(CommandReceipt).where(CommandReceipt.project_id==ident,CommandReceipt.request_id==body.get('request_id')))
+        if old: return old.response
+        if p.revision!=body.get('expected_revision'): error('REVISION_CONFLICT','Graph changed; reload before applying this batch',409)
+        graph=graph_from_db(s,p); history=deepcopy(graph.pop('_history',{'undo':[],'redo':[]})); before=deepcopy(graph)
+        commands=body.get('commands',[])
+        if not isinstance(commands,list) or not commands: error('EMPTY_BATCH','Provide graph commands',422)
+        for command in commands:
+            # Filesystem-mutating fork/merge operations remain separate explicit commands.
+            if command.get('operation') not in ('add_node','edit_node','add_dependency','remove_dependency','prune_branch','restore_branch','set_main_branch'):
+                error('UNSUPPORTED_BATCH_OPERATION','Use a separate command for this operation',422)
+            graph=GraphCommandService(graph,project_dir(ident)).apply({**command,'request_id':uid(),'expected_revision':graph['revision']})['graph']
+            graph.pop('_history',None)
+        history['undo'].append(before); history['redo']=[]; graph['_history']=history
+        save_graph(s,p,graph)
+        result={'revision':p.revision,'applied':len(commands),'node_count':len(graph['nodes']),'edge_count':len(graph['edges'])}
+        s.add(CommandReceipt(project_id=ident,request_id=body.get('request_id') or uid(),response=result))
+        emit(s,ident,'node_changed',{'revision':p.revision});return result
+
+@router.post('/api/projects/{ident}/statistics/review')
+def review_statistics(ident:str,body:dict=Body(default={})):
+    from services.worker.scheduler import enqueue
+    with Session.begin() as s:
+        get(s,Project,ident)
+        return asdict(enqueue(s,ident,'review',{**body,'review_scope':'statistics'},body.get('request_id')))
+
+@router.post('/api/projects/{ident}/statistics/paired')
+def paired_statistics(ident:str,body:dict=Body(...)):
+    from services.worker.scheduler import enqueue
+    for key in ('path','unit_column','baseline_column','candidate_column'):
+        if not body.get(key):error('MISSING_FIELD',key+' is required',422)
+    with Session.begin() as s:
+        get(s,Project,ident);safe_path(project_dir(ident),body['path'],True)
+        return asdict(enqueue(s,ident,'analysis',{**body,'analysis_type':'paired'},body.get('request_id')))
+
+@router.patch('/api/projects/{ident}/objective')
+def edit_objective(ident:str,body:dict=Body(...)):
+    metric=str(body.get('metric','')).strip()
+    if body.get('direction','min') not in ('min','max'):error('INVALID_OBJECTIVE','Choose min or max',422)
+    with Session.begin() as s:
+        p=get(s,Project,ident)
+        p.config={**p.config,'objective':({'metric':metric,'direction':body.get('direction','min'),'comparison_fields':body.get('comparison_fields',['dataset','protocol_version'])} if metric else {})}
+        p.revision+=1;emit(s,ident,'project_changed',{'revision':p.revision})
+        return p.config['objective']

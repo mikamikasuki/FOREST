@@ -1,0 +1,57 @@
+name: Explicit paid Agent qualification
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_paid:
+        description: 'Authorize this run against the existing shared provider spend cap'
+        required: true
+        default: false
+        type: boolean
+      api_url:
+        description: 'Running FOREST API reachable from the trusted self-hosted runner'
+        required: true
+        default: 'http://127.0.0.1:8000'
+        type: string
+      provider_id:
+        description: 'Existing provider ID with configured budget_usd and pricing'
+        required: true
+        type: string
+      max_cost_usd:
+        description: 'Maximum allowed shared provider cap in USD; does not create extra credit'
+        required: true
+        default: '5'
+        type: string
+permissions:
+  contents: read
+jobs:
+  qualification:
+    if: inputs.confirm_paid
+    runs-on: [self-hosted, macOS]
+    environment: paid-qualification
+    timeout-minutes: 180
+    env:
+      FOREST_OWNER_TOKEN: ${{ secrets.FOREST_OWNER_TOKEN }}
+      QUALIFICATION_API_URL: ${{ inputs.api_url }}
+      QUALIFICATION_PROVIDER_ID: ${{ inputs.provider_id }}
+      QUALIFICATION_MAX_COST: ${{ inputs.max_cost_usd }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.lock.txt
+      - name: Run real sequential Agent tasks
+        run: >-
+          python scripts/qualify_release.py agents
+          --url "$QUALIFICATION_API_URL"
+          --provider-id "$QUALIFICATION_PROVIDER_ID"
+          --allow-paid --max-cost-usd "$QUALIFICATION_MAX_COST"
+          --report var/qa/release-agents.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-agent-qualification
+          path: |
+            var/qa/release-agents.json
+            var/qa/release-artifacts/
+          if-no-files-found: warn
