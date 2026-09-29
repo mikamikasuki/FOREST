@@ -64,17 +64,15 @@ npm run demo
 
 ## Why FOREST
 
-Modern language models can formulate hypotheses, write code, inspect literature, run tools, interpret results, and draft technical papers.
+Modern language models can formulate hypotheses, write code, inspect literature, run tools, interpret results, and draft technical papers. The harder problem begins when these capabilities are composed into a research process that unfolds over hundreds of dependent decisions.
 
-The harder problem appears when these capabilities are composed into a research process that lasts hours rather than minutes.
+Long-horizon research creates a compounding state-management problem. As the trajectory grows, decision-relevant evidence is diluted by accumulated context, unverified interpretations propagate into later decisions, and locally reasonable actions can gradually shift the process away from its original objective. Summarization may discard failure-relevant information, competing hypotheses can remain unresolved, and self-critique can reproduce correlated errors when it relies on the same underlying assumptions.
 
-Every action changes the state seen by the next action. Context grows. Relevant evidence becomes sparse. An early interpretation can become a premise for later reasoning. A locally reasonable repair can move the project away from its original objective. Failed experiments may be summarized imperfectly. Competing explanations can survive because nobody explicitly eliminates them. Self-critique may reproduce the same assumption in different language.
+Existing work already exposes several parts of this failure surface. *Lost in the Middle* and RULER show that usable long-context reasoning can degrade well before the nominal context window is exhausted [1,2]. Recent work on long-horizon search identifies **context rot** and increasing **premature termination** as trajectories grow [3]. Goal-drift evaluations show that autonomous agents can gradually deviate from their assigned objectives [4]. Intrinsic self-correction is also unreliable without external feedback: reconsidering a previous answer can preserve or even amplify the original error [5].
 
-Long-context research already documents parts of this failure surface. *Lost in the Middle* and RULER show that usable context can degrade well before the nominal context window is exhausted [1,2]. Recent work on long-horizon search identifies **context rot** and increasing **premature termination** as context grows [3]. Goal-drift evaluations show that autonomous agents can gradually deviate from assigned objectives over extended trajectories [4]. Intrinsic self-correction is also unreliable: asking a model to reconsider its own reasoning without external evidence can leave errors intact or reduce performance [5].
+FOREST frames autonomous research as a **state-control problem**: the central challenge is not only choosing a good next action, but maintaining a scientifically valid state from which that action is chosen.
 
-FOREST treats autonomous research as a **state-control problem**.
-
-> **Model scale reduces local reasoning error. FOREST targets the dynamics through which small local errors become global research failures.**
+> **Stronger models can reduce local reasoning error. FOREST targets the mechanisms through which local errors accumulate, propagate, and eventually distort the global research trajectory.**
 
 ---
 
