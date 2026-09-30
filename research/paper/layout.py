@@ -13,7 +13,7 @@ DEFAULT_LAYOUT = {
     'table_font_pt': 9, 'min_font_pt': 8, 'max_table_rows': 18,
     'float_placement': 'auto', 'figure_span': 'auto', 'table_span': 'auto',
 }
-PLACEMENTS = {'auto': 'tbp', 'top': 't', 'bottom': 'b', 'page': 'p', 'here': 'htbp'}
+PLACEMENTS = {'auto': '!htbp', 'top': 't', 'bottom': 'b', 'page': 'p', 'here': '!htbp'}
 SPANS = {'auto', 'column', 'page'}
 
 
@@ -93,15 +93,27 @@ def block_identifier(section_index, block_index, appendix=False):
 
 
 def plan_layout(draft, evidence, layout=None, template='article'):
-    from research.paper.structure import section_blocks, wrap_equation
+    from research.paper.structure import section_blocks, wrap_equation, visual_placements
     config = normalize_layout(layout if layout is not None else draft.get('layout'), template)
     text_width = 5.5 if template == 'iclr2027' else 6.5
     column_width = text_width if config['columns'] == 'single' else (text_width - .25) / 2
     plan = {'version': 1, 'mode': 'structured_render', 'template': template, 'config': config,
-            'text_width_in': text_width, 'column_width_in': column_width, 'blocks': [], 'warnings': []}
+            'text_width_in': text_width, 'column_width_in': column_width, 'blocks': [], 'warnings': [], 'visual_placements': []}
     figures = {figure['id']: figure for figure in evidence.get('figures', [])}
     for appendix, sections in [(False, draft['sections']), (True, draft.get('appendices', []))]:
         for si, section in enumerate(sections):
+            for placement in visual_placements(section):
+                placement = {**placement, 'id': block_identifier(si, placement['block_index'], appendix),
+                             'section_index': si, 'section_title': section['title'],
+                             'section_role': section.get('role'), 'appendix': appendix}
+                blocks = section_blocks(section)
+                preceding = next((bi for bi in range(placement['block_index']-1, -1, -1) if blocks[bi].get('type') == 'paragraph'), None)
+                if preceding is not None:
+                    placement['anchor_label'] = 'forest-anchor:' + block_identifier(si, preceding, appendix)
+                plan['visual_placements'].append(placement)
+                if not placement['has_local_reference']:
+                    plan['warnings'].append({'code': 'visual_without_local_reference',
+                        'message': 'Visual ' + str(placement['label'] or placement['id']) + ' needs a substantive numbered reference in its owning section.'})
             for bi, block in enumerate(section_blocks(section)):
                 if block['type'] == 'equation':
                     wrapped = wrap_equation(block['latex'], config['columns']) != block['latex']
@@ -166,12 +178,26 @@ def _column_source(source, config, template):
 
 
 def float_barriers(source):
-    """Keep result floats before discussion, references and appendices."""
+    """Keep each visual in its argumentative section and after its declaration."""
     source = source.replace('% FOREST_RESULTS_BOUNDARY\n\\clearpage\n\\twocolumn\n', '')
     source = source.replace('% FOREST_RESULTS_BOUNDARY\n\\clearpage\n', '')
     if 'placeins' not in source:
         source = source.replace('\\begin{document}', '\\usepackage{placeins}\n\\begin{document}', 1)
-    source = re.sub(r'(\\section\{Discussion\}|\\bibliographystyle\{|\\appendix\b)', lambda match: '\\FloatBarrier\n' + match.group(), source)
+    if not re.search(r'\\usepackage(?:\[[^]]*\])?\{[^}]*\bflafter\b', source):
+        source = source.replace('\\begin{document}', '\\usepackage{flafter}\n\\begin{document}', 1)
+    # Generic article floats can share a page with their argument. LaTeX's
+    # default 70% top / 50% float-page thresholds isolate medium-sized figures
+    # on mostly empty pages. Official venue styles keep their own thresholds.
+    if '\\usepackage[margin=1in]{geometry}' in source and '% FOREST article float occupancy' not in source:
+        settings = ('% FOREST article float occupancy\n'
+                    '\\renewcommand{\\topfraction}{0.92}\n'
+                    '\\renewcommand{\\bottomfraction}{0.85}\n'
+                    '\\renewcommand{\\textfraction}{0.08}\n'
+                    '\\renewcommand{\\floatpagefraction}{0.85}\n'
+                    '\\renewcommand{\\dbltopfraction}{0.92}\n'
+                    '\\renewcommand{\\dblfloatpagefraction}{0.85}\n')
+        source=source.replace('\\begin{document}',settings+'\\begin{document}',1)
+    source = re.sub(r'(\\section\*?\{|\\bibliographystyle\{|\\appendix\b)', lambda match: '\\FloatBarrier\n' + match.group(), source)
     source = re.sub(r'(?:\\FloatBarrier\s*){2,}', lambda _: '\\FloatBarrier\n', source)
     if re.search(r'\\documentclass\[[^]]*twocolumn[^]]*\]\{article\}', source):
         # Drain page-wide result floats and reset both columns together.
@@ -326,7 +352,7 @@ def compile_preflight(directory, source_name, completed, log, actual_compilation
     if final_log.exists():
         log = final_log.read_text(errors='replace')
     issues, assets = [], []
-    checks = {key: 'not_checked' for key in ('glyphs', 'overflow', 'references', 'assets', 'pdf', 'bindings')}
+    checks = {key: 'not_checked' for key in ('glyphs', 'overflow', 'references', 'assets', 'pdf', 'bindings', 'visual_placement')}
     for code, pattern, severity in [('missing_glyph', r'Missing character:[^\n]*', 'error'),
                                     ('overflow', r'Overfull \\[hv]box[^\n]*', 'warning'),
                                     ('undefined_reference', r'[^\n]*(?:undefined references|Reference[^\n]*undefined|Citation[^\n]*undefined)[^\n]*', 'error')]:
@@ -362,12 +388,45 @@ def compile_preflight(directory, source_name, completed, log, actual_compilation
         checks['pdf'] = 'failed'
         issues.append({'code': 'compilation_failed', 'severity': 'error', 'message': 'Compilation did not produce a current PDF.'})
     plan_path = directory / 'layout_plan.json'
+    observed_placements = []
+    placements = []
     if plan_path.exists():
-        for item in json.loads(plan_path.read_text()).get('warnings', []):
+        plan = json.loads(plan_path.read_text())
+        for item in plan.get('warnings', []):
             issues.append({**item, 'severity': 'warning'})
+        placements.extend(plan.get('visual_placements', []))
+    # Editor-inserted figures carry source-visible anchors, so their current
+    # compiled positions remain auditable even without a structured draft.
+    for label, anchor in re.findall(r'% FOREST visual anchor ([A-Za-z][A-Za-z0-9:_.-]*) ([A-Za-z][A-Za-z0-9:_.-]*)', source):
+        if not any(item.get('label') == label for item in placements):
+            placements.append({'label':label,'anchor_label':anchor,'anchor_source':'editor_exact_paragraph','type':'figure'})
+    auxiliary = directory / (Path(source_name).stem + '.aux')
+    if actual_compilation and completed and auxiliary.is_file() and placements:
+        pages = dict(re.findall(r'\\newlabel\{([^}]+)\}\{\{[^{}]*\}\{([^{}]+)\}', auxiliary.read_text(errors='replace')))
+        for item in placements:
+            visual_page = pages.get(item.get('label'))
+            anchor_page = pages.get(item.get('anchor_label'))
+            observation = {**item, 'visual_page': visual_page, 'anchor_page': anchor_page}
+            if visual_page is not None and anchor_page is not None and visual_page.isdigit() and anchor_page.isdigit():
+                observation['page_distance'] = int(visual_page) - int(anchor_page)
+                if observation['page_distance'] < 0:
+                    issues.append({'code': 'visual_precedes_argument', 'severity': 'error',
+                        'message': 'Visual ' + str(item['label']) + ' appears before its argumentative paragraph.'})
+                elif observation['page_distance'] > 1:
+                    issues.append({'code': 'visual_far_from_argument', 'severity': 'warning',
+                        'message': 'Visual ' + str(item['label']) + ' is ' + str(observation['page_distance']) + ' pages after its argumentative paragraph; revise span, panel structure or placement.'})
+            else:
+                issues.append({'code':'visual_anchor_unresolved','severity':'warning',
+                    'message':'The current compiled source does not resolve both visual and paragraph pages for '+str(item['label'])})
+            observed_placements.append(observation)
+        checks['visual_placement'] = 'failed' if any(item['code'] == 'visual_precedes_argument' for item in issues) else 'needs_review' if any(item['code'] in ('visual_far_from_argument', 'visual_without_local_reference','visual_anchor_unresolved') for item in issues) else 'passed'
+    if observed_placements:
+        (directory / 'placement_report.json').write_text(json.dumps({'version': 1, 'status': checks['visual_placement'],
+            'placements': observed_placements, 'scope': 'Actual LaTeX auxiliary page positions relative to argumentative paragraph anchors.'}, indent=2))
     status = 'unavailable' if not actual_compilation else 'failed' if any(item['severity'] == 'error' for item in issues) else 'needs_review' if issues else 'passed'
     report = {'status': status, 'actual_compilation': actual_compilation, 'page_count': page_count,
               'issues': issues, 'assets': assets, 'checks': checks,
+              'visual_placements': observed_placements,
               'scope': 'Actual compiler output, readable PDF and local assets/bindings; visual reading and scientific validation remain separate.'}
     (directory / 'layout_preflight.json').write_text(json.dumps(report, indent=2))
     return report

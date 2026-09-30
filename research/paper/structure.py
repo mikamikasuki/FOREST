@@ -40,15 +40,100 @@ def validate_math(expression):
         raise ValueError('Use the equation block label field instead of inline label or tag commands')
 
 
-def section_blocks(section):
-    """Legacy paragraph arrays remain valid; blocks preserve arbitrary order."""
+def _authored_blocks(section):
     paragraphs = section.get('paragraphs', [])
     blocks = section.get('blocks', [])
     if not isinstance(paragraphs, list) or any(not isinstance(p, str) or not p.strip() for p in paragraphs):
         raise ValueError('Section paragraphs must be nonempty strings')
     if not isinstance(blocks, list):
         raise ValueError('Section blocks must be an array')
-    return [{'type': 'paragraph', 'text': paragraph} for paragraph in paragraphs] + blocks
+    return [{'type': 'paragraph', 'text': paragraph, 'id': 'paragraph-' + str(index)}
+            for index, paragraph in enumerate(paragraphs)] + blocks
+
+
+def _mentions_visual(text, label):
+    if not isinstance(text, str) or not isinstance(label, str):
+        return False
+    if f'[[ref:{label}]]' in text:
+        return True
+    pattern = r'(?:tab|fig):[A-Za-z0-9_][A-Za-z0-9:_.-]*'
+    sequence = pattern + r'(?:(?:\s*,\s*(?:and\s+)?|\s+(?:and|or)\s+)' + pattern + r')*'
+    return any(label in {item.rstrip('.:;-') for item in re.findall(pattern, match.group(1))}
+               for match in re.finditer(r'\b(?:Figures?|Tables?)\s+(' + sequence + r')', text, re.I))
+
+
+def section_blocks(section):
+    """Place visual blocks immediately after their real argumentative paragraph.
+
+    Ordered blocks remain authored text. ``anchor:{after:paragraph_id}`` is an
+    explicit placement decision; otherwise a labeled visual follows its first
+    prose reference within its own section. This also fixes legacy paragraph
+    arrays that previously pushed every figure and table to the section end.
+    """
+    blocks = _authored_blocks(section)
+    paragraph_ids, paragraphs = {}, []
+    for index, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            raise ValueError('Manuscript blocks must be objects')
+        if block.get('type') != 'paragraph':
+            continue
+        identifier = block.get('id')
+        if identifier is not None:
+            if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9:_.-]*', identifier) or identifier in paragraph_ids:
+                raise ValueError('Paragraph IDs must be unique simple identifiers within a section')
+            paragraph_ids[identifier] = index
+        paragraphs.append((index, block))
+    after, relocated = {}, set()
+    for index, block in enumerate(blocks):
+        anchor = block.get('anchor')
+        if anchor is not None and block.get('type') not in ('table', 'figure'):
+            raise ValueError('Only figure and table blocks can declare a paragraph anchor')
+        if block.get('type') not in ('table', 'figure'):
+            continue
+        target = None
+        if anchor is not None:
+            if not isinstance(anchor, dict) or set(anchor) - {'after', 'reason', 'section_role'} or not isinstance(anchor.get('after'), str) or anchor['after'] not in paragraph_ids:
+                raise ValueError('Visual anchor.after must identify an actual paragraph ID in its section')
+            if 'section_role' in anchor and anchor['section_role'] != section.get('role'):
+                raise ValueError('Visual anchor section_role must match its actual owning section')
+            if 'reason' in anchor and (not isinstance(anchor['reason'], str) or not anchor['reason'].strip()):
+                raise ValueError('Visual anchor reason must explain its actual argumentative placement')
+            target = paragraph_ids[anchor['after']]
+        elif block.get('label'):
+            if not isinstance(block['label'], str):
+                raise ValueError('Block labels must be simple identifiers')
+            target = next((pi for pi, paragraph in paragraphs if _mentions_visual(paragraph.get('text'), block['label'])), None)
+        if target is not None:
+            after.setdefault(target, []).append(block)
+            relocated.add(index)
+    placed = []
+    for index, block in enumerate(blocks):
+        if index not in relocated:
+            placed.append(block)
+        placed.extend(after.get(index, []))
+    return placed
+
+
+def visual_placements(section):
+    """Inspectable positions used by rendering, planning and submission review."""
+    blocks = section_blocks(section)
+    original = _authored_blocks(section)
+    report = []
+    for index, block in enumerate(blocks):
+        if block.get('type') not in ('table', 'figure'):
+            continue
+        preceding = next((item for item in reversed(blocks[:index]) if item.get('type') == 'paragraph'), None)
+        label = block.get('label')
+        local_mentions = [i for i, item in enumerate(blocks) if item.get('type') == 'paragraph' and _mentions_visual(item.get('text'), label)]
+        original_index = next(i for i, item in enumerate(original) if item is block)
+        report.append({'type': block['type'], 'label': label, 'block_index': index,
+                       'argumentative_duty': block.get('argumentative_duty'),
+                       'authored_block_index': original_index,
+                       'after': preceding.get('id') if preceding else None,
+                       'anchor_source': 'explicit' if block.get('anchor') else 'first_reference' if local_mentions else 'authored_order',
+                       'first_reference_block': min(local_mentions) if local_mentions else None,
+                       'has_local_reference': bool(local_mentions)})
+    return report
 
 
 def block_labels(draft):
@@ -203,7 +288,7 @@ def wrap_equation(expression, columns):
 def render_section(section, render, render_math, figure_paths, block_plans=None, columns='single', section_index=0, appendix=False):
     from research.paper.layout import block_identifier, PLACEMENTS
     block_plans = block_plans or {}
-    output = [('\\FloatBarrier\n' if section.get('role') == 'discussion' else '') + '\\section{' + render(section['title']) + '}']
+    output = ['\\FloatBarrier\n\\section{' + render(section['title']) + '}']
     for index, block in enumerate(section_blocks(section)):
         kind = block['type']
         identifier = block_identifier(section_index, index, appendix)
@@ -212,7 +297,8 @@ def render_section(section, render, render_math, figure_paths, block_plans=None,
         placement = PLACEMENTS[plan['placement']]
         label = '\\label{' + block['label'] + '}\n' if block.get('label') else ''
         if kind == 'paragraph':
-            output.append(render(block['text']))
+            marker = '% FOREST_PARAGRAPH ' + identifier + (' ' + block['id'] if block.get('id') else '')
+            output.append(marker + '\n\\label{forest-anchor:' + identifier + '}\n' + render(block['text']))
         elif kind == 'equation':
             output.append('\\begin{equation}\n' + label + render_math(wrap_equation(block['latex'], columns)) + '\n\\end{equation}')
         elif kind == 'table':

@@ -3,6 +3,7 @@ from sqlalchemy import select
 from services.api.db import *
 from services.api.common import get,project_dir,safe_path,emit
 from services.worker.scheduler import enqueue_nodes,enqueue,ACTIVE
+from research.planning.loop import submission_audit
 
 def advance_projects():
     with Session() as s:
@@ -35,16 +36,29 @@ def advance_projects():
                     if last and last.kind=='research_plan' and last.status in ('failed','interrupted'):
                         control={**control,'status':'blocked','reason':last.error,'phase':'PLAN'}
                     elif control.get('max_cycles') is not None and int(control.get('cycles',0))>=int(control['max_cycles']):
-                        control={**control,'status':'budget_exhausted','reason':'Research cycle budget reached'}
+                        control={**control,'status':'budget_exhausted','reason':'Research cycle budget reached; the full submission remains unfinished.',
+                                 'submission_quality':submission_audit(s,p)}
                     else:
                         with s.begin_nested(): run=enqueue(s,pid,'research_plan',{'branch_id':control.get('branch_id')},'planner:'+uid())
                         control={**control,'phase':'PLAN','last_run':run.id}
                 else:
                     missing=[ref for ref in control.get('required_artifacts',[]) if not safe_path(project_dir(pid),ref).is_file()]
                     if selected_nodes and all(n.id in completed for n in selected_nodes) and not missing:
-                        control={**control,'status':'completed','phase':'CONFIRM','completion':{'executed_nodes':sum(n.id in completed for n in selected_nodes),'checked_files':control.get('required_artifacts',[]),'scientific_scope':'Requested graph work completed; scientific claims require evidence review.'}}
+                        audit=submission_audit(s,p)
+                        if audit['ready']:
+                            control={**control,'status':'completed','phase':'CONFIRM','submission_quality':audit,
+                                     'completion':{'executed_nodes':sum(n.id in completed for n in selected_nodes),'checked_files':control.get('required_artifacts',[]),'scientific_scope':'Requested delivery coverage checked; venue acceptance is not established.'}}
+                        else:
+                            control={**control,'status':'submission_incomplete','phase':'PLAN','submission_quality':audit,
+                                     'reason':'Requested graph work finished; full-submission evidence and manuscript delivery still require the listed research work.'}
                     else:
                         control={**control,'status':'blocked','phase':'PLAN','missing_files':missing,'reason':'Provide executable work, repair a failed run, or enable autonomous research.'}
             except Exception as exc:
-                control={**control,'status':'blocked','reason':str(exc)}
+                detail=getattr(exc,'detail',{})
+                budget_code=detail.get('code') if isinstance(detail,dict) else None
+                if budget_code in ('RUN_BUDGET_EXHAUSTED','TIME_BUDGET_EXHAUSTED','MODEL_BUDGET_EXHAUSTED'):
+                    control={**control,'status':'budget_exhausted','reason':detail.get('message',str(exc)),
+                             'submission_quality':submission_audit(s,p)}
+                else:
+                    control={**control,'status':'blocked','reason':str(exc)}
             p.config={**p.config,'controller':control}; emit(s,pid,'controller_changed',control)

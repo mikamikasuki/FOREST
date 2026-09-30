@@ -117,6 +117,7 @@ def usage_summary(provider_id):
                 'cost_source':'configured_rates_estimate', 'request_count':len(rows),
                 'uncertain_requests':sum(r.status == 'uncertain' for r in rows),
                 'requests':[{'id':r.id,'run_id':r.run_id,'project_id':r.project_id,'model':r.model,
+                    'api':r.details.get('api', 'text'),
                     'status':r.status,'estimated_cost_usd':r.estimated_microusd/1000000 if r.estimated_microusd is not None else None,
                     'reserved_usd':r.reserved_microusd/1000000 if r.status in ('reserved','uncertain') else 0,
                     'request_id':r.request_id,'usage':r.details.get('usage'), 'created_at':r.created_at} for r in rows[:100]]}
@@ -138,17 +139,36 @@ def make_request_guard(provider):
                 limit = current.config.get('budget_usd')
                 if limit is None:
                     raise BudgetExceeded('Set an explicit provider budget before making paid API requests')
-                pricing = event.get('pricing') or provider.get('config', {}).get('pricing', {})
-                if event.get('model') != current.model or pricing != current.config.get('pricing', {}):
-                    raise BudgetExceeded('Provider model or token prices changed. Queue a new run to use the current configuration.')
-                inp, _, out = rates(pricing)
-                max_output = int(event.get('max_output_tokens') or 0)
-                if max_output < 1:
-                    raise BudgetExceeded('A paid request needs an explicit maximum output-token budget')
-                # Byte-count bound includes serialized messages, tools, and generous
-                # protocol overhead; cache discounts never reduce the reservation.
-                input_bound = int(event.get('input_bytes') or 0) + 2048
-                reservation = int((input_bound*inp+max_output*out).to_integral_value(rounding=ROUND_CEILING))
+                api = event.get('api') or 'text'
+                if api == 'images':
+                    image_config = current.config.get('image_generation')
+                    snapshot = event.get('image_generation') or provider.get('config', {}).get('image_generation')
+                    if (not isinstance(image_config, dict) or image_config != snapshot
+                            or not isinstance(image_config.get('model'), str)
+                            or not image_config['model'].strip()
+                            or event.get('model') != image_config['model']):
+                        raise BudgetExceeded('Image model or settings changed. Queue a new run with the explicitly configured image model.')
+                    ceiling = image_config.get('max_request_usd')
+                    if (isinstance(ceiling, bool) or not isinstance(ceiling, (int, float))
+                            or not math.isfinite(ceiling) or ceiling <= 0):
+                        raise BudgetExceeded('An image request requires a positive saved image_generation.max_request_usd upper bound')
+                    reservation = micro(ceiling)
+                    details = {'api': 'images', 'image_generation': image_config,
+                               'max_request_usd': ceiling, 'attempt': event.get('attempt')}
+                else:
+                    pricing = event.get('pricing') or provider.get('config', {}).get('pricing', {})
+                    if event.get('model') != current.model or pricing != current.config.get('pricing', {}):
+                        raise BudgetExceeded('Provider model or token prices changed. Queue a new run to use the current configuration.')
+                    inp, _, out = rates(pricing)
+                    max_output = int(event.get('max_output_tokens') or 0)
+                    if max_output < 1:
+                        raise BudgetExceeded('A paid request needs an explicit maximum output-token budget')
+                    # Byte-count bound includes serialized messages, tools, and generous
+                    # protocol overhead; cache discounts never reduce the reservation.
+                    input_bound = int(event.get('input_bytes') or 0) + 2048
+                    reservation = int((input_bound*inp+max_output*out).to_integral_value(rounding=ROUND_CEILING))
+                    details = {'api': api, 'pricing': pricing, 'input_token_upper_bound': input_bound,
+                               'max_output_tokens': max_output, 'attempt': event.get('attempt')}
                 rows = list(s.scalars(select(ModelRequest).where(ModelRequest.provider_id == ident)))
                 used, reserved = totals(rows)
                 if used + reserved + reservation > micro(limit):
@@ -178,7 +198,7 @@ def make_request_guard(provider):
                             raise BudgetExceeded('Agent API spending limit cannot reserve this request; settled and uncertain requests remain charged against the same run')
                 record = ModelRequest(provider_id=ident, project_id=context.get('project_id'),run_id=context.get('run_id'),
                     model=event.get('model') or provider['model'], reserved_microusd=reservation,
-                    details={'pricing':pricing,'input_token_upper_bound':input_bound,'max_output_tokens':max_output,'attempt':event.get('attempt')})
+                    details=details)
                 s.add(record); s.flush()
                 return record.id
             record = s.get(ModelRequest, event.get('reservation'))
@@ -190,13 +210,20 @@ def make_request_guard(provider):
             record.response_id = event.get('response_id') or record.response_id
             if phase == 'after':
                 usage = event.get('usage') or {}
-                measured = usage_micro(usage, record.details['pricing'])
+                # Image token units and charges differ from the text model. The
+                # compatible API has no verified USD-charge field in its standard
+                # response, so keep the saved upper bound until billing is reconciled.
+                # Use the reservation's API, never an event-supplied settlement mode.
+                measured = None if record.details.get('api') == 'images' else usage_micro(usage, record.details['pricing'])
                 record.estimated_microusd = measured
                 record.status = 'settled' if measured is not None else 'uncertain'
                 record.details = {**record.details,'usage':usage,'outcome':event.get('outcome') or event.get('status'),
                     'response_status': event.get('status'),
                     'incomplete_reason': event.get('incomplete_reason') if event.get('incomplete_reason') in ('max_output_tokens', 'content_filter') else None,
                     'reservation_exceeded':measured is not None and measured>record.reserved_microusd}
+                if record.details.get('api') == 'images':
+                    record.details = {**record.details, 'cost_source': 'unknown',
+                                      'accounting_note': 'Image USD charge is unverified; reserved upper bound retained'}
                 if measured is not None and measured > record.reserved_microusd:
                     current.allow_paid = False
                     record.details = {**record.details,'action':'Provider disabled because actual token pricing exceeded reserved bound; review prices before continuing'}

@@ -31,6 +31,41 @@ def latest_experiment(s,pid,ids=None):
     return list(s.scalars(select(TaskRun).where(TaskRun.project_id==pid,TaskRun.kind.in_(('experiment','agent','command')),TaskRun.status=='completed').order_by(TaskRun.created_at.desc()).limit(1)))
 
 
+def manuscript_figures(session, project_id, root, selected, figure_ids=None):
+    """Bridge separately rendered studio figures into scientific-run evidence."""
+    allowed = {run.id for run in selected}
+    rows = list(session.scalars(select(Figure).where(Figure.project_id == project_id)))
+    if figure_ids is not None:
+        if not isinstance(figure_ids,list) or len(set(figure_ids)) != len(figure_ids):
+            raise ValueError('figure_ids must be a list of unique project figure IDs')
+        lookup = {row.id:row for row in rows}
+        if set(figure_ids)-set(lookup): raise ValueError('A selected manuscript figure is unavailable in this project')
+        rows = [lookup[identifier] for identifier in figure_ids]
+    records = []
+    for row in rows:
+        data = row.data; outputs = data.get('outputs',{})
+        linked = data.get('source_run_ids') or data.get('run_ids') or []
+        if linked and not set(linked)<=allowed:
+            if figure_ids is not None: raise ValueError('Selected figure uses runs outside the manuscript evidence scope')
+            continue
+        if row.status!='ready_for_review':
+            if figure_ids is not None: raise ValueError('Render and review selected figures before generating the manuscript')
+            continue
+        path = next((outputs.get(key) for key in ('pdf','png','jpg','jpeg') if outputs.get(key)),None)
+        if not path: continue
+        asset = safe_path(root,path,True)
+        artifacts = {}
+        for key in ('source','data','style','report','selection','caption_context'):
+            if outputs.get(key):
+                original=safe_path(root,outputs[key],True)
+                if original.parent==asset.parent: artifacts[key]=original.name
+        records.append({'id':row.id,'run_id':linked[0] if linked else selected[0].id,
+            'source_run_ids':linked or [selected[0].id],'directory':str(asset.parent),'path':asset.name,
+            'caption':data.get('caption') or row.title,'purpose':data.get('purpose',data.get('kind')),
+            'anchor':data.get('anchor'),'artifacts':artifacts})
+    return records
+
+
 def saved_paper_response(session, project_id, config, current_run_id):
     """Resolve only a named response artifact of a terminal paper-generation run."""
     import re
@@ -207,7 +242,8 @@ def execute(run_id):
                 fig={**fig,'style':{**fig.get('style',{}),**changes['style']}}
         with Session() as s: selected=latest_experiment(s,pid,fig.get('run_ids') or config.get('run_ids'))
         style={**fig.get('style',{}),'metric':fig.get('metric',fig.get('style',{}).get('metric','brier'))}
-        if fig.get('kind')=='method': data=fig.get('data',{})
+        if fig.get('kind')=='image': data={**fig.get('data',{}),'mechanism':fig.get('image_prompt') or fig.get('caption')}
+        elif fig.get('kind')=='method': data=fig.get('data',{})
         elif fig.get('data'): data=fig['data']
         elif fig.get('kind')=='calibration' and selected:
             import pandas as pd
@@ -218,20 +254,84 @@ def execute(run_id):
             data=predictions[(predictions.dataset==dataset)&(predictions.seed==seed)].to_dict('records')
         elif selected: data=selected[0].metrics
         else: raise ValueError('Choose real completed runs or explicitly imported figure data')
-        target=output/'figure'
-        paths=render_figure(target,data,style,fig.get('kind','bar'))
-        if fig.get('code'):
+        target=output/'figure'; selection=None
+        custom_code=fig.get('code') and fig.get('code_origin')!='renderer'
+        provider=config.get('provider_snapshot')
+        if fig.get('kind')=='method' and not data.get('nodes'):
+            if not provider: raise ValueError('Supply method nodes/edges or connect the Method Illustrator model')
+            from research.figures.model_workflow import design_method_graph
+            from research.agents.provider import ModelClient
+            from research.paper.evidence import _method_context, _numbers
+            client=ModelClient(provider,read_secret(provider.get('credential_ref')),config.get('allow_paid',False))
+            data=design_method_graph(client,{'goal':config.get('project_goal'),'caption':fig.get('caption'),
+                'method':data,'layout_width_in':style.get('layout_width_in',6.5),
+                'source_runs':[{'id':r.id,'status':r.status,'metrics':r.metrics} for r in selected],
+                'metrics':[{'id':str(r.id)+':'+pointer,'run_id':r.id,'pointer':pointer,'value':value}
+                    for r in selected for pointer,value in _numbers(r.metrics)],
+                'method_context':[_method_context(run.config) for run in selected],
+                'narrative_mode':fig.get('narrative_mode',data.get('narrative_mode','scientific_story'))},target/'design')
+        if provider:
+            from research.figures.model_workflow import reviewed_render,reviewed_image,reviewed_custom_plot
+            from research.agents.provider import ModelClient
+            client=ModelClient(provider,read_secret(provider.get('credential_ref')),config.get('allow_paid',False))
+            context={'goal':config.get('project_goal'),'caption':fig.get('caption'),'purpose':fig.get('purpose'),
+                'source_run_ids':[r.id for r in selected],'layout_width_in':style.get('layout_width_in',6.5),
+                'source_runs':[{'id':r.id,'kind':r.kind,'status':r.status,'metrics':r.metrics} for r in selected]}
+            if fig.get('kind') in ('image','method'):
+                from research.paper.evidence import _numbers, _method_context
+                context.update(method=data,method_context=[_method_context(r.config) for r in selected],
+                    narrative_mode=fig.get('narrative_mode',data.get('narrative_mode','scientific_story') if fig.get('kind')=='image' or data.get('storyboard') else 'method_only'))
+                context['metrics']=[{'id':str(r.id)+':'+pointer,'run_id':r.id,'pointer':pointer,'value':value}
+                    for r in selected for pointer,value in _numbers(r.metrics)]
+                if data.get('storyboard'):context['storyboard']=data['storyboard']
+            if fig.get('kind')=='image':
+                prompt=fig.get('image_prompt') or fig.get('caption')
+                if not prompt:raise ValueError('Describe the actual scientific mechanism in image_prompt')
+                existing_bundle=None
+                if config.get('image_candidate_run_id'):
+                    with Session() as s:origin=get(s,TaskRun,config['image_candidate_run_id'])
+                    if origin.project_id!=pid or origin.kind not in ('figure','figure_revise') or origin.config.get('figure_id')!=fid or origin.status not in ('completed','failed','cancelled','interrupted'):
+                        raise ValueError('Reuse image candidates from a terminal rendering run of this project figure')
+                    iteration=config.get('image_candidate_iteration',1)
+                    if isinstance(iteration,bool) or not isinstance(iteration,int) or iteration<1:raise ValueError('Choose an actual positive image candidate iteration')
+                    manifest=safe_path(root,origin.output_path+f'/figure/iterations/{iteration}/candidate_manifest.json',True)
+                    existing_bundle=json.loads(manifest.read_text())
+                    if existing_bundle.get('kind')!='image' or len(existing_bundle.get('candidates',[]))<2:
+                        raise ValueError('The selected run has no complete actual image candidate bundle')
+                    admitted_root=manifest.parent.resolve()
+                    for candidate in existing_bundle['candidates']:
+                        for filename in candidate.get('outputs',{}).values():
+                            path=Path(filename).resolve()
+                            if not path.is_relative_to(admitted_root) or not path.is_file():raise ValueError('Retained image candidate assets must stay within their original rendering iteration')
+                paths,selection=reviewed_image(client,target,prompt,context=context,
+                    variants=fig.get('image_variants'),attempts=int(config.get('visual_review_attempts',3)),existing_bundle=existing_bundle)
+            elif custom_code:
+                paths,selection=reviewed_custom_plot(client,target,data,fig['code'],style,context=context)
+            else:
+                paths,selection=reviewed_render(client,target,data,style,fig.get('kind','bar'),
+                    context=context,attempts=int(config.get('visual_review_attempts',3)),candidates=fig.get('candidates'))
+        else:
+            if fig.get('kind')=='image':raise ValueError('Connect and configure an actual image-generation provider before generating illustrations')
+            paths=render_figure(target,data,style,fig.get('kind','bar'))
+        if custom_code and not provider:
             for ext in ('svg','png','pdf'): (target/f'figure.{ext}').unlink(missing_ok=True)
             code=target/'custom_plot.py'; code.write_text(fig['code']); proc=subprocess.run([sys.executable,str(code)],cwd=target,env={**os.environ,'MPLBACKEND':'Agg','PYTHONPATH':str(ROOT)},timeout=90)
             if proc.returncode: raise ValueError('Custom plotting code failed; inspect stdout')
             if not any((target/f'figure.{ext}').exists() for ext in ('svg','png','pdf')): raise ValueError('Plot code must save figure.svg/png/pdf in its working directory')
             paths={k:v for k,v in paths.items() if k not in ('svg','png','pdf') or Path(v).is_file()}; paths['source']=str(code)
         rel=relative_paths(paths,root)
+        if fig.get('kind')=='image' and rel.get('prompt'):
+            rel['source']=rel['prompt']
         with Session.begin() as s:
             f=get(s,Figure,fid)
             if f.revision==config['figure_revision']:
-                f.data={**fig,'outputs':rel,'source_run_ids':[r.id for r in selected],'code':Path(paths['source']).read_text() if Path(paths['source']).suffix=='.py' else fig.get('code','')}; f.status='ready_for_review'; f.revision+=1
-                touch_dependents(s,pid,fid); f.status='ready_for_review'
+                reviewed=selection is not None
+                f.data={**fig,'data':data,'outputs':rel,'source_run_ids':[r.id for r in selected],
+                    'visual_selection':selection,'visual_review_status':'selected' if reviewed else 'awaiting_independent_reviews',
+                    'code_origin':'custom' if custom_code else 'renderer',
+                    'code':Path(paths['source']).read_text() if paths.get('source') and Path(paths['source']).suffix=='.py' else fig.get('code','')}
+                f.revision+=1;touch_dependents(s,pid,fid)
+                f.status='ready_for_review' if reviewed else 'needs_review'
             emit(s,pid,'artifact_available',{'kind':'figure','id':fid,'run_id':run_id})
         return {'outputs':rel,'figure_revision_used':config['figure_revision']}
     if kind=='paper_generate':
@@ -257,7 +357,8 @@ def execute(run_id):
             with Session() as s:
                 sources=[asdict(x) for x in s.scalars(select(SourcePaper).where(SourcePaper.project_id==pid))]
                 claims=[{'id':x.id,**x.data} for x in s.scalars(select(ResearchClaim).where(ResearchClaim.project_id==pid))]
-            evidence=collect_evidence(runs=[{'id':r.id,'status':r.status,'directory':str(safe_path(root,r.output_path,True)), 'metrics_file':('metrics.json' if (safe_path(root,r.output_path,True)/'metrics.json').exists() else 'workspace/'+r.config.get('metrics_file','metrics.json')), 'config':{k:v for k,v in r.config.items() if k not in ('provider_snapshot','env')}} for r in selected],sources=sources,claims=claims,required_run_ids=config.get('run_ids'))
+                figures=manuscript_figures(s,pid,root,selected,config.get('figure_ids'))
+            evidence=collect_evidence(runs=[{'id':r.id,'status':r.status,'directory':str(safe_path(root,r.output_path,True)), 'metrics_file':('metrics.json' if (safe_path(root,r.output_path,True)/'metrics.json').exists() else 'workspace/'+r.config.get('metrics_file','metrics.json')), 'config':{k:v for k,v in r.config.items() if k not in ('provider_snapshot','env')}} for r in selected],sources=sources,claims=claims,required_run_ids=config.get('run_ids'),figures=figures)
             if has_saved_response:
                 from research.paper.model_draft import draft_from_saved_response
                 with Session() as s: origin,response_path,original_evidence=saved_paper_response(s,pid,config,run_id)
@@ -270,7 +371,7 @@ def execute(run_id):
                     if not revision_path.is_file(): raise ValueError('Draft revision path must identify a file')
                 draft,response,reuse=draft_from_saved_response(response_path,evidence,folder,origin_run_id=origin.id,
                     origin_response_path=config['saved_response_path'],expected_type=config.get('manuscript_type'),original_evidence_path=original_evidence,
-                    revision_path=revision_path,revision_project_path=config.get('draft_revision_path'))
+                    revision_path=revision_path,revision_project_path=config.get('draft_revision_path'),required_figure_ids=config.get('figure_ids'))
             else:
                 from research.paper.model_draft import draft_with_model
                 from research.agents.provider import ModelClient
@@ -278,9 +379,15 @@ def execute(run_id):
                 provider=config.get('provider_snapshot')
                 if not provider: raise ValueError('Connect a real model provider before drafting a manuscript')
                 client=ModelClient(provider,read_secret(provider.get('credential_ref')),config.get('allow_paid',False))
-                draft,response=draft_with_model(client,evidence,config.get('instructions') or config.get('project_goal',''),folder,title=config.get('title'),attempts=int(config.get('paper_draft_attempts',3)),system=RESEARCH_POLICY,expected_type=config.get('manuscript_type'),layout=selected_layout)
+                # Manuscript responses need room for a full article. Preserve
+                # explicitly configured limits and account every request normally.
+                if not any(key in client.config for key in ('max_output_tokens','max_tokens')):
+                    client.config={**client.config,'max_output_tokens':32768}
+                draft,response=draft_with_model(client,evidence,config.get('instructions') or config.get('project_goal',''),folder,title=config.get('title'),attempts=int(config.get('paper_draft_attempts',3)),system=RESEARCH_POLICY,expected_type=config.get('manuscript_type','full_paper'),layout=selected_layout,publication=config.get('publication_profile'),required_figure_ids=config.get('figure_ids'))
+                from research.paper.visual_review import review_placements
+                draft,placement_review=review_placements(client,evidence,draft,folder/'visual_placement_reviews')
             generated=generate_paper(None,folder,config.get('title'),config.get('template','article'),evidence=evidence,draft=draft,layout=config.get('layout'))
-        compiled=compile_paper(folder)
+        compiled=compile_paper(folder,repair_layout=True)
         if compiled['status']!='completed': raise RuntimeError(compiled.get('log','LaTeX compile failed'))
         with Session.begin() as s:
             data={'source':(folder/'paper.tex').read_text(),'bibtex':(folder/'references.bib').read_text(),'pdf_path':str((folder/'paper.pdf').relative_to(root)),'log':compiled['log'],'bindings':([{'run_id':r['id'],'path':str((Path(r['directory'])/r['metrics_file']).relative_to(root))} for r in evidence['runs']] if config.get('example')!='class_weight_calibration' else [{'run_id':selected[0].id,'path':str((source/'metrics.json').relative_to(root))}]),'numeric_bindings':generated['bindings'],'source_run_ids':[r.id for r in selected],'source_dir':str(folder.relative_to(root))}

@@ -80,7 +80,6 @@ def apply_template(directory, template="article"):
         author_patch = "\n".join([r"\usepackage{etoolbox}", r"\makeatletter", r"\patchcmd{\@maketitle}{Paper under double-blind review}{Reproducible empirical draft}{}{}", r"\makeatother"])
         if "Reproducible empirical draft}{}{}" not in source:
             source = source.replace(r"\begin{document}", author_patch + "\n" + r"\begin{document}")
-        source = source.replace(r"\section*{Data, code, and AI-use statement}", r"\section*{Reproducibility statement}" + "\n" + "Section 4 specifies data preparation and shared splits. Appendices provide ablations, computation, and the statistical contract. The source package supplies code, configuration, split identities, raw predictions, and metric bindings.\n" + r"\section*{Ethics statement}" + "\n" + "The study uses existing public benchmarks and collects no new human-participant observations. Aggregate scores do not establish fairness or suitability for consequential decisions.\n" + r"\section*{AI use statement}")
         info = {"template": "iclr2027", "source_url": url, "guidelines_url": "https://iclr.cc/Conferences/2027/AuthorGuidelines", "ai_policy_url": "https://iclr.cc/Conferences/2027/AIPolicyForAuthors", "submission_status": "research_draft", "assets": filenames, "license_note": "Official conference assets downloaded for the requested author-template use; original notices preserved. Third-party TeX dependencies use the installed distribution."}
     else:
         raise ValueError("Supported templates are article and iclr2027")
@@ -89,7 +88,7 @@ def apply_template(directory, template="article"):
     return info
 
 
-def compile_paper(directory, source_name="paper.tex", timeout=180):
+def compile_paper(directory, source_name="paper.tex", timeout=180, *, repair_layout=False, _layout_attempt=1):
     from research.paper.layout import compile_preflight
     directory = Path(directory).resolve()
     source = (directory / source_name).resolve()
@@ -133,6 +132,37 @@ def compile_paper(directory, source_name="paper.tex", timeout=180):
     errors = [{"line": int(match.group(1)), "message": match.group(2).strip()} for match in re.finditer(r"(?:\.tex:|^l\.)(\d+)[: ]\s*(.*)", log, re.M)]
     success = exit_code == 0 and pdf.is_file()
     report = compile_preflight(directory, source_name, success, log)
+    if repair_layout and success and _layout_attempt <= 3:
+        distant = [item for item in report.get('visual_placements', [])
+                   if item.get('page_distance', 0) > 1 and item.get('anchor_label')]
+        original = source.read_text()
+        revised = original
+        repaired = []
+        for item in distant:
+            anchor = r'\label{' + item['anchor_label'] + '}'
+            marker = '% FOREST placement repair before ' + item['anchor_label']
+            if revised.count(anchor) == 1 and marker not in revised:
+                # Flush accumulated earlier floats before this argument. A
+                # barrier after every visual creates isolated, mostly blank
+                # float pages and prevents later prose from filling the page.
+                revised = revised.replace(anchor, marker + '\n' + r'\FloatBarrier' + '\n' + anchor, 1)
+                repaired.append(item)
+        if repaired:
+            if r'\usepackage{placeins}' not in revised:
+                revised = revised.replace(r'\begin{document}', r'\usepackage{placeins}' + '\n' + r'\begin{document}', 1)
+            history = directory / 'layout_repairs'
+            history.mkdir(exist_ok=True)
+            (history / f'attempt-{_layout_attempt}-before.tex').write_text(original)
+            (history / f'attempt-{_layout_attempt}.json').write_text(json.dumps({
+                'reason': 'Actual compiled visual exceeded one page after its argumentative anchor.',
+                'placements': repaired, 'preflight_before': report,
+                'change': 'Flush earlier floats before the affected argumentative paragraph; preserve all text and evidence.'
+            }, indent=2))
+            source.write_text(revised)
+            result = compile_paper(directory, source_name, timeout, repair_layout=True, _layout_attempt=_layout_attempt + 1)
+            result['layout_repair_attempts'] = max(result.get('layout_repair_attempts', 0), _layout_attempt)
+            result['layout_repair_history'] = str(history)
+            return result
     return {"status": "completed" if success else "failed", "exit_code": exit_code, "pdf_path": str(pdf) if success else None, "log": log, "log_path": str(directory / "compile.log"), "errors": errors,
             "preflight": report, "preflight_path": str(directory / 'layout_preflight.json')}
 
@@ -153,6 +183,18 @@ def check_paper(directory, source_name="paper.tex"):
     for figure in re.findall(r"\\includegraphics(?:\[[^]]*\])?\{([^}]+)\}", source):
         if not (directory / figure).is_file():
             issues.append({"code": "missing_figure", "message": figure})
+    labels = re.findall(r'\\label\{([^}]+)\}', source)
+    for label in sorted({label for label in labels if labels.count(label) > 1}):
+        issues.append({'code': 'duplicate_label', 'message': label})
+    for label in sorted(set(re.findall(r'\\(?:ref|eqref|autoref)\{([^}]+)\}', source)) - set(labels)):
+        issues.append({'code': 'undefined_reference', 'message': label})
+    figure_binding_path = directory / 'figure_bindings.json'
+    if figure_binding_path.is_file():
+        for binding in json.loads(figure_binding_path.read_text()):
+            for kind, relative in binding.get('artifacts', {}).items():
+                companion = (directory / relative).resolve()
+                if not companion.is_relative_to(directory.resolve()) or not companion.is_file():
+                    issues.append({'code': 'missing_figure_companion', 'message': binding['figure_id'] + ':' + kind})
     if (directory / "bindings.json").is_file():
         macros_path = directory / 'results_macros.tex'
         macro_source = macros_path.read_text() if macros_path.is_file() else ''
@@ -170,7 +212,7 @@ def check_paper(directory, source_name="paper.tex"):
                         issues.append({'code': 'stale_macro', 'message': binding['macro']})
             except (KeyError, IndexError, OSError, TypeError, ValueError):
                 issues.append({"code": "missing_metric", "message": binding["macro"]})
-    return {"issues": issues, "checked": ["placeholders", "citation_keys", "figure_files", "bound_metrics"], "claim_verification": "numerical binding checks only; not an automated scientific endorsement"}
+    return {"issues": issues, "checked": ["placeholders", "citation_keys", "cross_references", "figure_files", "figure_companions", "bound_metrics"], "claim_verification": "numerical binding checks only; not an automated scientific endorsement"}
 
 
 def export_paper(directory, target):

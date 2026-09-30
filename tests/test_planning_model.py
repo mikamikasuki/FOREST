@@ -41,10 +41,10 @@ class ProtocolDriver:
         self.requests.append({'messages': messages, 'tools': tools})
         number = len(self.requests)
         assert number < 200  # Test-harness guard, not a runtime limit.
+        if self.reject_direct:
+            self.reject_direct = False
+            raise ProviderError('Explicit request-window rejection', code='context_window_exceeded')
         if tools is None:
-            if self.reject_direct:
-                self.reject_direct = False
-                raise ProviderError('Explicit request-window rejection', code='context_window_exceeded')
             return {'text': self.direct_text, 'model': 'offline-protocol-driver', 'usage': {'cost': 0}, 'elapsed': 0}
         session = next((self.root / 'context_sessions').iterdir())
         pending = ContextStore(session).pending()
@@ -60,9 +60,9 @@ class ProtocolDriver:
                 'model': 'offline-protocol-driver', 'usage': {'input_tokens': 1, 'output_tokens': 1, 'cost': 0}, 'elapsed': 0}
 
 
-def test_full_controls_are_paged_and_early_submission_is_rejected(tmp_path):
+def test_provider_rejected_controls_are_paged_and_early_submission_is_rejected(tmp_path):
     goal = 'A mandatory original constraint. ' * 1500 + 'FINAL_UNSHORTENED_GOAL_CONDITION'
-    driver = ProtocolDriver(tmp_path, early_submit=True)
+    driver = ProtocolDriver(tmp_path, early_submit=True, reject_direct=True)
     result, response = planning_model_json(driver, context(goal), tmp_path, system='Read the original research goal.', char_hint=4000)
     assert result['rationale'] == 'Protocol test only'
     directory = Path(response['context_session_path'])
@@ -71,7 +71,8 @@ def test_full_controls_are_paged_and_early_submission_is_rejected(tmp_path):
     assert len(driver.requests) > 4
     assert ContextStore(directory).pending() is None
     assert response['model_requests'] == len(driver.requests)
-    assert response['usage']['input_tokens'] == len(driver.requests)
+    assert response['usage']['input_tokens'] == len(driver.requests) - 1
+    assert goal in json.dumps(driver.requests[0]['messages'])
     # The final goal clause actually enters a submitted model request. Presence
     # on disk or a retrieval receipt alone does not satisfy this assertion.
     assert any('FINAL_UNSHORTENED_GOAL_CONDITION' in json.dumps(request['messages']) for request in driver.requests)

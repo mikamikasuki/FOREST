@@ -12,6 +12,33 @@ def writing_policy():
     from research.paper.style import writing_profile, writing_contract
     return {**writing_profile(), 'manuscript_contract':writing_contract(), 'revision_contract':writing_contract('revision')}
 
+@router.get('/api/publication-profile')
+def default_publication_profile():
+    from research.publication import publication_profile,publication_instructions
+    from research.agents.policy import ROLES
+    profile=publication_profile()
+    return {'profile':profile,'instructions':publication_instructions(profile),'roles':list(ROLES)}
+
+@router.get('/api/projects/{ident}/publication')
+def publication_state(ident:str):
+    from research.planning.loop import submission_audit
+    with Session() as s:
+        p=get(s,Project,ident)
+        return submission_audit(s,p)
+
+@router.patch('/api/projects/{ident}/publication')
+def configure_publication(ident:str,body:dict=Body(...)):
+    from research.publication import publication_profile
+    with Session.begin() as s:
+        p=get(s,Project,ident)
+        current=p.config.get('publication_profile',{})
+        if isinstance(current,str):current={'id':current}
+        try:profile=publication_profile({'publication_profile':{**current,**body}})
+        except ValueError as exc:error('INVALID_PUBLICATION_PROFILE',str(exc),422)
+        p.config={**p.config,'publication_profile':profile};p.revision+=1
+        emit(s,ident,'project_changed',{'revision':p.revision,'publication_profile':profile})
+        return {'profile':profile,'revision':p.revision}
+
 @router.get('/api/projects/{ident}/research')
 def research_state(ident:str):
     with Session() as s:
@@ -86,9 +113,14 @@ def graph_page(ident:str,offset:int=0,limit:int=100,branch_id:str|None=None,quer
 
 @router.post('/api/projects/{ident}/protocol/validate')
 def validate_protocol(ident:str,body:dict=Body(...)):
-    from research.validation.protocol import validate_experiment
-    with Session() as s: get(s,Project,ident)
-    try: return {'protocol':validate_experiment(body),'status':'structurally_checked'}
+    from research.validation.protocol import validate_experiment,validate_submission_design
+    from research.publication import publication_profile
+    with Session() as s: profile=publication_profile(get(s,Project,ident).config)
+    try:
+        protocol=validate_experiment(body)
+        if profile['id']=='full_submission':protocol=validate_submission_design(protocol,profile)
+        return {'protocol':protocol,'status':'structurally_checked','publication_profile':profile,
+                'verification_scope':'Protocol structure only; real execution, source verification and independent review remain required.'}
     except ValueError as exc: error('INVALID_PROTOCOL',str(exc),422)
 
 @router.post('/api/projects/{ident}/writing/review')

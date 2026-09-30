@@ -5,11 +5,12 @@ from sqlalchemy import select
 from services.api.db import Session, Project, TaskRun, SourcePaper, ResearchClaim, Hypothesis, uid, now, asdict
 from services.api.common import get, graph_from_db, save_graph, project_dir, emit, safe_path
 from research.kernel import GraphCommandService
+from research.publication import publication_profile, publication_instructions, assess_submission
 
 PLANNER_INSTRUCTIONS = '''An example COMMAND SHAPE (replace branch_id and task details using current context): {"operation":"add_node","targets":[],"params":{"id":"baseline-implementation","branch_id":"ACTUAL_BRANCH_ID","type":"implementation","title":"Implement and measure baseline","instructions":"Implement the specified real task, run it, read measured results and write metrics.json and report.md.","config":{"kind":"agent","role":"Engineer","required_outputs":["metrics.json","report.md"]},"position":{"x":0,"y":0}}}. The commands field contains command OBJECTS, never just node titles. No work executes when commands is empty.
 Context uses an automatically selected working set: inspect context_coverage before inferring that work or evidence is absent. Counts describe the complete project; omitted records remain in full_context_artifact and can be read now through read_context_segment. Read every required control page before submitting a plan; full project goals and constraints retain their original authority. Trial dispositions and global best summaries refer to the entire measured history, not only displayed runs.
-You plan the next real research work in an editable project. Establish a strong baseline before candidate comparisons. Follow measured results, investigate failures, propose ablations and cheap discriminating experiments, and keep all contrary evidence. Never substitute a bundled example for the user's question. Every experiment has a duty: effectiveness, mechanism, scenario_value or alternative_explanation. No simulated providers, numbers, progress or completion. All files and research choices remain editable. Work in English.
-Return JSON {"action":"continue|completed|blocked", "rationale":"evidence-grounded decision", "evidence_run_ids":[], "best_estimate":"...", "against":"...", "decisive_unknown":"...", "cheapest_resolution":"...", "commands":[]}. Commands use {"operation":"add_node|edit_node|add_dependency|fork_branch|prune_branch|set_main_branch", "targets":[], "params":{}}. For add_node supply id (unique descriptive string), branch_id from the graph, type, title, instructions, config, inputs and position:{x,y}. config for research steps uses kind:'agent', role:'Researcher|Engineer|Experimenter|Analyst|Writer' and expected_outputs when known. For executable existing scripts use kind:'experiment', command:argv, metrics_file:'metrics.json', experiment_duty, and input references to producer node files. Never invent executable paths that have not been produced. Add depends_on edges via add_dependency params {source:id,target:id}. Use inputs [{node_id:id,path:'file',destination:'file',branch_id:id}] to consume actual producer files. Engineer writes code and checkpoint support, Experimenter runs it with start_process and wait_for_process and saves predictions/metrics, Analyst independently recalculates. Use a few useful nodes at a time; do not create empty tasks to inflate graph size. Completed requires achieved goal and cited completed measured runs with required deliverables present, not simply an empty queue. Blocked must state an exact missing input. A failed attempt is evidence for repair or a different path, never successful research. Do not silently replace existing working files or discard results.'''
+You plan the next real research work in an editable project. Establish a strong baseline before candidate comparisons. Follow measured results, investigate failures, propose ablations and discriminating experiments, and keep all contrary evidence. The publication profile defaults to full_submission. Its submission_quality gaps and remaining real experiment matrix drive the next cycle; a pilot or an empty queue cannot satisfy full delivery. Retrieve and read the accepted-paper corpus, infer complete comparison/data/statistical workload, execute it, independently review the actual draft and repair the resulting gaps. Never substitute a bundled example for the user's question. Every experiment has a duty: effectiveness, mechanism, scenario_value or alternative_explanation. No simulated providers, numbers, progress or completion. All files and research choices remain editable. Work in English.
+Return JSON {"action":"continue|completed|blocked", "rationale":"evidence-grounded decision", "evidence_run_ids":[], "best_estimate":"...", "against":"...", "decisive_unknown":"...", "cheapest_resolution":"...", "commands":[]}. Commands use {"operation":"add_node|edit_node|add_dependency|fork_branch|prune_branch|set_main_branch", "targets":[], "params":{}}. For add_node supply id (unique descriptive string), branch_id from the graph, type, title, instructions, config, inputs and position:{x,y}. config for research steps uses kind:'agent', role from the supplied specialist roles and expected_outputs when known. Specialist roles include Literature Scout, Benchmark Curator, Experiment Designer, Baseline Reproducer, Engineer, Experimenter, Analyst, Figure Designer, Visual Selector, Layout Reviewer, Writer and Submission Reviewer. For executable existing scripts use kind:'experiment', command:argv, metrics_file:'metrics.json', experiment_duty, and input references to producer node files. Never invent executable paths that have not been produced. Add depends_on edges via add_dependency params {source:id,target:id}. Use inputs [{node_id:id,path:'file',destination:'file',branch_id:id}] to consume actual producer files. Engineer writes code and checkpoint support, Experimenter runs it with start_process and wait_for_process and saves predictions/metrics, Analyst independently recalculates. Use a few useful nodes at a time; do not create empty tasks to inflate graph size. Completed requires achieved goal and cited completed measured runs with required deliverables present AND a ready submission audit for full_submission, not simply an empty queue. Blocked must state an exact missing external input, not merely unfinished experiments or a rejected delivery audit. A failed attempt is evidence for repair or a different path, never successful research. Do not silently replace existing working files or discard results.'''
 
 
 def measurement_excerpt(value, limit=3200):
@@ -62,11 +63,28 @@ def planning_context(project_id):
         runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==p.id).order_by(TaskRun.created_at.desc())))
         from .scoreboard import compare_trials
         trial_rows=compare_trials([{'id':r.id,'kind':r.kind,'status':r.status,'metrics':r.metrics,'config':r.config,'created_at':r.created_at} for r in runs],p.config.get('objective'))
-        return {'trials':trial_rows,'project':{'id':p.id,'goal':p.goal,'budget':p.budget,'controller':p.config.get('controller',{}),'objective':p.config.get('objective'),'planner_context_chars':p.config.get('planner_context_chars',24000)},'graph':graph,
+        profile=publication_profile(p.config)
+        sources=[{'id':x.id,'title':x.title,'data':x.data} for x in s.scalars(select(SourcePaper).where(SourcePaper.project_id==p.id))]
+        audit=assess_submission(project_dir(p.id),profile,sources=sources,runs=[_audit_run(r) for r in runs])
+        from research.publication.references import reference_context
+        summary={**{k:v for k,v in audit.items() if k not in ('gaps','remaining_cells','profile')},
+                 'gaps':[{**g,'finding':g['finding'][:600]} for g in audit['gaps'][:24]],'total_gaps':len(audit['gaps'])}
+        return {'trials':trial_rows,'publication_audit':audit,'framework_reference_corpus':reference_context(),'project':{'id':p.id,'goal':p.goal,'budget':p.budget,'controller':p.config.get('controller',{}),'objective':p.config.get('objective'),'publication_profile':profile,'submission_quality':summary,'publication_instructions':publication_instructions(profile),'planner_context_chars':p.config.get('planner_context_chars',24000)},'graph':graph,
                 'runs':[{'id':r.id,'node_id':r.node_id,'status':r.status,'kind':r.kind,'metrics':r.metrics,'error':r.error,'output_path':r.output_path,
                          'artifact_observations':run_artifact_observations(r,project_dir(p.id)) if i<12 else []} for i,r in enumerate(runs)],
-                'sources':[{'id':x.id,'title':x.title,'data':x.data} for x in s.scalars(select(SourcePaper).where(SourcePaper.project_id==p.id))],
+                'sources':sources,
                 'claims':[asdict(x) for x in s.scalars(select(ResearchClaim).where(ResearchClaim.project_id==p.id))]}
+
+
+def _audit_run(run):
+    return {key:getattr(run,key) for key in ('id','status','kind','output_path','config','metrics')}
+
+
+def submission_audit(session, project):
+    """One current delivery check shared by autonomous and assisted completion."""
+    runs=list(session.scalars(select(TaskRun).where(TaskRun.project_id==project.id).order_by(TaskRun.created_at.desc())))
+    sources=[{'id':x.id,'data':x.data} for x in session.scalars(select(SourcePaper).where(SourcePaper.project_id==project.id))]
+    return assess_submission(project_dir(project.id),publication_profile(project.config),sources=sources,runs=[_audit_run(r) for r in runs])
 
 
 def compact_planning_context(context, char_budget=24000):
@@ -209,6 +227,21 @@ def apply_plan(project_id, run_id, plan, expected_revision):
             if pending: raise ValueError('Research cannot complete while selected work is still pending')
             missing=[x for x in control.get('required_artifacts',[]) if not safe_path(project_dir(p.id),x).is_file()]
             if missing: raise ValueError('Required deliverables missing: '+', '.join(missing))
+            audit=submission_audit(s,p)
+            if not audit['ready']:
+                # The model's terminal proposal is retained, but a real failed
+                # delivery audit sends the controller into its next plan cycle.
+                # This is unfinished work, not a provider-format failure.
+                record=Hypothesis(project_id=p.id,title='Submission delivery revision required',status='needs_revision',
+                                  data={**plan,'origin':'research_controller','run_id':run_id,'audit':audit,'evidence_label':'INFERRED'})
+                s.add(record);s.flush()
+                control={**control,'status':'running','phase':'PLAN','last_decision_id':record.id,'last_plan_run':run_id,
+                         'last_rationale':'Full-submission delivery audit requires further work.',
+                         'submission_quality':audit,'cycles':int(control.get('cycles',0))+1}
+                p.config={**p.config,'controller':control};emit(s,p.id,'controller_changed',control)
+                return {'decision_id':record.id,'action':'continue','status':'needs_revision','applied_commands':0,
+                        'graph_revision':p.revision,'submission_quality':audit,
+                        'rationale':'Continue the real research and manuscript revision loop until the delivery audit is ready.'}
         if commands: save_graph(s,p,graph)
         record=Hypothesis(project_id=p.id,title='Research decision',status='adopted' if commands else plan['action'],data={**plan,'origin':'research_controller','run_id':run_id,'graph_revision':p.revision,'evidence_label':'INFERRED'})
         s.add(record); s.flush()

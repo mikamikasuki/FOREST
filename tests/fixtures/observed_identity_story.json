@@ -1,0 +1,563 @@
+{
+  "provenance": {
+    "source": "Portable regression fixture for identity-preserving rendering. Public bundled benchmark measurements are retained; local run identities are replaced with fixture aliases. This fixture is not a scientific improvement claim."
+  },
+  "data": {
+    "nodes": [
+      {
+        "id": "resolve",
+        "label": "Resolve metric pointer",
+        "action": "For the concrete Breast cancer\u2013Logistic record, resolve run fixture-run-001 and /summary/0/accuracy to [[metric:fixture-run-001:/summary/0/accuracy]]. Resolve /summary/0/accuracy_std separately to [[metric:fixture-run-001:/summary/0/accuracy_std]].",
+        "evidence_refs": [
+          "context:method",
+          "fixture-run-001:/summary/0/accuracy",
+          "fixture-run-001:/summary/0/accuracy_std"
+        ]
+      },
+      {
+        "id": "join",
+        "label": "Join value to identity",
+        "action": "Attach the resolved leaves to their parent summary record: dataset = Breast cancer; method = Logistic; Accuracy (fraction); SD across random splits. Carry seeds = [[metric:fixture-run-001:/summary/0/seeds]] and test samples per split = [[metric:fixture-run-001:/summary/0/test_samples]]. Numeric equality is not a join key.",
+        "evidence_refs": [
+          "context:method",
+          "context:caption",
+          "fixture-run-001:/summary/0/seeds",
+          "fixture-run-001:/summary/0/test_samples"
+        ]
+      },
+      {
+        "id": "render",
+        "label": "Render bound comparison cell",
+        "action": "Show the concrete cell with visible Breast cancer and Logistic labels: Accuracy (fraction) = [[metric:fixture-run-001:/summary/0/accuracy]]; SD across random splits = [[metric:fixture-run-001:/summary/0/accuracy_std]]. Branch this same bound record into table, prose and vector heatmap representations; preserve exact underlying values separately from display rounding. Refuse missing pointers and stale bindings as specified by the method.",
+        "evidence_refs": [
+          "context:method",
+          "context:caption",
+          "fixture-run-001:/summary/0/accuracy",
+          "fixture-run-001:/summary/0/accuracy_std"
+        ]
+      },
+      {
+        "id": "placement",
+        "label": "Check compiled placement",
+        "action": "Join the rendered visual identity and its argumentative paragraph anchor to positions extracted from completed compiler output. Compare actual page positions rather than intended source order. Depict this as the specified check, without fabricated page numbers or a validation-success badge.",
+        "evidence_refs": [
+          "context:method",
+          "context:caption"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "source": "resolve",
+        "target": "join",
+        "label": "Run ID + JSON pointer + exact numeric leaf"
+      },
+      {
+        "source": "join",
+        "target": "render",
+        "label": "Dataset + method + metric identity + uncertainty definition"
+      },
+      {
+        "source": "render",
+        "target": "placement",
+        "label": "Bound visual identity + argumentative paragraph anchor"
+      }
+    ],
+    "storyboard": {
+      "mode": "scientific_story",
+      "title": "Preserve metric identity from comparison record to manuscript",
+      "composition": {
+        "print_width_in": 6.5,
+        "minimum_font_pt": 8,
+        "reading_order": [
+          "problem",
+          "mechanism",
+          "consequence"
+        ],
+        "exact_labels": [
+          "Identity must survive aggregation",
+          "Resolve metric pointer",
+          "Join value to identity",
+          "Render bound comparison cell",
+          "Check compiled placement",
+          "Breast cancer",
+          "Logistic",
+          "Accuracy (fraction)",
+          "SD across random splits",
+          "Testable expectation",
+          "Engineering qualification"
+        ]
+      },
+      "central_message": {
+        "text": "The supplied comparison records ground an identity-preserving transformation: resolve each numeric leaf by run and JSON pointer, join it to dataset, method and uncertainty metadata, and reuse that binding in prose, tables and vector heatmaps.",
+        "status": "METHOD_DEFINITION",
+        "evidence_refs": [
+          "context:method",
+          "context:caption"
+        ]
+      },
+      "problem": {
+        "text": "Identity must survive aggregation: a numeric value alone does not specify its dataset, method, split protocol or uncertainty definition.",
+        "status": "METHOD_DEFINITION",
+        "evidence_refs": [
+          "context:method"
+        ]
+      },
+      "consequence": {
+        "text": "Testable expectation: identity-bound rendering reduces dataset-method misattribution and stale numeric reporting relative to an otherwise matched unbound transformation.",
+        "status": "HYPOTHESIS",
+        "evidence_refs": [
+          "context:caption",
+          "context:method"
+        ],
+        "test": "Compare bound and unbound transformations on the same source matrix and reporting tasks. Inject pointer deletion, record reordering, value updates and label swaps; independently score incorrect identities, stale quantities, uncertainty-definition errors and rejection of invalid bindings. Hold content, layout and review budget fixed. No A/B gain is supplied."
+      },
+      "inputs": [
+        "Completed run fixture-run-001 and its summary records for Breast cancer, Wine and Digits",
+        "Metric catalog containing run IDs, JSON pointers and exact numeric values",
+        "Dataset and method labels, stratified held-out split protocol and across-split SD definition",
+        "Compiler-derived visual and argumentative paragraph positions, when available"
+      ],
+      "outputs": [
+        "Dataset-method comparison cells with exact metric bindings",
+        "Prose quantities and vector heatmap cells resolved from the same bindings",
+        "Placement checks based on actual compiled page positions"
+      ],
+      "boundary_conditions": [
+        "Engineering qualification: the supplied measurements establish comparison inputs, not a novel scientific method or submission-readiness result.",
+        "Preprocessing is fit on training data only under the supplied stratified held-out protocol.",
+        "SD describes variation across random train-test splits with reused source samples, not independent populations.",
+        "The supplied catalog contains no original visual candidates, independent review reports, asset-binding manifest or compiled page-position records; their successful validation cannot be depicted as observed.",
+        "Per-split records are described in the requested mechanism but are not included in the supplied summary catalog.",
+        "Reported interval endpoints must remain unchanged; their construction and confidence level require documentation before interpreting them as inferential confidence intervals."
+      ],
+      "mechanism": {
+        "operations": [
+          {
+            "id": "resolve",
+            "label": "Resolve metric pointer",
+            "action": "For the concrete Breast cancer\u2013Logistic record, resolve run fixture-run-001 and /summary/0/accuracy to [[metric:fixture-run-001:/summary/0/accuracy]]. Resolve /summary/0/accuracy_std separately to [[metric:fixture-run-001:/summary/0/accuracy_std]].",
+            "evidence_refs": [
+              "context:method",
+              "fixture-run-001:/summary/0/accuracy",
+              "fixture-run-001:/summary/0/accuracy_std"
+            ]
+          },
+          {
+            "id": "join",
+            "label": "Join value to identity",
+            "action": "Attach the resolved leaves to their parent summary record: dataset = Breast cancer; method = Logistic; Accuracy (fraction); SD across random splits. Carry seeds = [[metric:fixture-run-001:/summary/0/seeds]] and test samples per split = [[metric:fixture-run-001:/summary/0/test_samples]]. Numeric equality is not a join key.",
+            "evidence_refs": [
+              "context:method",
+              "context:caption",
+              "fixture-run-001:/summary/0/seeds",
+              "fixture-run-001:/summary/0/test_samples"
+            ]
+          },
+          {
+            "id": "render",
+            "label": "Render bound comparison cell",
+            "action": "Show the concrete cell with visible Breast cancer and Logistic labels: Accuracy (fraction) = [[metric:fixture-run-001:/summary/0/accuracy]]; SD across random splits = [[metric:fixture-run-001:/summary/0/accuracy_std]]. Branch this same bound record into table, prose and vector heatmap representations; preserve exact underlying values separately from display rounding. Refuse missing pointers and stale bindings as specified by the method.",
+            "evidence_refs": [
+              "context:method",
+              "context:caption",
+              "fixture-run-001:/summary/0/accuracy",
+              "fixture-run-001:/summary/0/accuracy_std"
+            ]
+          },
+          {
+            "id": "placement",
+            "label": "Check compiled placement",
+            "action": "Join the rendered visual identity and its argumentative paragraph anchor to positions extracted from completed compiler output. Compare actual page positions rather than intended source order. Depict this as the specified check, without fabricated page numbers or a validation-success badge.",
+            "evidence_refs": [
+              "context:method",
+              "context:caption"
+            ]
+          }
+        ],
+        "edges": [
+          {
+            "source": "resolve",
+            "target": "join",
+            "label": "Run ID + JSON pointer + exact numeric leaf"
+          },
+          {
+            "source": "join",
+            "target": "render",
+            "label": "Dataset + method + metric identity + uncertainty definition"
+          },
+          {
+            "source": "render",
+            "target": "placement",
+            "label": "Bound visual identity + argumentative paragraph anchor"
+          }
+        ],
+        "key_change": {
+          "operation_id": "join",
+          "explanation": "The transformation carries the source identity alongside the quantity instead of reconstructing identity from a displayed number. The dominant visual zoom should expose this concrete join and its shared binding across representations; structural traceability is distinct from a measured reduction in reporting errors.",
+          "evidence_refs": [
+            "context:method",
+            "context:caption"
+          ]
+        }
+      },
+      "baseline": null
+    },
+    "story_context": {
+      "goal": "Render an identity-preserving scientific mechanism diagram from supplied benchmark records, keeping numeric values bound to their dataset, method and uncertainty definitions.",
+      "caption": "Scientific tension: aggregate values alone lose their dataset, method and uncertainty identities when transformed into visual and narrative representations. The implemented mechanism retains actual dataset-method-split records, binds each reported quantity to its exact metric pointer and identity, creates complete comparison tables and vector heatmaps, and checks actual paragraph-to-visual compiled page positions. Explain the numeric binding and join mechanism with a concrete observed comparison cell, not a directory of generic agents. The A/B scientific value of the framework is an explicitly testable expectation, not a measured gain. This engineering qualification demonstrates actual comparison coverage only; it is not a novel scientific method or acceptance claim.",
+      "method": {
+        "problem": "Dataset-method identities and uncertainty definitions must survive conversion from a real comparison matrix into prose and visuals.",
+        "method": "Metric leaves retain run ID, JSON pointer and numeric identity; table cells carry exact metric tokens with dataset and method labels. Actual completed compiler output supplies visual-page and argumentative paragraph-page positions. The existing implementation refuses missing metric pointers and stale bindings. Independent reviews assess observed original candidates."
+      },
+      "layout_width_in": 6.5,
+      "source_runs": [
+        {
+          "id": "fixture-run-001",
+          "status": "completed",
+          "metrics": {
+            "summary": [
+              {
+                "dataset": "Breast cancer",
+                "method": "Logistic",
+                "accuracy": 0.9706293706293705,
+                "accuracy_std": 0.010372305576357588,
+                "ci_low": 0.9577504522168391,
+                "ci_high": 0.9835082890419019,
+                "seeds": 5,
+                "test_samples": 143
+              },
+              {
+                "dataset": "Breast cancer",
+                "method": "Random forest",
+                "accuracy": 0.9538461538461538,
+                "accuracy_std": 0.016099111095414426,
+                "ci_low": 0.9338564671958949,
+                "ci_high": 0.9738358404964127,
+                "seeds": 5,
+                "test_samples": 143
+              },
+              {
+                "dataset": "Breast cancer",
+                "method": "Extra trees",
+                "accuracy": 0.958041958041958,
+                "accuracy_std": 0.014834407996920585,
+                "ci_low": 0.9396226076975157,
+                "ci_high": 0.9764613083864003,
+                "seeds": 5,
+                "test_samples": 143
+              },
+              {
+                "dataset": "Breast cancer",
+                "method": "Histogram boost",
+                "accuracy": 0.9538461538461538,
+                "accuracy_std": 0.016099111095414426,
+                "ci_low": 0.9338564671958949,
+                "ci_high": 0.9738358404964127,
+                "seeds": 5,
+                "test_samples": 143
+              },
+              {
+                "dataset": "Breast cancer",
+                "method": "SVM",
+                "accuracy": 0.9664335664335664,
+                "accuracy_std": 0.007660455349722632,
+                "ci_low": 0.9569218548159684,
+                "ci_high": 0.9759452780511644,
+                "seeds": 5,
+                "test_samples": 143
+              },
+              {
+                "dataset": "Breast cancer",
+                "method": "No scaling",
+                "accuracy": 0.9524475524475523,
+                "accuracy_std": 0.01149068302458388,
+                "ci_low": 0.9381799850211554,
+                "ci_high": 0.9667151198739492,
+                "seeds": 5,
+                "test_samples": 143
+              },
+              {
+                "dataset": "Breast cancer",
+                "method": "No intercept",
+                "accuracy": 0.9734265734265733,
+                "accuracy_std": 0.007660455349722632,
+                "ci_low": 0.9639148618089753,
+                "ci_high": 0.9829382850441714,
+                "seeds": 5,
+                "test_samples": 143
+              },
+              {
+                "dataset": "Breast cancer",
+                "method": "Strong regularization",
+                "accuracy": 0.9636363636363635,
+                "accuracy_std": 0.005850769416322194,
+                "ci_low": 0.9563716738903246,
+                "ci_high": 0.9709010533824024,
+                "seeds": 5,
+                "test_samples": 143
+              },
+              {
+                "dataset": "Breast cancer",
+                "method": "Weak regularization",
+                "accuracy": 0.9692307692307691,
+                "accuracy_std": 0.010605420201470702,
+                "ci_low": 0.9560624007807801,
+                "ci_high": 0.9823991376807581,
+                "seeds": 5,
+                "test_samples": 143
+              },
+              {
+                "dataset": "Wine",
+                "method": "Logistic",
+                "accuracy": 0.9866666666666667,
+                "accuracy_std": 0.01217161238900371,
+                "ci_low": 0.9715536137631499,
+                "ci_high": 1.0017797195701834,
+                "seeds": 5,
+                "test_samples": 45
+              },
+              {
+                "dataset": "Wine",
+                "method": "Random forest",
+                "accuracy": 0.9911111111111112,
+                "accuracy_std": 0.01217161238900371,
+                "ci_low": 0.9759980582075943,
+                "ci_high": 1.0062241640146279,
+                "seeds": 5,
+                "test_samples": 45
+              },
+              {
+                "dataset": "Wine",
+                "method": "Extra trees",
+                "accuracy": 0.9955555555555555,
+                "accuracy_std": 0.00993807989999908,
+                "ci_low": 0.9832157995324542,
+                "ci_high": 1.0078953115786569,
+                "seeds": 5,
+                "test_samples": 45
+              },
+              {
+                "dataset": "Wine",
+                "method": "Histogram boost",
+                "accuracy": 0.9733333333333333,
+                "accuracy_std": 0.03651483716701108,
+                "ci_low": 0.9279941746227829,
+                "ci_high": 1.0186724920438837,
+                "seeds": 5,
+                "test_samples": 45
+              },
+              {
+                "dataset": "Wine",
+                "method": "SVM",
+                "accuracy": 1.0,
+                "accuracy_std": 0.0,
+                "ci_low": 1.0,
+                "ci_high": 1.0,
+                "seeds": 5,
+                "test_samples": 45
+              },
+              {
+                "dataset": "Wine",
+                "method": "No scaling",
+                "accuracy": 0.968888888888889,
+                "accuracy_std": 0.019876159799998103,
+                "ci_low": 0.9442093768426865,
+                "ci_high": 0.9935684009350916,
+                "seeds": 5,
+                "test_samples": 45
+              },
+              {
+                "dataset": "Wine",
+                "method": "No intercept",
+                "accuracy": 0.9866666666666667,
+                "accuracy_std": 0.01217161238900371,
+                "ci_low": 0.9715536137631499,
+                "ci_high": 1.0017797195701834,
+                "seeds": 5,
+                "test_samples": 45
+              },
+              {
+                "dataset": "Wine",
+                "method": "Strong regularization",
+                "accuracy": 0.9955555555555555,
+                "accuracy_std": 0.009938079899999081,
+                "ci_low": 0.9832157995324542,
+                "ci_high": 1.0078953115786569,
+                "seeds": 5,
+                "test_samples": 45
+              },
+              {
+                "dataset": "Wine",
+                "method": "Weak regularization",
+                "accuracy": 0.9777777777777779,
+                "accuracy_std": 0.015713484026367706,
+                "ci_low": 0.9582669103758872,
+                "ci_high": 0.9972886451796685,
+                "seeds": 5,
+                "test_samples": 45
+              },
+              {
+                "dataset": "Digits",
+                "method": "Logistic",
+                "accuracy": 0.9693333333333334,
+                "accuracy_std": 0.012707536404885145,
+                "ci_low": 0.9535548428735238,
+                "ci_high": 0.985111823793143,
+                "seeds": 5,
+                "test_samples": 450
+              },
+              {
+                "dataset": "Digits",
+                "method": "Random forest",
+                "accuracy": 0.9702222222222222,
+                "accuracy_std": 0.006956655929999342,
+                "ci_low": 0.9615843930060513,
+                "ci_high": 0.9788600514383932,
+                "seeds": 5,
+                "test_samples": 450
+              },
+              {
+                "dataset": "Digits",
+                "method": "Extra trees",
+                "accuracy": 0.979111111111111,
+                "accuracy_std": 0.002981423969999739,
+                "ci_low": 0.9754091843041807,
+                "ci_high": 0.9828130379180414,
+                "seeds": 5,
+                "test_samples": 450
+              },
+              {
+                "dataset": "Digits",
+                "method": "Histogram boost",
+                "accuracy": 0.9702222222222222,
+                "accuracy_std": 0.008833158628600797,
+                "ci_low": 0.9592544071626656,
+                "ci_high": 0.9811900372817788,
+                "seeds": 5,
+                "test_samples": 450
+              },
+              {
+                "dataset": "Digits",
+                "method": "SVM",
+                "accuracy": 0.9835555555555555,
+                "accuracy_std": 0.005115939748098405,
+                "ci_low": 0.9772032773533621,
+                "ci_high": 0.9899078337577489,
+                "seeds": 5,
+                "test_samples": 450
+              },
+              {
+                "dataset": "Digits",
+                "method": "No scaling",
+                "accuracy": 0.9653333333333333,
+                "accuracy_std": 0.007131914015947212,
+                "ci_low": 0.9564778924614468,
+                "ci_high": 0.9741887742052198,
+                "seeds": 5,
+                "test_samples": 450
+              },
+              {
+                "dataset": "Digits",
+                "method": "No intercept",
+                "accuracy": 0.9671111111111111,
+                "accuracy_std": 0.011904973543092317,
+                "ci_low": 0.9523291340630851,
+                "ci_high": 0.9818930881591372,
+                "seeds": 5,
+                "test_samples": 450
+              },
+              {
+                "dataset": "Digits",
+                "method": "Strong regularization",
+                "accuracy": 0.9671111111111111,
+                "accuracy_std": 0.0036514837167011312,
+                "ci_low": 0.962577195240056,
+                "ci_high": 0.9716450269821663,
+                "seeds": 5,
+                "test_samples": 450
+              },
+              {
+                "dataset": "Digits",
+                "method": "Weak regularization",
+                "accuracy": 0.9648888888888889,
+                "accuracy_std": 0.008225224677031866,
+                "ci_low": 0.9546759235302813,
+                "ci_high": 0.9751018542474965,
+                "seeds": 5,
+                "test_samples": 450
+              }
+            ],
+            "design": {
+              "datasets": [
+                {
+                  "id": "Breast cancer",
+                  "samples": 569,
+                  "features": 30,
+                  "source": "scikit-learn bundled real benchmark: load_breast_cancer",
+                  "split": "stratified held-out 25%, five seeds; preprocessing fit on training only"
+                },
+                {
+                  "id": "Wine",
+                  "samples": 178,
+                  "features": 13,
+                  "source": "scikit-learn bundled real benchmark: load_wine",
+                  "split": "stratified held-out 25%, five seeds; preprocessing fit on training only"
+                },
+                {
+                  "id": "Digits",
+                  "samples": 1797,
+                  "features": 64,
+                  "source": "scikit-learn bundled real benchmark: load_digits",
+                  "split": "stratified held-out 25%, five seeds; preprocessing fit on training only"
+                }
+              ],
+              "seeds": [
+                0,
+                1,
+                2,
+                3,
+                4
+              ],
+              "fits": 135,
+              "prediction_rows": 28710,
+              "uncertainty": "SD across five random train-test splits; reuse of source samples is explicit, not five independent populations",
+              "scope": "engineering verification inputs, no novel scientific claim"
+            },
+            "command_exit_code": 0,
+            "elapsed": 8.912578166025924
+          }
+        }
+      ],
+      "metrics": [
+        {
+          "id": "fixture-run-001:/summary/0/accuracy",
+          "run_id": "fixture-run-001",
+          "pointer": "/summary/0/accuracy",
+          "value": 0.9706293706293705
+        },
+        {
+          "id": "fixture-run-001:/summary/0/accuracy_std",
+          "run_id": "fixture-run-001",
+          "pointer": "/summary/0/accuracy_std",
+          "value": 0.010372305576357588
+        },
+        {
+          "id": "fixture-run-001:/summary/0/seeds",
+          "run_id": "fixture-run-001",
+          "pointer": "/summary/0/seeds",
+          "value": 5
+        },
+        {
+          "id": "fixture-run-001:/summary/0/test_samples",
+          "run_id": "fixture-run-001",
+          "pointer": "/summary/0/test_samples",
+          "value": 143
+        }
+      ],
+      "narrative_mode": "scientific_story"
+    },
+    "narrative_mode": "scientific_story",
+    "evidence_role": "conceptual_illustration"
+  }
+}

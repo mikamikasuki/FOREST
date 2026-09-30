@@ -190,5 +190,8 @@ class ContextBuilder:
                 "graph_revision": self.graph.get("revision", 0), "node_revision": node.get("revision", 0),
                 "controls": controls, "materials": materials, "retrievable_materials": retrievable_materials, "omitted": omitted, "summaries_stale": summaries_stale,
                 "imported_branches": sorted(visible_branches - {node["branch_id"]}), "overrides": settings,
-                "capacity": {"max_chars": max_chars, "used_content_chars": effective_preview_chars - remaining, "policy": "automatic", "soft_preview_hint": True, "truncated": any(m.get("truncated") or m.get("source_truncated") for m in materials)},
+                "capacity": {"max_chars": max_chars, "effective_preview_chars": effective_preview_chars,
+                             "required_control_chars": len(prefix), "used_content_chars": len(text),
+                             "policy": "automatic", "soft_preview_hint": True,
+                             "truncated": any(m.get("truncated") or m.get("source_truncated") for m in materials)},
                 "text": text}
