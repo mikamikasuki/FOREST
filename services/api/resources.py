@@ -2,6 +2,7 @@ import ast
 import io
 import json
 import re
+import shutil
 import zipfile
 from pathlib import Path
 from fastapi import APIRouter, Body, UploadFile, File
@@ -162,9 +163,9 @@ def adopt(ident:str,body:dict=Body(default={})):
         else:
             proposed=json.dumps(config,ensure_ascii=False,indent=2)
             add(engineer_id,'implementation','Implementation · '+title,
-                'Read hypothesis.md and implement its cheapest decisive experiment using the supplied real inputs. '+duty+
+                'Read hypothesis.md and implement the full submission experiment matrix using the supplied real inputs. '+duty+
                 ' Write self-contained implementation.py and experiment_plan.json in the run workspace. The plan must specify '
-                'the exact Python argv, required inputs, baseline, ablation, seed, metric and bounded runtime. implementation.py '
+                'the exact Python argv, required real datasets and splits, strong recent baselines, component ablations, independent seeds, metrics, statistical units, and runtime/resources. Benchmark the scale against at least fifteen related accepted papers; keep a pilot separate from the full confirmation matrix. implementation.py '
                 'must write metrics.json and preserve predictions when run. Do syntax/small smoke validation only; the downstream '
                 'Experimenter owns the full measured run. Do not substitute the bundled classification case for this idea. '
                 'If required data or access is missing, identify the exact missing input and fail explicitly. Finish with both actual files.\n'
@@ -172,9 +173,9 @@ def adopt(ident:str,body:dict=Body(default={})):
                 {'kind':'agent','role':'Engineer'},[*common_inputs,protocol],1,hypothesis_id)
             generated=[{'node_id':engineer_id,'path':name,'destination':name,'branch_id':branch_id} for name in ('implementation.py','experiment_plan.json')]
             add(experiment_id,'experiment','Discriminating Experiment · '+title,
-                'Read hypothesis.md, experiment_plan.json and implementation.py. Verify the planned inputs and run the cheapest '
-                'decisive experiment with run_command using the supplied Python script, within this task budget. '+duty+
-                ' Execute the planned baseline and mechanism ablation, preserve raw predictions and measured metrics.json, '
+                'Read hypothesis.md, experiment_plan.json and implementation.py. Verify the planned inputs and execute the full '
+                'submission experiment matrix with run_command using the supplied Python script, within this task budget. '+duty+
+                ' Execute strong baselines, mechanism ablations and scenario/stress studies across the real datasets and independent seeds, preserve raw predictions and measured metrics.json, '
                 'and write experiment_report.md with exact commands, actual results and the evidence-supported conclusion. '
                 'If an input or implementation is missing, fail with that concrete reason. Do not claim an experiment ran without '
                 'tool evidence. Finish with the actual metrics and report artifacts.',
@@ -287,6 +288,51 @@ def ensure_paper(s,project_id):
 @router.get('/api/papers/{ident}')
 def paper(ident:str):
     with Session.begin() as s: p=s.get(PaperDocument,ident) or ensure_paper(s,ident); return asdict(p)
+@router.post('/api/papers/{ident}/generate')
+def generate_manuscript(ident:str,body:dict=Body(...)):
+    with Session.begin() as s:
+        p=s.get(PaperDocument,ident) or ensure_paper(s,ident)
+        if not isinstance(body.get('run_ids'),list) or not body['run_ids']:
+            error('EVIDENCE_REQUIRED','Select the completed scientific runs for the full manuscript',422)
+        for run_id in body['run_ids']:
+            run=get(s,TaskRun,run_id)
+            if run.project_id!=p.project_id or run.status!='completed':
+                error('INVALID_EVIDENCE','Manuscript evidence must be completed runs in this project',422)
+        return asdict(enqueue(s,p.project_id,'paper_generate',{**body,'manuscript_type':body.get('manuscript_type','full_paper')},body.get('request_id')))
+@router.post('/api/papers/{ident}/figures')
+def insert_paper_figure(ident:str,body:dict=Body(...)):
+    from research.paper.insertion import insert_figure
+    with Session.begin() as s:
+        p=s.get(PaperDocument,ident) or ensure_paper(s,ident)
+        p=locked_paper(s,p.id)
+        if body.get('expected_revision')!=p.revision:
+            error('REVISION_CONFLICT','Save the current manuscript before inserting a figure',409)
+        f=get(s,Figure,body.get('figure_id'))
+        if f.project_id!=p.project_id: error('CROSS_PROJECT','Choose a figure from this project',422)
+        if f.status not in ('ready_for_review','available'):
+            error('FIGURE_UNAVAILABLE','Render and review this figure before inserting it',409)
+        outputs=f.data.get('outputs',{})
+        chosen=next((outputs.get(key) for key in ('pdf','png','jpg','jpeg') if outputs.get(key)),None)
+        if not chosen: error('FIGURE_UNAVAILABLE','A rendered PDF or image is required',409)
+        root=project_dir(p.project_id); origin=safe_path(root,chosen,True)
+        asset=f'figures/{f.id}/figure{origin.suffix.lower()}'
+        try:
+            source=insert_figure(p.data.get('source',''),asset_path=asset,caption=body.get('caption') or f.data.get('caption') or f.title,
+                label='fig:'+f.id,anchor_text=body.get('anchor_text'),span=body.get('span','column'))
+        except ValueError as exc: error('INVALID_FIGURE_ANCHOR',str(exc),422)
+        destination=safe_path(root,'paper/'+asset);destination.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(origin,destination)
+        for key in ('source','data','style','report','selection','caption_context'):
+            if outputs.get(key):
+                original=safe_path(root,outputs[key],True)
+                shutil.copy2(original,destination.parent/original.name)
+        binding={'figure_id':f.id,'figure_revision':f.revision,'asset_path':asset,'source_run_ids':f.data.get('source_run_ids',[]),
+                 'anchor_text':body['anchor_text'],'label':'fig:'+f.id}
+        p.data={**p.data,'source':source,'figure_bindings':[*p.data.get('figure_bindings',[]),binding],
+            'manually_edited':True,'content_origin':'manual','layout_preflight':None,'layout_plan':None}
+        p.revision+=1;p.status='needs_update';write_working_source(p)
+        emit(s,p.project_id,'paper_changed',{'id':p.id,'figure_id':f.id})
+        return asdict(p)
 @router.patch('/api/papers/{ident}')
 def edit_paper(ident:str,body:dict=Body(...)):
     with Session.begin() as s:

@@ -1553,6 +1553,9 @@ function FigureEditor({
   const [metric, setMetric] = useState(figure.data.metric || "");
   const [runIds, setRunIds] = useState<string[]>(figure.data.run_ids || []);
   const [caption, setCaption] = useState(figure.data.caption || "");
+  const [dataText, setDataText] = useState(JSON.stringify(figure.data.data || {}, null, 2));
+  const [purpose, setPurpose] = useState(figure.data.purpose || "effectiveness");
+  const [imagePrompt, setImagePrompt] = useState(figure.data.image_prompt || "");
   const [instruction, setInstruction] = useState("");
   const [tab, setTab] = useState("style");
   const [region, setRegion] = useState<Json | null>(null);
@@ -1573,6 +1576,10 @@ function FigureEditor({
         run_ids: runIds,
         metric,
         caption,
+        data: parseJson(dataText),
+        purpose,
+        image_prompt: imagePrompt,
+        code_origin: code !== (figure.data.code || "") ? "custom" : figure.data.code_origin,
       },
     });
     setEditRevision(r.revision);
@@ -1725,8 +1732,15 @@ function FigureEditor({
                 <option value="line">Line</option>
                 <option value="calibration">Calibration</option>
                 <option value="method">Method diagram</option>
+                <option value="image">Conceptual illustration</option>
+                <option value="heatmap">Comparison heatmap</option>
+                <option value="forest">Effect and interval plot</option>
+                <option value="scatter">Paired/scenario analysis</option>
               </select>
             </Field>
+            {kind === "image" && <Field label={t("论文图片提示词", "Scientific illustration prompt")} hint={t("描述真实机制和组件；实验图表使用真实数据绘图。图片模型在连接设置中配置。", "Describe the actual mechanism and components. Use measured-data plots for results. Configure the image model in connection settings.")}>
+              <textarea rows={5} value={imagePrompt} onChange={e => setImagePrompt(e.target.value)} />
+            </Field>}
             {[
               "title",
               "xlabel",
@@ -1764,6 +1778,15 @@ function FigureEditor({
                 onChange={(e) => setCaption(e.target.value)}
               />
             </Field>
+            <Field label={t("论证职责", "Scientific purpose")}>
+              <select value={purpose} onChange={e => setPurpose(e.target.value)}>
+                <option value="overview">Introduction overview</option>
+                <option value="mechanism">Mechanism</option>
+                <option value="effectiveness">Effectiveness</option>
+                <option value="scenario_value">Scenario value</option>
+                <option value="alternative_explanation">Alternative explanation</option>
+              </select>
+            </Field>
           </>
         )}
         {tab === "data" && (
@@ -1791,6 +1814,9 @@ function FigureEditor({
               </select>
             </Field>
             <JsonView value={{ run_ids: runIds, metric }} />
+            <Field label={t("真实数据或方法图结构 JSON", "Observed data or method graph JSON")} hint={t("方法图使用 nodes 和 edges；留空时由设计 agent 根据研究上下文生成结构。", "Use nodes and edges for method diagrams; an empty graph invokes the design agent.")}>
+              <textarea rows={10} value={dataText} onChange={e => setDataText(e.target.value)} />
+            </Field>
           </>
         )}
         {tab === "code" && (
@@ -1798,7 +1824,7 @@ function FigureEditor({
             <CodeEditor
               value={code}
               onChange={setCode}
-              language={kind === "method" ? "xml" : "python"}
+              language="python"
             />
           </div>
         )}
@@ -1830,6 +1856,8 @@ function FigureEditor({
             {t("生成图表", "Render figure")}
           </Button>
         </div>
+        {figure.data.visual_review_status && <p className="muted">{t("独立图片评审", "Independent visual review")}: {figure.data.visual_review_status}</p>}
+        {figure.data.visual_selection && <details><summary>{t("候选图片与评选理由", "Candidates and selection rationale")}</summary><JsonView value={figure.data.visual_selection} /></details>}
       </aside>
     </div>
   );
@@ -1983,6 +2011,8 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
         busy={busy}
         disabled={!paper}
       />
+      {paper && <PaperGeneration projectId={id!} template={template} layout={layout} dirty={dirty} save={save} reload={reload} />}
+      {paper && <PaperFigureInsertion projectId={id!} revision={editingRevision} source={source} dirty={dirty} save={save} reload={reload} />}
       <div className="paper-editors">
         <div className="paper-source">
           <Tabs
@@ -2085,6 +2115,68 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
       />
     </div>
   );
+}
+function PaperGeneration({ projectId, template, layout, dirty, save, reload }: { projectId: string; template: PaperTemplate; layout: PaperLayoutConfig; dirty: boolean; save: () => Promise<number>; reload: () => Promise<void> }) {
+  const { t, action } = useUI();
+  const { data: runs } = useLoad<Run[]>(`/runs?project_id=${projectId}`, []);
+  const { data: figures } = useLoad<RecordItem[]>(`/figures?project_id=${projectId}`, []);
+  const [runIds, setRunIds] = useState<string[]>([]);
+  const [figureIds, setFigureIds] = useState<string[]>([]);
+  const [instructions, setInstructions] = useState("");
+  const [busy, setBusy] = useState(false);
+  const completed = runs.filter(run => run.status === "completed" && ["experiment", "command", "agent"].includes(run.kind));
+  const reviewed = figures.filter(figure => figure.status === "ready_for_review" && (figure.data.outputs?.pdf || figure.data.outputs?.png));
+  const toggle = (values: string[], id: string) => values.includes(id) ? values.filter(value => value !== id) : [...values, id];
+  return <details className="paper-layout">
+    <summary>{t("从真实实验生成完整论文", "Generate a full manuscript from actual experiments")}</summary>
+    <p className="muted">{t("默认完整投稿篇幅；图片由独立 agent 评选和定位，编译后检查实际位置。实验或文献缺项会保留待补工作。", "Uses the full submission profile. Independent agents select and place visuals; compiled locations are checked. Evidence gaps remain explicit work to complete.")}</p>
+    <form onSubmit={event => {
+      event.preventDefault(); setBusy(true);
+      void action(async () => {
+        if (dirty) await save();
+        await api(`/papers/${projectId}/generate`, "POST", { request_id: uid(), run_ids: runIds, figure_ids: figureIds, manuscript_type: "full_paper", template, layout, ...(instructions.trim() ? {instructions} : {}) });
+        await reload();
+      }, t("完整论文生成任务已排队", "Full manuscript generation queued")).finally(() => setBusy(false));
+    }}>
+      <Field label={t("已完成的实验与测量", "Completed experiments and measurements")}>
+        {completed.map(run => <label key={run.id}><input type="checkbox" checked={runIds.includes(run.id)} onChange={() => setRunIds(current => toggle(current, run.id))} />{run.kind} · {run.id.slice(0, 8)}</label>)}
+        {!completed.length && <p>{t("先完成实际实验。", "Complete actual experiments first.")}</p>}
+      </Field>
+      <Field label={t("必须插入的已评审图片", "Reviewed figures to include")}>
+        {reviewed.map(figure => <label key={figure.id}><input type="checkbox" checked={figureIds.includes(figure.id)} onChange={() => setFigureIds(current => toggle(current, figure.id))} />{figure.title}</label>)}
+      </Field>
+      <Field label={t("研究问题与写作要求", "Research question and writing requirements")}><textarea rows={3} value={instructions} onChange={event => setInstructions(event.target.value)} /></Field>
+      <Button className="primary" busy={busy} disabled={busy || !runIds.length}>{t("生成完整论文", "Generate full manuscript")}</Button>
+    </form>
+  </details>;
+}
+function PaperFigureInsertion({ projectId, revision, source, dirty, save, reload }: { projectId: string; revision?: number; source: string; dirty: boolean; save: () => Promise<number>; reload: () => Promise<void> }) {
+  const { t, action } = useUI();
+  const { data: figures } = useLoad<RecordItem[]>(`/figures?project_id=${projectId}`, []);
+  const [figureId, setFigureId] = useState("");
+  const [anchor, setAnchor] = useState("");
+  const ready = figures.filter(figure => figure.status === "ready_for_review" && (figure.data.outputs?.pdf || figure.data.outputs?.png));
+  return <details className="paper-layout">
+    <summary>{t("在文章中插入已评审图片", "Insert a reviewed figure in the manuscript")}</summary>
+    <form onSubmit={event => {
+      event.preventDefault();
+      void action(async () => {
+        const currentRevision = dirty ? await save() : revision;
+        await api(`/papers/${projectId}/figures`, "POST", { expected_revision: currentRevision, figure_id: figureId, anchor_text: anchor });
+        setAnchor("");
+        await reload();
+      }, t("图片已插入，请编译查看位置", "Figure inserted; compile to inspect placement"));
+    }}>
+      <Field label={t("选择图片", "Figure")}><select required value={figureId} onChange={event => setFigureId(event.target.value)}>
+        <option value="">{t("选择已生成和评审的图片", "Select a rendered and reviewed figure")}</option>
+        {ready.map(figure => <option key={figure.id} value={figure.id}>{figure.title}</option>)}
+      </select></Field>
+      <Field label={t("图片前的文章段落", "Preceding manuscript paragraph")} hint={t("粘贴当前正文中唯一的一段文字；图片和交叉引用将紧接其后。", "Paste a unique paragraph from the current source; the figure and reference follow it.")}>
+        <textarea required rows={3} value={anchor} onChange={event => setAnchor(event.target.value)} />
+      </Field>
+      <Button className="primary" disabled={!figureId || !anchor.trim() || !source.includes(anchor)}>{t("插入图片", "Insert figure")}</Button>
+    </form>
+  </details>;
 }
 export function FilesPage() {
   const { id } = useParams();
@@ -2740,6 +2832,8 @@ function ConnectionEditor({
   const [inputRate, setInputRate] = useState(String(item?.config?.pricing?.input_per_million ?? ""));
   const [cachedRate, setCachedRate] = useState(String(item?.config?.pricing?.cached_input_per_million ?? ""));
   const [outputRate, setOutputRate] = useState(String(item?.config?.pricing?.output_per_million ?? ""));
+  const [imageModel, setImageModel] = useState(item?.config?.image_generation?.model || "");
+  const [imageCeiling, setImageCeiling] = useState(String(item?.config?.image_generation?.max_request_usd ?? ""));
   const [config, setConfig] = useState(
     JSON.stringify(
       item && resource === "providers" ? item.config || {} : item
@@ -2788,6 +2882,7 @@ function ConnectionEditor({
                   allow_paid: paid,
                   ...(key ? { api_key: key } : {}),
                   config: {...parseJson(config), ...(kind !== "ollama" ? {api:apiMode, budget_usd:limitUsd.trim() ? Number(limitUsd) : null,
+                    ...(imageModel.trim() ? {image_generation:{...(parseJson(config).image_generation || {}),model:imageModel.trim(),max_request_usd:Number(imageCeiling)}} : {}),
                     pricing: {input_per_million:inputRate.trim() ? Number(inputRate) : null, cached_input_per_million:cachedRate.trim() ? Number(cachedRate) : (inputRate.trim() ? Number(inputRate) : null), output_per_million:outputRate.trim() ? Number(outputRate) : null, currency:"USD"}} : {})},
                 }
               : { name, ...parseJson(config) };
@@ -2846,6 +2941,8 @@ function ConnectionEditor({
                 <Field label="Output price / 1M tokens (USD)"><input type="number" min="0" step="any" required={paid} value={outputRate} onChange={e => setOutputRate(e.target.value)} /></Field>
               </div>
               <Field label="Cached input price / 1M tokens (USD, optional)"><input type="number" min="0" step="any" value={cachedRate} onChange={e => setCachedRate(e.target.value)} /></Field>
+              <Field label={t("图片模型 ID（可选）", "Image model ID (optional)")}><input value={imageModel} onChange={e => setImageModel(e.target.value)} /></Field>
+              {imageModel.trim() && <Field label={t("每次图片请求费用上界（美元）", "Per image request cost ceiling (USD)")} hint={t("图片请求与文字请求共用总限额；无法核算费用时保留预留金额。", "Image and text requests share the total limit; unknown image charges retain their reservation.")}><input required type="number" min="0.001" step="any" value={imageCeiling} onChange={e => setImageCeiling(e.target.value)} /></Field>}
             </>}
             <Field label={t("实际模型 ID", "Model ID")}>
               <input

@@ -37,7 +37,12 @@ async def lifespan(app):
         if not s.scalar(select(Agent)):
             for role,instructions in ROLES.items(): s.add(Agent(name=role,role=role,instructions=instructions,tools=list(TOOLS),config=default_config(role)))
         else:
-            for agent in s.scalars(select(Agent)): upgrade_default_tools(agent)
+            existing=list(s.scalars(select(Agent)))
+            for agent in existing: upgrade_default_tools(agent)
+            roles={agent.role for agent in existing}
+            for role,instructions in ROLES.items():
+                if role not in roles:
+                    s.add(Agent(name=role,role=role,instructions=instructions,tools=list(TOOLS),config=default_config(role)))
     yield
     from .terminal import close_all
     close_all()

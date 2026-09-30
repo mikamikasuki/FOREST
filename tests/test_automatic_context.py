@@ -7,9 +7,115 @@ import pytest
 
 from research.agents.context_store import ContextStore, pack_context, recover_context_rejection, provider_working_preference
 from research.agents.provider import ProviderError, context_window_rejection, responses_input
-from research.agents.runtime import ToolRuntime, session_messages
+from research.agents.runtime import ToolRuntime, assemble_model_request, session_messages
 from research.agents.output_recovery import record_provider_failure
 from research.kernel import ContextBuilder
+
+
+def reject_current_context(state):
+    # Exercise the explicit rejection branch without invoking a provider or
+    # presenting this protocol error as a real remote receipt.
+    error = ProviderError('Context-window protocol case', code='context_window_exceeded')
+    assert recover_context_rejection(state, error)
+
+
+def runtime_controls():
+    from research.agents.policy import RESEARCH_POLICY
+
+    ending = '\nFINAL MANDATORY CONTROL: preserve strongest fair baselines and decisive contrary evidence.'
+    padding = 'Additional original control.\n'
+    size = 32323 - len(RESEARCH_POLICY) - len(ending)
+    system = RESEARCH_POLICY + (padding * (size // len(padding) + 1))[:size] + ending
+    task = json.dumps({'task': 'Apply the complete original research policy and output contract.',
+                      'required_outputs': ['screening.json', 'screening.md'],
+                      'constraints': {'strongest_baseline': 'Retain the strongest relevant comparator.',
+                                      'counterevidence': 'Retain every decisive contrary observation.'},
+                      'context': {'project': {'goal': 'Screen the declared falsifiable research question.'},
+                                  'untrusted_materials': [{'id': 'source', 'text': 'Original source passage. ' * 500}]}},
+                     ensure_ascii=False)
+    return [{'role': 'system', 'content': system}, {'role': 'user', 'content': task}]
+
+
+@pytest.mark.parametrize('char_hint,native', [(32000, True), (64000, True), (64000, False)])
+def test_actual_runtime_request_keeps_32323_character_policy_before_provider_rejection(tmp_path, char_hint, native):
+    # This is the same assembly entry called by run_agent immediately before
+    # ModelClient.complete; no isolated direct-attempt helper or model stand-in.
+    original = runtime_controls()
+    assert len(original[0]['content']) == 32323
+    state = {'messages': copy.deepcopy(original), 'transcript': []}
+    config = {'context_char_budget': char_hint, 'agent_budget': {'cost': 0.75},
+              'project_budget': {'cost': 15}}
+    client = SimpleNamespace(api='responses', native_tools=native, config={'working_context_chars': 8000})
+    allowed = ['read_file', 'finish', 'read_context_segment']
+    before = copy.deepcopy((state['messages'], config, client.config))
+    request, tools = assemble_model_request(state, tmp_path, config, client, allowed)
+    assert request[0] == original[0]
+    controls = json.loads(request[1]['content'])
+    expected = json.loads(original[1]['content'])
+    materials = expected['context'].pop('untrusted_materials')
+    assert controls.pop('context')['project'] == expected.pop('context')['project']
+    assert controls == expected
+    assert tools == allowed
+    assert state['context_management']['next_required'] is None
+    assert state['context_management']['required_segments'] == []
+    assert state['context_management']['mandatory_controls_delivery'] == 'full_originals'
+    assert state['context_management']['input_characters'] > state['context_management']['working_target']
+    assert 'context_recovery_history' not in state
+    store = ContextStore(tmp_path)
+    assert (store.root / (store.index['current']['original-message:1'] + '.txt')).read_text() == original[1]['content']
+    assert json.loads((store.root / (store.index['current']['task-materials'] + '.txt')).read_text()) == materials
+    assert responses_input(request)[0] == original[0]
+    assert (state['messages'], config, client.config) == before
+    # A resumed legacy session can still contain a local pending-read decision
+    # despite never receiving a provider rejection. Full delivery clears it.
+    store.require([store.index['current']['controls:0']])
+    resumed, tools = assemble_model_request(state, tmp_path, config, client, allowed)
+    assert resumed[0] == original[0] and tools == allowed
+    assert ContextStore(tmp_path).pending() is None
+
+
+def test_actual_runtime_request_enables_paged_controls_only_after_explicit_provider_rejection(tmp_path):
+    original = runtime_controls()
+    state = {'messages': copy.deepcopy(original), 'transcript': [], 'totals': {'cost': 0.125},
+             'cost_complete': True}
+    config = {'context_char_budget': 64000, 'agent_budget': {'cost': 0.75}}
+    client = SimpleNamespace(api='responses', native_tools=True, config={})
+    allowed = ['read_file', 'finish', 'read_context_segment']
+    initial, tools = assemble_model_request(state, tmp_path, config, client, allowed)
+    assert initial[0] == original[0] and tools == allowed
+    for error in (ProviderError('Other protocol failure', code='http_error'),
+                  ProviderError('Uncertain protocol outcome', code='context_window_exceeded', ambiguous=True)):
+        assert not recover_context_rejection(state, error)
+    assert 'context_recovery_history' not in state
+    error = ProviderError('Explicit pre-generation context-window protocol rejection', code='context_window_exceeded',
+                          usage={'input_tokens': 0, 'output_tokens': 0, 'cached_input_tokens': 0,
+                                 'reasoning_tokens': 0, 'cost': 0})
+    record_provider_failure(state, error, 0.01, 'protocol-error-case')
+    assert recover_context_rejection(state, error)
+    recovered, tools = assemble_model_request(state, tmp_path, config, client, allowed)
+    assert tools == ['read_context_segment']
+    assert state['context_management']['next_required']
+    assert state['context_management']['mandatory_controls_delivery'] == 'provider_rejection_recovery'
+    assert state['context_management']['input_characters'] < sum(len(m['content']) for m in initial)
+    store = ContextStore(tmp_path)
+    identifier = store.index['current']['controls:0']
+    assert (store.root / (identifier + '.txt')).read_text() == original[0]['content']
+    pages = []
+    while store.pending():
+        pending = store.pending()
+        page = store.read(pending['segment_id'], pending['offset'])
+        pages.append(page['content'])
+        request, tools = assemble_model_request(state, tmp_path, config, client, allowed)
+        delivered = next(message['content'] for message in request
+                         if message['content'].startswith('RETRIEVED ORIGINAL CONTEXT PAGE'))
+        assert json.loads(delivered.split(': ', 1)[1])['content'] == page['content']
+        store = ContextStore(tmp_path)
+    assert ''.join(pages) == original[0]['content']
+    assert tools == allowed
+    assert state['messages'] == original
+    assert state['totals']['cost'] == 0.125 and config['agent_budget']['cost'] == 0.75
+    assert len(state['context_recovery_history']) == 1
+    assert state['transcript'][0]['tool_executed'] is False
 
 
 def test_required_original_controls_are_fully_retrievable_before_other_actions(tmp_path):
@@ -17,6 +123,10 @@ def test_required_original_controls_are_fully_retrievable_before_other_actions(t
     state = {'messages': [{'role': 'system', 'content': 'Use actual evidence.'},
                           {'role': 'user', 'content': intent}], 'transcript': []}
     original = copy.deepcopy(state)
+    direct = session_messages(state, tmp_path, 2000)
+    assert direct[:2] == state['messages']
+    assert state['context_management']['next_required'] is None
+    reject_current_context(state)
     session_messages(state, tmp_path, 2000)
     assert state['context_management']['next_required']
     store = ContextStore(tmp_path)
@@ -81,8 +191,58 @@ def test_context_preview_never_rejects_required_goal_and_retains_all_materials(t
     packet = ContextBuilder(graph, tmp_path).build('n', overrides={'max_chars': 512, 'materials': [{'id': 'actual', 'text': material}]})
     assert packet['controls']['goal'] == goal
     assert packet['capacity']['used_content_chars'] > packet['capacity']['max_chars']
+    assert packet['capacity']['used_content_chars'] == len(packet['text'])
+    assert packet['capacity']['used_content_chars'] <= packet['capacity']['effective_preview_chars']
+    assert packet['capacity']['required_control_chars'] > packet['capacity']['max_chars']
     assert next(item['text'] for item in packet['retrievable_materials'] if item['id'] == 'actual') == material
     assert packet['capacity']['soft_preview_hint']
+
+
+@pytest.mark.parametrize('preview_hint,requirements', [(512, 100), (24000, 1200), (64000, 3500)])
+def test_whole_task_and_output_contract_survive_small_preview_and_request_paging(tmp_path, preview_hint, requirements):
+    from research.agents.runtime import model_task_message
+
+    goal = 'Measure the real experimental mechanism under the declared protocol.'
+    instructions = '\n'.join(f'Requirement {i}: retain actual failures and report measured values αβγ.'
+                             for i in range(requirements))
+    result_schema = {'type': 'object', 'required': [f'metric_{i}' for i in range(100)],
+                     'properties': {f'metric_{i}': {'type': 'number'} for i in range(100)}}
+    config = {'instructions': instructions, 'required_outputs': ['result.json', 'report.md'],
+              'metrics_file': 'result.json', 'metrics_required_keys': result_schema['required'],
+              'constraints': {'result_schema': result_schema}}
+    graph = {'goal': goal, 'branches': [{'id': 'main', 'workspace': 'workspace'}],
+             'nodes': [{'id': 'task', 'branch_id': 'main', 'instructions': instructions, 'config': config}], 'edges': []}
+    packet = ContextBuilder(graph, tmp_path).build('task', overrides={'max_chars': preview_hint})
+    assert packet['capacity']['required_control_chars'] > preview_hint
+    assert packet['capacity']['used_content_chars'] <= packet['capacity']['effective_preview_chars']
+    assert packet['controls']['instructions'] == instructions
+    assert packet['controls']['constraints']['result_schema'] == result_schema
+    (tmp_path / 'context_packet.json').write_text(json.dumps(packet, ensure_ascii=False))
+    state = {'messages': [{'role': 'system', 'content': 'Use actual evidence.'}, model_task_message(packet, config)],
+             'transcript': []}
+    direct = session_messages(state, tmp_path, preview_hint)
+    assert json.loads(direct[1]['content'])['task'] == instructions
+    assert state['context_management']['next_required'] is None
+    reject_current_context(state)
+    session_messages(state, tmp_path, preview_hint)
+    store = ContextStore(tmp_path)
+    identifier = store.index['current']['controls:1']
+    pages, offset = [], 0
+    while True:
+        receipt = store.read(identifier, offset)
+        assert receipt['authority'] == 'user'
+        pages.append(receipt['content'])
+        offset = receipt['next_offset']
+        if receipt['complete']:
+            break
+    delivered = json.loads(''.join(pages))
+    assert delivered['task'] == instructions
+    assert delivered['context']['controls']['goal'] == goal
+    assert delivered['context']['controls']['constraints']['result_schema'] == result_schema
+    assert delivered['required_outputs'] == config['required_outputs']
+    assert delivered['metrics_required_keys'] == result_schema['required']
+    session_messages(state, tmp_path, preview_hint)
+    assert state['context_management']['next_required'] is None
 
 
 def test_only_explicit_context_rejections_allow_bounded_smaller_requests(tmp_path):
@@ -119,6 +279,8 @@ def test_required_page_is_delivered_even_when_its_native_exchange_is_rebased(tmp
     task = 'Original required objective. ' * 2000
     state = {'messages': [{'role': 'system', 'content': 'policy'}, {'role': 'user', 'content': task}], 'transcript': []}
     pack_context(state, tmp_path, 8000)
+    reject_current_context(state)
+    pack_context(state, tmp_path, 8000)
     store = ContextStore(tmp_path)
     page = store.read(store.pending()['segment_id'], limit=6000)
     state['messages'].extend([
@@ -135,6 +297,8 @@ def test_required_page_is_delivered_even_when_its_native_exchange_is_rebased(tmp
 def test_provider_repacking_pages_withheld_controls_again_instead_of_losing_tail(tmp_path):
     state = {'messages': [{'role': 'system', 'content': 'policy'},
                           {'role': 'user', 'content': 'Required original text. ' * 4000}], 'transcript': []}
+    pack_context(state, tmp_path, 64000)
+    reject_current_context(state)
     pack_context(state, tmp_path, 64000)
     store = ContextStore(tmp_path)
     identifier = store.pending()['segment_id']

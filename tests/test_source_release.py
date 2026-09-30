@@ -55,6 +55,9 @@ def test_packaging_clis_share_public_allowlist_and_exclude_private_files(source_
         'docs/ACCEPTANCE.md', 'docs/QUALIFICATION_REPORT.md',
         'docs/RESEARCH_FINDINGS.md', 'docs/WRITING_REVIEW.md',
         'docs/FEATURES.md', 'docs/RUNTIME_UPGRADE.md',
+        'docs/PIPELINE_LIVE_VALIDATION.md',
+        'docs/research_tasks/notes.md',
+        'docs/research_tasks/example/nested/observations.json',
     ]
     for name in private_files:
         path = source_tree / name
@@ -121,6 +124,30 @@ def test_directory_export_matches_source_zip_and_preserves_source_modes(source_t
             assert (destination/name.removeprefix('forest/')).read_bytes()==archive.read(name)
     assert (destination/'scripts'/'run.sh').stat().st_mode & 0o111
     assert not (destination/'.git').exists()
+
+
+def test_directory_export_excludes_private_research_records_before_secret_scanning(source_tree,tmp_path):
+    private_files=[
+        'docs/PIPELINE_LIVE_VALIDATION.md',
+        'docs/research_tasks/notes.md',
+        'docs/research_tasks/example/nested/observations.json',
+    ]
+    for name in private_files:
+        path=source_tree/name
+        path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text('Private development record: '+'sk-'+'x'*32)
+    public_files=['docs/PUBLICATION_DELIVERY.md','docs/research_tasks-guide.md']
+    for name in public_files:
+        (source_tree/name).write_text('Public product guide\n')
+    destination=tmp_path/'github'
+    result=subprocess.run(
+        [sys.executable,str(source_tree/'scripts'/'package_source.py'),'--directory',str(destination)],
+        capture_output=True,text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert all(not (destination/name).exists() for name in private_files)
+    assert not (destination/'docs/research_tasks').exists()
+    assert all((destination/name).read_text()=='Public product guide\n' for name in public_files)
 
 
 def test_directory_export_rejects_existing_files_or_secrets_without_partial_output(source_tree,tmp_path):

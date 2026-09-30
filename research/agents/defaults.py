@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from .policy import ROLES, TOOLS, LEGACY_ROLE_INSTRUCTIONS
 
-TOOLSET_VERSION = 4
-VERSION_THREE_TOOLS = [tool for tool in TOOLS if tool != 'read_context_segment']
+TOOLSET_VERSION = 7
+VERSION_SIX_TOOLS = [tool for tool in TOOLS if tool not in ('figure_create','paper_generate')]
+VERSION_FOUR_TOOLS = [tool for tool in VERSION_SIX_TOOLS if tool not in ('literature_import','literature_read')]
+VERSION_THREE_TOOLS = [tool for tool in VERSION_FOUR_TOOLS if tool != 'read_context_segment']
 LEGACY_TOOLS = ['read_file', 'write_file', 'list_files', 'run_command', 'python',
                 'literature_search', 'graph_command', 'experiment_run', 'results',
                 'figure_render', 'paper_compile', 'context_update', 'theory_check', 'finish']
@@ -15,7 +17,8 @@ VERSION_TWO_TOOLS = ['read_file', 'write_file', 'list_files', 'run_command', 'py
 
 
 def default_config(role):
-    return {'builtin_role': role, 'builtin_toolset_version': TOOLSET_VERSION}
+    return {'builtin_role': role, 'builtin_toolset_version': TOOLSET_VERSION,
+            'publication_profile': {'id': 'full_submission'}}
 
 
 def upgrade_default_tools(agent):
@@ -33,10 +36,10 @@ def upgrade_default_tools(agent):
             agent.provider_id is not None or not agent.enabled):
         return False
     version = config.get('builtin_toolset_version')
-    versioned = config.get('builtin_role') == role and version in (1, 2, 3)
+    versioned = config.get('builtin_role') == role and version in (1, 2, 3, 4, 5, 6)
     if config and not versioned:
         return False
-    expected = VERSION_THREE_TOOLS if versioned and version == 3 else VERSION_TWO_TOOLS if versioned and version == 2 else LEGACY_TOOLS
+    expected = VERSION_SIX_TOOLS if versioned and version == 6 else VERSION_FOUR_TOOLS if versioned and version in (4,5) else VERSION_THREE_TOOLS if versioned and version == 3 else VERSION_TWO_TOOLS if versioned and version == 2 else LEGACY_TOOLS
     if list(agent.tools or []) != expected:
         return False
     agent.tools = list(TOOLS)

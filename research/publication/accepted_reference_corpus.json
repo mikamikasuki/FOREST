@@ -1,0 +1,2559 @@
+{
+  "schema_version": 1,
+  "checked_on": "2026-09-29",
+  "scope": "Accepted main-conference agent, scientific-experimentation, and tool-use papers from ICLR, ICML and NeurIPS.",
+  "measurement_contract": {
+    "counts": "Main-body numbered figures/tables only; multi-panel figures count once; references, supplements and appendices excluded. Page locations were checked against actual official PDFs.",
+    "unknown": "Unverified sample totals, repetitions and model counts are null or absent; never inferred from acceptance.",
+    "citation": "Official proceedings establish acceptance; PDF page locators support measurements. No acceptance guarantee follows from matching this corpus.",
+    "reuse": "Re-select topic-matched peers for each new project. These 16 references are an agent-research seed corpus, not a universal corpus for other scientific fields."
+  },
+  "papers": [
+    {
+      "id": "agentbench",
+      "title": "AgentBench: Evaluating LLMs as Agents",
+      "venue": "ICLR",
+      "year": 2024,
+      "official_url": "https://proceedings.iclr.cc/paper_files/paper/2024/hash/e9df36b21ff4ee211a8b71ee8b7e9f57-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.iclr.cc/paper_files/paper/2024/file/e9df36b21ff4ee211a8b71ee8b7e9f57-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.iclr.cc/paper_files/paper/2024/hash/e9df36b21ff4ee211a8b71ee8b7e9f57-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 58,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          1,
+          7
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 9,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 1,
+            "section": "abstract/introduction",
+            "function": "radar and model-score overview"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "environment coverage overview"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 8,
+            "section": "analysis",
+            "function": "code-training and alignment comparisons"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 3,
+            "section": "introduction",
+            "function": "model inventory"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 6,
+            "section": "experimental setup",
+            "function": "environment sizes and metrics"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 7,
+            "section": "main results",
+            "function": "full model-by-environment matrix"
+          },
+          {
+            "label": "Table 4",
+            "pdf_page": 8,
+            "section": "analysis",
+            "function": "execution outcome categories"
+          }
+        ],
+        "main_figure_count": 3,
+        "main_table_count": 4,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "Operating System",
+          "Database",
+          "Knowledge Graph",
+          "Digital Card Game",
+          "Lateral Thinking Puzzle",
+          "ALFWorld",
+          "WebShop",
+          "Mind2Web"
+        ],
+        "dataset_or_environment_count": 8,
+        "reported_instance_counts": [
+          {
+            "scope": "all evaluated models",
+            "value": 29,
+            "unit": "models",
+            "pdf_page": 1
+          }
+        ],
+        "backbone_model_count": 29,
+        "baseline_examples": [],
+        "independent_repetitions": null,
+        "ablation_axes": [],
+        "analysis_axes": [
+          "finish reasons",
+          "code training",
+          "alignment data"
+        ],
+        "evidence_pdf_pages": [
+          1,
+          3,
+          6,
+          7,
+          8
+        ]
+      },
+      "transferable_lesson": "Pair aggregate scores with the full environment matrix and execution-outcome analysis; disclose the normalization rule."
+    },
+    {
+      "id": "swebench",
+      "title": "SWE-bench: Can Language Models Resolve Real-world Github Issues?",
+      "venue": "ICLR",
+      "year": 2024,
+      "official_url": "https://proceedings.iclr.cc/paper_files/paper/2024/hash/edac78c3e300629acfe6cbe9ca88fb84-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.iclr.cc/paper_files/paper/2024/file/edac78c3e300629acfe6cbe9ca88fb84-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.iclr.cc/paper_files/paper/2024/hash/edac78c3e300629acfe6cbe9ca88fb84-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 51,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          1,
+          5
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 10,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 1,
+            "section": "introduction",
+            "function": "issue-to-patch evaluation overview"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 2,
+            "section": "benchmark construction",
+            "function": "task filtering pipeline"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 4,
+            "section": "dataset statistics",
+            "function": "repository distribution"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "per-repository resolve rates"
+          },
+          {
+            "label": "Figure 5",
+            "pdf_page": 6,
+            "section": "analysis",
+            "function": "length-dependent performance"
+          },
+          {
+            "label": "Figure 6",
+            "pdf_page": 8,
+            "section": "qualitative analysis",
+            "function": "patch and test outcome example"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 4,
+            "section": "dataset statistics",
+            "function": "task complexity statistics"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 5,
+            "section": "retrieval setup",
+            "function": "context-length comparison"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 5,
+            "section": "retrieval setup",
+            "function": "BM25 recall"
+          },
+          {
+            "label": "Table 4",
+            "pdf_page": 5,
+            "section": "model setup",
+            "function": "model context coverage"
+          },
+          {
+            "label": "Table 5",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "full main comparison"
+          },
+          {
+            "label": "Table 6",
+            "pdf_page": 6,
+            "section": "analysis",
+            "function": "fine-tuning comparison"
+          },
+          {
+            "label": "Table 7",
+            "pdf_page": 7,
+            "section": "analysis",
+            "function": "temporal split comparison"
+          },
+          {
+            "label": "Table 8",
+            "pdf_page": 7,
+            "section": "analysis",
+            "function": "edit complexity"
+          }
+        ],
+        "main_figure_count": 6,
+        "main_table_count": 8,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "SWE-bench"
+        ],
+        "dataset_or_environment_count": 1,
+        "reported_instance_counts": [
+          {
+            "scope": "test benchmark",
+            "value": 2294,
+            "unit": "issues",
+            "pdf_page": 1
+          },
+          {
+            "scope": "source repositories",
+            "value": 12,
+            "unit": "repositories",
+            "pdf_page": 1
+          }
+        ],
+        "backbone_model_count": 5,
+        "baseline_examples": [
+          "Claude 2",
+          "ChatGPT-3.5",
+          "GPT-4",
+          "SWE-Llama 7B",
+          "SWE-Llama 13B"
+        ],
+        "independent_repetitions": null,
+        "ablation_axes": [
+          "BM25 versus oracle context",
+          "context length",
+          "fine-tuning",
+          "patch versus file generation"
+        ],
+        "analysis_axes": [
+          "repository",
+          "issue date",
+          "input length",
+          "patch complexity"
+        ],
+        "evidence_pdf_pages": [
+          1,
+          4,
+          5,
+          6,
+          7,
+          8
+        ]
+      },
+      "transferable_lesson": "Use executable tests and repository-level breakdowns; oracle retrieval diagnoses localization rather than replacing realistic retrieval."
+    },
+    {
+      "id": "webarena",
+      "title": "WebArena: A Realistic Web Environment for Building Autonomous Agents",
+      "venue": "ICLR",
+      "year": 2024,
+      "official_url": "https://proceedings.iclr.cc/paper_files/paper/2024/hash/4410c0711e9154a7a2d26f9b3816d1ef-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.iclr.cc/paper_files/paper/2024/file/4410c0711e9154a7a2d26f9b3816d1ef-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.iclr.cc/paper_files/paper/2024/hash/4410c0711e9154a7a2d26f9b3816d1ef-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 22,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          8
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 9,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "environment and functional evaluation overview"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 3,
+            "section": "environment",
+            "function": "executed-task example"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 4,
+            "section": "interfaces",
+            "function": "observation formats"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 5,
+            "section": "interfaces",
+            "function": "action inventory"
+          },
+          {
+            "label": "Figure 5",
+            "pdf_page": 5,
+            "section": "task design",
+            "function": "intent categories"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 7,
+            "section": "evaluation",
+            "function": "functional scoring examples"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 8,
+            "section": "results",
+            "function": "prompt and human comparisons"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 8,
+            "section": "analysis",
+            "function": "template-level performance distribution"
+          },
+          {
+            "label": "Table 4",
+            "pdf_page": 9,
+            "section": "related work",
+            "function": "benchmark coverage comparison"
+          }
+        ],
+        "main_figure_count": 5,
+        "main_table_count": 4,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "WebArena"
+        ],
+        "dataset_or_environment_count": 1,
+        "reported_instance_counts": [
+          {
+            "scope": "benchmark",
+            "value": 812,
+            "unit": "tasks",
+            "pdf_page": 2
+          },
+          {
+            "scope": "task templates",
+            "value": 170,
+            "unit": "templates",
+            "pdf_page": 7
+          },
+          {
+            "scope": "human evaluation",
+            "value": 170,
+            "unit": "tasks",
+            "pdf_page": 7
+          }
+        ],
+        "backbone_model_count": 3,
+        "baseline_examples": [
+          "text-bison-001",
+          "GPT-3.5",
+          "GPT-4",
+          "human annotators"
+        ],
+        "independent_repetitions": null,
+        "ablation_axes": [
+          "chain of thought",
+          "unachievability hint"
+        ],
+        "analysis_axes": [
+          "template consistency",
+          "termination",
+          "functional correctness"
+        ],
+        "evidence_pdf_pages": [
+          2,
+          7,
+          8,
+          9
+        ]
+      },
+      "transferable_lesson": "Score task completion from application state; exact action-sequence matching misses alternative valid solutions."
+    },
+    {
+      "id": "sweagent",
+      "title": "SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering",
+      "venue": "NeurIPS",
+      "year": 2024,
+      "official_url": "https://proceedings.neurips.cc/paper_files/paper/2024/hash/5a7c947568c1b1328ccc5230172e1e7c-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.neurips.cc/paper_files/paper/2024/file/5a7c947568c1b1328ccc5230172e1e7c-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.neurips.cc/paper_files/paper/2024/hash/5a7c947568c1b1328ccc5230172e1e7c-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 125,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          1,
+          6
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 9,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 1,
+            "section": "introduction",
+            "function": "agent-computer interface overview"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 2,
+            "section": "motivation",
+            "function": "human versus agent interfaces"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 4,
+            "section": "method",
+            "function": "viewer and edit feedback"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "pass-at-k scaling"
+          },
+          {
+            "label": "Figure 5",
+            "pdf_page": 7,
+            "section": "ablation analysis",
+            "function": "search-interface comparison"
+          },
+          {
+            "label": "Figure 6",
+            "pdf_page": 7,
+            "section": "ablation analysis",
+            "function": "edit-interface comparison"
+          },
+          {
+            "label": "Figure 7",
+            "pdf_page": 8,
+            "section": "behavior analysis",
+            "function": "action frequency over time"
+          },
+          {
+            "label": "Figure 8",
+            "pdf_page": 8,
+            "section": "behavior analysis",
+            "function": "failure category distribution"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "SWE-bench full and Lite with cost"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "multilingual bug-fixing comparison"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 6,
+            "section": "ablation",
+            "function": "editor search viewer and context matrix"
+          }
+        ],
+        "main_figure_count": 8,
+        "main_table_count": 3,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "SWE-bench",
+          "SWE-bench Lite",
+          "HumanEvalFix"
+        ],
+        "dataset_or_environment_count": 3,
+        "reported_instance_counts": [
+          {
+            "scope": "SWE-bench full",
+            "value": 2294,
+            "unit": "issues",
+            "pdf_page": 37
+          },
+          {
+            "scope": "SWE-bench Lite",
+            "value": 300,
+            "unit": "issues",
+            "pdf_page": 37
+          },
+          {
+            "scope": "HumanEvalFix",
+            "value": 164,
+            "unit": "problems per language",
+            "pdf_page": 37
+          }
+        ],
+        "backbone_model_count": 2,
+        "baseline_examples": [
+          "retrieval generation",
+          "shell-only agent",
+          "CodeLLaMA-Instruct",
+          "GPT-4",
+          "DeepSeek-Coder",
+          "WaveCoder"
+        ],
+        "independent_repetitions": {
+          "count": 6,
+          "scope": "GPT-4 SWE-bench Lite runs",
+          "protocol": "independent runs and pass-at-k analysis",
+          "pdf_pages": [
+            6,
+            35
+          ]
+        },
+        "ablation_axes": [
+          "editor",
+          "linting",
+          "search",
+          "viewer window size",
+          "history context"
+        ],
+        "analysis_axes": [
+          "cost",
+          "action timing",
+          "failure categories"
+        ],
+        "evidence_pdf_pages": [
+          6,
+          7,
+          8,
+          35,
+          37
+        ]
+      },
+      "transferable_lesson": "Test interface components with the same backbone and tasks, then connect quantitative ablations to concrete action failures."
+    },
+    {
+      "id": "toolformer",
+      "title": "Toolformer: Language Models Can Teach Themselves to Use Tools",
+      "venue": "NeurIPS",
+      "year": 2023,
+      "official_url": "https://proceedings.neurips.cc/paper_files/paper/2023/hash/d842425e4bf79ba039352da0f658a906-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.neurips.cc/paper_files/paper/2023/file/d842425e4bf79ba039352da0f658a906-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.neurips.cc/paper_files/paper/2023/hash/d842425e4bf79ba039352da0f658a906-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 13,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          6
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 9,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "tool-use examples"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 2,
+            "section": "method",
+            "function": "self-supervised data construction"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 3,
+            "section": "method",
+            "function": "tool prompting example"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 8,
+            "section": "analysis",
+            "function": "model-size and API-use scaling"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 4,
+            "section": "tools",
+            "function": "API input and output examples"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 5,
+            "section": "data construction",
+            "function": "annotation-threshold counts"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "factual and arithmetic task matrix"
+          },
+          {
+            "label": "Table 4",
+            "pdf_page": 7,
+            "section": "results",
+            "function": "QA and temporal task matrix"
+          },
+          {
+            "label": "Table 5",
+            "pdf_page": 7,
+            "section": "results",
+            "function": "multilingual QA matrix"
+          }
+        ],
+        "main_figure_count": 4,
+        "main_table_count": 5,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "LAMA",
+          "ASDiv",
+          "SVAMP",
+          "MAWPS",
+          "WebQuestions",
+          "Natural Questions",
+          "TriviaQA",
+          "TEMPLAMA",
+          "DATESET",
+          "MLQA",
+          "WikiText",
+          "CCNet"
+        ],
+        "dataset_or_environment_count": 12,
+        "reported_instance_counts": [
+          {
+            "scope": "available tools",
+            "value": 5,
+            "unit": "tools",
+            "pdf_page": 4
+          },
+          {
+            "scope": "MLQA non-English conditions",
+            "value": 6,
+            "unit": "languages",
+            "pdf_page": 7
+          }
+        ],
+        "backbone_model_count": null,
+        "baseline_examples": [
+          "GPT-J",
+          "GPT-J plus CCNet",
+          "tool-disabled variant",
+          "OPT 66B",
+          "GPT-3 175B"
+        ],
+        "independent_repetitions": null,
+        "ablation_axes": [
+          "tool disabled",
+          "annotation threshold",
+          "model size",
+          "decoding tool threshold"
+        ],
+        "analysis_axes": [
+          "API usage",
+          "language modeling perplexity"
+        ],
+        "evidence_pdf_pages": [
+          4,
+          5,
+          6,
+          7,
+          8
+        ]
+      },
+      "transferable_lesson": "Separate additional training data from actual tool access, compare larger models, and evaluate core capabilities as well as tool-dependent gains."
+    },
+    {
+      "id": "tot",
+      "title": "Tree of Thoughts: Deliberate Problem Solving with Large Language Models",
+      "venue": "NeurIPS",
+      "year": 2023,
+      "official_url": "https://proceedings.neurips.cc/paper_files/paper/2023/hash/271db9922b8d1f4dd7aaef84ed5ac703-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.neurips.cc/paper_files/paper/2023/file/271db9922b8d1f4dd7aaef84ed5ac703-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.neurips.cc/paper_files/paper/2023/hash/271db9922b8d1f4dd7aaef84ed5ac703-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 14,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          6
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 9,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "reasoning architecture comparison"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 5,
+            "section": "method example",
+            "function": "search generation and scoring"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 6,
+            "section": "results analysis",
+            "function": "search-budget and error panels"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 7,
+            "section": "method example",
+            "function": "creative-writing search"
+          },
+          {
+            "label": "Figure 5",
+            "pdf_page": 7,
+            "section": "results",
+            "function": "automatic and human writing assessment"
+          },
+          {
+            "label": "Figure 6",
+            "pdf_page": 8,
+            "section": "analysis",
+            "function": "crossword search and ablation panels"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 5,
+            "section": "setup",
+            "function": "task and thought specification"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "Game of 24 comparison"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 7,
+            "section": "results",
+            "function": "crossword comparison"
+          }
+        ],
+        "main_figure_count": 6,
+        "main_table_count": 3,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "Game of 24",
+          "Creative Writing",
+          "Mini Crosswords"
+        ],
+        "dataset_or_environment_count": 3,
+        "reported_instance_counts": [
+          {
+            "scope": "Game of 24 evaluation",
+            "value": 100,
+            "unit": "puzzles",
+            "pdf_page": 5
+          },
+          {
+            "scope": "Creative Writing evaluation",
+            "value": 100,
+            "unit": "inputs",
+            "pdf_page": 6
+          },
+          {
+            "scope": "Mini Crosswords evaluation",
+            "value": 20,
+            "unit": "puzzles",
+            "pdf_page": 7
+          }
+        ],
+        "backbone_model_count": 1,
+        "baseline_examples": [
+          "input-output prompting",
+          "chain of thought",
+          "self-consistency",
+          "iterative refinement"
+        ],
+        "independent_repetitions": null,
+        "ablation_axes": [
+          "search breadth",
+          "state evaluation",
+          "backtracking"
+        ],
+        "analysis_axes": [
+          "nodes visited",
+          "failure stage",
+          "human preference",
+          "cost"
+        ],
+        "evidence_pdf_pages": [
+          5,
+          6,
+          7,
+          8,
+          14
+        ]
+      },
+      "transferable_lesson": "Compare reasoning methods at explicit search budgets and include failure-stage analysis; small task-specific studies do not justify broad end-to-end claims."
+    },
+    {
+      "id": "aflow",
+      "title": "AFlow: Automating Agentic Workflow Generation",
+      "venue": "ICLR",
+      "year": 2025,
+      "official_url": "https://proceedings.iclr.cc/paper_files/paper/2025/hash/5492ecbce4439401798dcd2c90be94cd-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.iclr.cc/paper_files/paper/2025/file/5492ecbce4439401798dcd2c90be94cd-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.iclr.cc/paper_files/paper/2025/hash/5492ecbce4439401798dcd2c90be94cd-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 38,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          8
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 10,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "six-benchmark performance overview"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 4,
+            "section": "method",
+            "function": "node operator edge specification"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 5,
+            "section": "method",
+            "function": "workflow search architecture"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 9,
+            "section": "analysis",
+            "function": "performance-cost Pareto frontier"
+          },
+          {
+            "label": "Figure 5",
+            "pdf_page": 10,
+            "section": "ablation",
+            "function": "validation and test search curves"
+          },
+          {
+            "label": "Figure 6",
+            "pdf_page": 10,
+            "section": "case study",
+            "function": "workflow search tree"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 8,
+            "section": "results",
+            "function": "six-benchmark method matrix"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 9,
+            "section": "transfer",
+            "function": "executor-model comparison"
+          }
+        ],
+        "main_figure_count": 6,
+        "main_table_count": 2,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "HotpotQA",
+          "DROP",
+          "HumanEval",
+          "MBPP",
+          "GSM8K",
+          "MATH level-5 subset"
+        ],
+        "dataset_or_environment_count": 6,
+        "reported_instance_counts": [
+          {
+            "scope": "HotpotQA before split",
+            "value": 1000,
+            "unit": "questions",
+            "pdf_page": 7
+          },
+          {
+            "scope": "DROP before split",
+            "value": 1000,
+            "unit": "questions",
+            "pdf_page": 7
+          },
+          {
+            "scope": "MATH subset before split",
+            "value": 617,
+            "unit": "problems",
+            "pdf_page": 8
+          }
+        ],
+        "backbone_model_count": 4,
+        "baseline_examples": [
+          "IO",
+          "CoT",
+          "CoT self-consistency",
+          "MedPrompt",
+          "MultiPersona Debate",
+          "Self-Refine",
+          "ADAS"
+        ],
+        "independent_repetitions": {
+          "count": 3,
+          "scope": "test evaluation",
+          "protocol": "mean of three tests; five validation executions per candidate",
+          "pdf_pages": [
+            7,
+            8,
+            9
+          ]
+        },
+        "ablation_axes": [
+          "operators"
+        ],
+        "analysis_axes": [
+          "validation versus test curves",
+          "cross-model transfer",
+          "token cost"
+        ],
+        "evidence_pdf_pages": [
+          7,
+          8,
+          9,
+          10
+        ]
+      },
+      "transferable_lesson": "Separate search validation from test data and report cost together with accuracy; workflow search needs transfer and operator ablation."
+    },
+    {
+      "id": "agentsquare",
+      "title": "AgentSquare: Automatic LLM Agent Search in Modular Design Space",
+      "venue": "ICLR",
+      "year": 2025,
+      "official_url": "https://proceedings.iclr.cc/paper_files/paper/2025/hash/0ae94013da7cd459402fd77874e09ee3-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.iclr.cc/paper_files/paper/2025/file/0ae94013da7cd459402fd77874e09ee3-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.iclr.cc/paper_files/paper/2025/hash/0ae94013da7cd459402fd77874e09ee3-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 25,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          7
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 10,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "modular-agent search overview"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 3,
+            "section": "method",
+            "function": "module interface and workflow"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 5,
+            "section": "method",
+            "function": "evolution and recombination architecture"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 8,
+            "section": "results",
+            "function": "search trajectories"
+          },
+          {
+            "label": "Figure 5",
+            "pdf_page": 9,
+            "section": "analysis",
+            "function": "predictor correlation"
+          },
+          {
+            "label": "Figure 6",
+            "pdf_page": 10,
+            "section": "case study",
+            "function": "discovered module"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 7,
+            "section": "results",
+            "function": "six-task comparison across baseline families"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 9,
+            "section": "ablation",
+            "function": "search-component removal matrix"
+          }
+        ],
+        "main_figure_count": 6,
+        "main_table_count": 2,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "WebShop",
+          "ALFWorld",
+          "ScienceWorld",
+          "M3ToolEval",
+          "TravelPlanner",
+          "PDDL"
+        ],
+        "dataset_or_environment_count": 6,
+        "reported_instance_counts": [],
+        "backbone_model_count": 2,
+        "baseline_examples": [
+          "CoT",
+          "CoT-SC",
+          "Self-Refine",
+          "ToT",
+          "Step Back",
+          "Thought Propagation",
+          "HuggingGPT",
+          "Voyager",
+          "Generative Agents",
+          "DEPS",
+          "OPENAGI",
+          "Dilu",
+          "random module search",
+          "Bayesian module search",
+          "OPRO",
+          "ADAS"
+        ],
+        "independent_repetitions": null,
+        "ablation_axes": [
+          "module evolution",
+          "module recombination",
+          "performance predictor"
+        ],
+        "analysis_axes": [
+          "search convergence",
+          "API cost",
+          "predicted versus measured scores"
+        ],
+        "evidence_pdf_pages": [
+          7,
+          8,
+          9,
+          10
+        ]
+      },
+      "transferable_lesson": "Include human-designed and automated-search baselines, and verify predictor quality against real evaluations rather than treating predictions as results."
+    },
+    {
+      "id": "metagpt",
+      "title": "MetaGPT: Meta Programming for A Multi-Agent Collaborative Framework",
+      "venue": "ICLR",
+      "year": 2024,
+      "official_url": "https://proceedings.iclr.cc/paper_files/paper/2024/hash/6507b115562bb0a305f1958ccc87355a-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.iclr.cc/paper_files/paper/2024/file/6507b115562bb0a305f1958ccc87355a-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.iclr.cc/paper_files/paper/2024/hash/6507b115562bb0a305f1958ccc87355a-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 29,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          9
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 9,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "role and SOP architecture"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 4,
+            "section": "method",
+            "function": "communication and execution feedback"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 5,
+            "section": "method",
+            "function": "software development stages"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 7,
+            "section": "results",
+            "function": "code benchmark comparison"
+          },
+          {
+            "label": "Figure 5",
+            "pdf_page": 8,
+            "section": "qualitative results",
+            "function": "software examples"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 8,
+            "section": "results",
+            "function": "development cost and code statistics"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 9,
+            "section": "comparison",
+            "function": "framework feature matrix"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 9,
+            "section": "ablation",
+            "function": "role combinations and execution quality"
+          }
+        ],
+        "main_figure_count": 5,
+        "main_table_count": 3,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "HumanEval",
+          "MBPP",
+          "SoftwareDev"
+        ],
+        "dataset_or_environment_count": 3,
+        "reported_instance_counts": [
+          {
+            "scope": "HumanEval",
+            "value": 164,
+            "unit": "problems",
+            "pdf_page": 7
+          },
+          {
+            "scope": "MBPP used subset",
+            "value": 427,
+            "unit": "problems",
+            "pdf_page": 7
+          },
+          {
+            "scope": "SoftwareDev inventory",
+            "value": 70,
+            "unit": "tasks",
+            "pdf_page": 7
+          },
+          {
+            "scope": "SoftwareDev main comparison",
+            "value": 7,
+            "unit": "tasks",
+            "pdf_page": 7
+          }
+        ],
+        "backbone_model_count": null,
+        "baseline_examples": [
+          "AutoGPT",
+          "LangChain",
+          "AgentVerse",
+          "ChatDev",
+          "GPT-4",
+          "CodeT"
+        ],
+        "independent_repetitions": null,
+        "ablation_axes": [
+          "agent roles",
+          "executable feedback"
+        ],
+        "analysis_axes": [
+          "executability",
+          "token cost",
+          "human revisions"
+        ],
+        "evidence_pdf_pages": [
+          7,
+          8,
+          9
+        ]
+      },
+      "transferable_lesson": "Report the evaluated subset separately from benchmark inventory; illustrate roles but support architectural claims with executable-feedback and role ablations."
+    },
+    {
+      "id": "dspy",
+      "title": "DSPy: Compiling Declarative Language Model Calls into State-of-the-Art Pipelines",
+      "venue": "ICLR",
+      "year": 2024,
+      "official_url": "https://proceedings.iclr.cc/paper_files/paper/2024/hash/f1cf02ce09757f57c3b93c0db83181e0-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.iclr.cc/paper_files/paper/2024/file/f1cf02ce09757f57c3b93c0db83181e0-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.iclr.cc/paper_files/paper/2024/hash/f1cf02ce09757f57c3b93c0db83181e0-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 31,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          7,
+          9
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 9,
+        "figures": [],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 7,
+            "section": "GSM8K case study",
+            "function": "program-by-compiler-by-model results"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 9,
+            "section": "HotpotQA case study",
+            "function": "answer and passage-retrieval results"
+          }
+        ],
+        "main_figure_count": 0,
+        "main_table_count": 2,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "GSM8K",
+          "HotpotQA"
+        ],
+        "dataset_or_environment_count": 2,
+        "reported_instance_counts": [
+          {
+            "scope": "GSM8K final test",
+            "value": 1319,
+            "unit": "questions",
+            "pdf_page": 6
+          },
+          {
+            "scope": "HotpotQA test sample",
+            "value": 1000,
+            "unit": "questions",
+            "pdf_page": 8
+          },
+          {
+            "scope": "each case-study train sample",
+            "value": 200,
+            "unit": "questions",
+            "pdf_page": 6
+          },
+          {
+            "scope": "each case-study dev sample",
+            "value": 300,
+            "unit": "questions",
+            "pdf_page": 6
+          }
+        ],
+        "backbone_model_count": null,
+        "baseline_examples": [
+          "vanilla prediction",
+          "CoT",
+          "thought reflection",
+          "CoT RAG",
+          "ReAct",
+          "multihop retrieval"
+        ],
+        "independent_repetitions": null,
+        "ablation_axes": [
+          "compilation strategy",
+          "program structure",
+          "backbone model"
+        ],
+        "analysis_axes": [
+          "train-dev-test separation",
+          "retrieval versus answer accuracy"
+        ],
+        "evidence_pdf_pages": [
+          6,
+          7,
+          8,
+          9
+        ]
+      },
+      "transferable_lesson": "Complete factorial result tables can carry the evidence without numbered main-body figures; figures are selected for explanatory value, not quota."
+    },
+    {
+      "id": "reflexion",
+      "title": "Reflexion: Language Agents with Verbal Reinforcement Learning",
+      "venue": "NeurIPS",
+      "year": 2023,
+      "official_url": "https://proceedings.neurips.cc/paper_files/paper/2023/hash/1b44b878bb782e6954cd888628510e90-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.neurips.cc/paper_files/paper/2023/file/1b44b878bb782e6954cd888628510e90-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.neurips.cc/paper_files/paper/2023/hash/1b44b878bb782e6954cd888628510e90-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 19,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          8
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 9,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "cross-task feedback overview"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 4,
+            "section": "method",
+            "function": "actor evaluator and reflection loop"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "ALFWorld learning and failure panels"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "HotpotQA learning and memory ablation"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 7,
+            "section": "results",
+            "function": "code benchmark and language comparison"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 8,
+            "section": "analysis",
+            "function": "test-generation confusion rates"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 8,
+            "section": "ablation",
+            "function": "testing and reflection removal"
+          }
+        ],
+        "main_figure_count": 4,
+        "main_table_count": 3,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "ALFWorld",
+          "HotpotQA",
+          "HumanEval",
+          "MBPP",
+          "LeetcodeHardGym"
+        ],
+        "dataset_or_environment_count": 5,
+        "reported_instance_counts": [
+          {
+            "scope": "ALFWorld",
+            "value": 134,
+            "unit": "tasks",
+            "pdf_page": 6
+          },
+          {
+            "scope": "HotpotQA evaluation",
+            "value": 100,
+            "unit": "questions",
+            "pdf_page": 6
+          },
+          {
+            "scope": "LeetcodeHardGym",
+            "value": 40,
+            "unit": "problems",
+            "pdf_page": 7
+          },
+          {
+            "scope": "HumanEval Rust ablation",
+            "value": 50,
+            "unit": "problems",
+            "pdf_page": 8
+          }
+        ],
+        "backbone_model_count": null,
+        "baseline_examples": [
+          "ReAct",
+          "CoT",
+          "ground-truth-context CoT",
+          "GPT-4"
+        ],
+        "independent_repetitions": null,
+        "ablation_axes": [
+          "episodic memory",
+          "reflection",
+          "test generation"
+        ],
+        "analysis_axes": [
+          "retry curves",
+          "failure modes",
+          "false positive and false negative tests"
+        ],
+        "evidence_pdf_pages": [
+          6,
+          7,
+          8
+        ]
+      },
+      "transferable_lesson": "Test-generated feedback must be audited against independent ground truth; passing an agent-authored test alone is insufficient evidence of correctness."
+    },
+    {
+      "id": "webshop",
+      "title": "WebShop: Towards Scalable Real-World Web Interaction with Grounded Language Agents",
+      "venue": "NeurIPS",
+      "year": 2022,
+      "official_url": "https://proceedings.neurips.cc/paper_files/paper/2022/hash/82ad13ec01f9fe44c01cb91814fd7b8c-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.neurips.cc/paper_files/paper/2022/file/82ad13ec01f9fe44c01cb91814fd7b8c-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.neurips.cc/paper_files/paper/2022/hash/82ad13ec01f9fe44c01cb91814fd7b8c-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 14,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          8
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 10,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "shopping environment and trajectory"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 4,
+            "section": "data analysis",
+            "function": "search rank versus product popularity"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 6,
+            "section": "method",
+            "function": "multimodal policy architecture"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 8,
+            "section": "results",
+            "function": "model ablations and human performance"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 4,
+            "section": "interfaces",
+            "function": "action specification"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 8,
+            "section": "analysis",
+            "function": "reward breakdown and trajectory statistics"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 9,
+            "section": "qualitative analysis",
+            "function": "human and agent trajectories"
+          },
+          {
+            "label": "Table 4",
+            "pdf_page": 9,
+            "section": "diagnosis",
+            "function": "oracle action comparison"
+          },
+          {
+            "label": "Table 5",
+            "pdf_page": 10,
+            "section": "transfer",
+            "function": "real-site transfer comparison"
+          }
+        ],
+        "main_figure_count": 4,
+        "main_table_count": 5,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "WebShop",
+          "Amazon transfer",
+          "eBay transfer"
+        ],
+        "dataset_or_environment_count": 3,
+        "reported_instance_counts": [
+          {
+            "scope": "product inventory",
+            "value": 1181436,
+            "unit": "products",
+            "pdf_page": 5
+          },
+          {
+            "scope": "instruction inventory",
+            "value": 12087,
+            "unit": "instructions",
+            "pdf_page": 5
+          },
+          {
+            "scope": "real-site transfer",
+            "value": 100,
+            "unit": "test instructions",
+            "pdf_page": 10
+          }
+        ],
+        "backbone_model_count": null,
+        "baseline_examples": [
+          "rule policy",
+          "imitation learning",
+          "reinforcement learning",
+          "human workers"
+        ],
+        "independent_repetitions": {
+          "count": 3,
+          "scope": "test evaluation",
+          "protocol": "three trials in main result figure",
+          "pdf_pages": [
+            8
+          ]
+        },
+        "ablation_axes": [
+          "pretraining",
+          "search generation",
+          "choice policy",
+          "RL initialization"
+        ],
+        "analysis_axes": [
+          "reward components",
+          "human trajectories",
+          "oracle actions",
+          "real-site transfer"
+        ],
+        "evidence_pdf_pages": [
+          5,
+          8,
+          9,
+          10
+        ]
+      },
+      "transferable_lesson": "Show corpus scale and evaluated conditions separately; component metrics and human comparisons diagnose which part of an interactive task improves."
+    },
+    {
+      "id": "mlagentbench",
+      "title": "MLAgentBench: Evaluating Language Agents on Machine Learning Experimentation",
+      "venue": "ICML",
+      "year": 2024,
+      "official_url": "https://proceedings.mlr.press/v235/huang24y.html",
+      "pdf_url": "https://raw.githubusercontent.com/mlresearch/v235/main/assets/huang24y/huang24y.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.mlr.press/v235/huang24y.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 39,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          7
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 9,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "ML experimentation environment"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 5,
+            "section": "method",
+            "function": "agent state and prompting architecture"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 7,
+            "section": "analysis",
+            "function": "quality over action steps"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 9,
+            "section": "qualitative analysis",
+            "function": "executed experiment trace"
+          },
+          {
+            "label": "Figure 5",
+            "pdf_page": 9,
+            "section": "analysis",
+            "function": "failure-category distribution"
+          },
+          {
+            "label": "Figure 6",
+            "pdf_page": 9,
+            "section": "analysis",
+            "function": "execution and token efficiency"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 3,
+            "section": "interfaces",
+            "function": "actions and side effects"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 4,
+            "section": "setup",
+            "function": "task coverage and scoring metrics"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 7,
+            "section": "results",
+            "function": "13-task seven-model success matrix"
+          },
+          {
+            "label": "Table 4",
+            "pdf_page": 8,
+            "section": "results",
+            "function": "performance improvements by task"
+          }
+        ],
+        "main_figure_count": 6,
+        "main_table_count": 4,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "CIFAR-10",
+          "IMDB",
+          "ogbn-arxiv",
+          "house-price",
+          "spaceship-titanic",
+          "parkinsons-disease",
+          "fathomnet",
+          "feedback",
+          "identify-contrails",
+          "llama-inference",
+          "vectorization",
+          "CLRS",
+          "BabyLM"
+        ],
+        "dataset_or_environment_count": 13,
+        "reported_instance_counts": [
+          {
+            "scope": "benchmark",
+            "value": 13,
+            "unit": "tasks",
+            "pdf_page": 2
+          }
+        ],
+        "backbone_model_count": 7,
+        "baseline_examples": [
+          "AutoGPT",
+          "LangChain ReAct",
+          "starter-code baselines"
+        ],
+        "independent_repetitions": {
+          "count": 8,
+          "scope": "each evaluated agent",
+          "protocol": "eight runs, bounded by action and time budgets",
+          "pdf_pages": [
+            6,
+            7
+          ]
+        },
+        "ablation_axes": [],
+        "analysis_axes": [
+          "performance over time",
+          "planning failures",
+          "hallucinated progress",
+          "token and runtime efficiency"
+        ],
+        "evidence_pdf_pages": [
+          2,
+          4,
+          6,
+          7,
+          8,
+          9,
+          15
+        ]
+      },
+      "transferable_lesson": "Distinguish a claimed improvement from an executed measured improvement, and evaluate intermediate regressions as well as final submissions."
+    },
+    {
+      "id": "rag",
+      "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+      "venue": "NeurIPS",
+      "year": 2020,
+      "official_url": "https://proceedings.neurips.cc/paper_files/paper/2020/hash/6b493230205f780e1bc26945df7481e5-Abstract.html",
+      "pdf_url": "https://proceedings.neurips.cc/paper_files/paper/2020/file/6b493230205f780e1bc26945df7481e5-Paper.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.neurips.cc/paper_files/paper/2020/hash/6b493230205f780e1bc26945df7481e5-Abstract.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 16,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          8
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 9,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "retriever and generator architecture"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 7,
+            "section": "analysis",
+            "function": "token-document posterior visualization"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 8,
+            "section": "analysis",
+            "function": "retrieval-depth sensitivity panels"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "open-domain QA comparison"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "generation and verification comparison"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 7,
+            "section": "qualitative results",
+            "function": "generated examples"
+          },
+          {
+            "label": "Table 4",
+            "pdf_page": 8,
+            "section": "human evaluation",
+            "function": "factuality and specificity preferences"
+          },
+          {
+            "label": "Table 5",
+            "pdf_page": 8,
+            "section": "analysis",
+            "function": "generation diversity"
+          },
+          {
+            "label": "Table 6",
+            "pdf_page": 8,
+            "section": "ablation",
+            "function": "retriever and generator alternatives"
+          }
+        ],
+        "main_figure_count": 3,
+        "main_table_count": 6,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "Natural Questions",
+          "TriviaQA",
+          "WebQuestions",
+          "CuratedTrec",
+          "MSMARCO NLG",
+          "Jeopardy generation",
+          "FEVER"
+        ],
+        "dataset_or_environment_count": 7,
+        "reported_instance_counts": [
+          {
+            "scope": "retrieval index",
+            "value": 21000000,
+            "unit": "100-word passages",
+            "pdf_page": 4
+          },
+          {
+            "scope": "Jeopardy test",
+            "value": 27000,
+            "unit": "examples",
+            "pdf_page": 5
+          }
+        ],
+        "backbone_model_count": null,
+        "baseline_examples": [
+          "DPR",
+          "T5",
+          "BART",
+          "BM25 retrieval",
+          "non-fine-tuned retriever"
+        ],
+        "independent_repetitions": null,
+        "ablation_axes": [
+          "retriever training",
+          "sequence versus token retrieval",
+          "retrieved document count"
+        ],
+        "analysis_axes": [
+          "human factuality",
+          "specificity",
+          "diversity",
+          "memory replacement"
+        ],
+        "evidence_pdf_pages": [
+          4,
+          5,
+          6,
+          7,
+          8
+        ]
+      },
+      "transferable_lesson": "Support the mechanism with posterior and retrieval-depth analysis while retaining full quantitative comparisons and human factuality checks."
+    },
+    {
+      "id": "scienceagentbench",
+      "title": "ScienceAgentBench: Toward Rigorous Assessment of Language Agents for Data-Driven Scientific Discovery",
+      "venue": "ICLR",
+      "year": 2025,
+      "official_url": "https://proceedings.iclr.cc/paper_files/paper/2025/hash/f12b4df26344f3be803c06b555252efe-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.iclr.cc/paper_files/paper/2025/file/f12b4df26344f3be803c06b555252efe-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.iclr.cc/paper_files/paper/2025/hash/f12b4df26344f3be803c06b555252efe-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 57,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          8
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 10,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "scientific task and data coverage"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 3,
+            "section": "benchmark design",
+            "function": "scientific task specification example"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 9,
+            "section": "analysis",
+            "function": "program complexity and expert knowledge effects"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 10,
+            "section": "human evaluation",
+            "function": "rubric-based program scores"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 5,
+            "section": "evaluation",
+            "function": "task-specific success criteria"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 6,
+            "section": "comparison",
+            "function": "scientific benchmark coverage"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 8,
+            "section": "results",
+            "function": "model-by-framework-by-knowledge matrix"
+          }
+        ],
+        "main_figure_count": 4,
+        "main_table_count": 3,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "Bioinformatics",
+          "Computational Chemistry",
+          "Geographical Information Science",
+          "Psychology and Cognitive Neuroscience"
+        ],
+        "dataset_or_environment_count": 4,
+        "reported_instance_counts": [
+          {
+            "scope": "benchmark",
+            "value": 102,
+            "unit": "tasks",
+            "pdf_page": 1
+          },
+          {
+            "scope": "source corpus",
+            "value": 44,
+            "unit": "peer-reviewed publications",
+            "pdf_page": 1
+          },
+          {
+            "scope": "expert validation",
+            "value": 9,
+            "unit": "experts",
+            "pdf_page": 1
+          }
+        ],
+        "backbone_model_count": 5,
+        "baseline_examples": [
+          "direct prompting",
+          "OpenHands CodeAct",
+          "self-debug"
+        ],
+        "independent_repetitions": {
+          "count": 3,
+          "scope": "each task and configuration",
+          "protocol": "best-of-three selected by task success, execution, code score and cost; mean and SD also in appendix",
+          "pdf_pages": [
+            7,
+            27
+          ]
+        },
+        "ablation_axes": [
+          "expert-provided knowledge"
+        ],
+        "analysis_axes": [
+          "execution validity",
+          "task correctness",
+          "code quality",
+          "cost",
+          "human program assessment"
+        ],
+        "evidence_pdf_pages": [
+          1,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ]
+      },
+      "transferable_lesson": "Assess code, execution, scientific task success, and human-quality criteria separately; an LLM paper review score cannot replace task-level validation."
+    },
+    {
+      "id": "mlebench",
+      "title": "MLE-bench: Evaluating Machine Learning Agents on Machine Learning Engineering",
+      "venue": "ICLR",
+      "year": 2025,
+      "official_url": "https://proceedings.iclr.cc/paper_files/paper/2025/hash/7e3767db483c942b883eb4f8cfb74e31-Abstract-Conference.html",
+      "pdf_url": "https://proceedings.iclr.cc/paper_files/paper/2025/file/7e3767db483c942b883eb4f8cfb74e31-Paper-Conference.pdf",
+      "acceptance_evidence": {
+        "kind": "official_proceedings_record",
+        "url": "https://proceedings.iclr.cc/paper_files/paper/2025/hash/7e3767db483c942b883eb4f8cfb74e31-Abstract-Conference.html",
+        "status": "accepted_conference_paper",
+        "checked_on": "2026-09-29",
+        "verified": true,
+        "http_status": 200,
+        "title_match": true,
+        "venue_match": true
+      },
+      "verification": {
+        "text_source": "downloaded_official_full_pdf",
+        "layout_source": "PDF text plus rendered representative method and results pages",
+        "pdf_pages": 29,
+        "measurement_status": "REPORTED",
+        "unknown_policy": "null means not verified, not zero",
+        "visually_reviewed_pdf_pages": [
+          2,
+          6
+        ]
+      },
+      "layout": {
+        "page_number_basis": "1-based PDF page",
+        "main_body_end_pdf_page": 10,
+        "figures": [
+          {
+            "label": "Figure 1",
+            "pdf_page": 2,
+            "section": "introduction",
+            "function": "competition and grader architecture"
+          },
+          {
+            "label": "Figure 2",
+            "pdf_page": 3,
+            "section": "agent examples",
+            "function": "real execution trajectories"
+          },
+          {
+            "label": "Figure 3",
+            "pdf_page": 7,
+            "section": "scaling",
+            "function": "pass-at-k versus attempts"
+          },
+          {
+            "label": "Figure 4",
+            "pdf_page": 8,
+            "section": "scaling",
+            "function": "runtime budget effect"
+          },
+          {
+            "label": "Figure 5",
+            "pdf_page": 8,
+            "section": "analysis",
+            "function": "competition familiarity versus performance"
+          }
+        ],
+        "tables": [
+          {
+            "label": "Table 1",
+            "pdf_page": 4,
+            "section": "scoring",
+            "function": "human medal thresholds"
+          },
+          {
+            "label": "Table 2",
+            "pdf_page": 6,
+            "section": "results",
+            "function": "scaffold and backbone matrix with uncertainty"
+          },
+          {
+            "label": "Table 3",
+            "pdf_page": 7,
+            "section": "scaling",
+            "function": "hardware configurations"
+          },
+          {
+            "label": "Table 4",
+            "pdf_page": 9,
+            "section": "contamination analysis",
+            "function": "plagiarism-condition comparison"
+          }
+        ],
+        "main_figure_count": 5,
+        "main_table_count": 4,
+        "appendix_included_in_counts": false
+      },
+      "experiments": {
+        "datasets_or_environments": [
+          "MLE-bench"
+        ],
+        "dataset_or_environment_count": 1,
+        "reported_instance_counts": [
+          {
+            "scope": "benchmark",
+            "value": 75,
+            "unit": "Kaggle competitions",
+            "pdf_page": 1
+          },
+          {
+            "scope": "task taxonomy",
+            "value": 15,
+            "unit": "problem categories",
+            "pdf_page": 14
+          }
+        ],
+        "backbone_model_count": 4,
+        "baseline_examples": [
+          "AIDE",
+          "MLAB",
+          "OpenHands",
+          "Kaggle leaderboard human baselines"
+        ],
+        "independent_repetitions": {
+          "count": 3,
+          "scope": "most main configurations",
+          "protocol": "o1-preview AIDE uses 16 seeds; GPT-4o AIDE uses 36; report mean and standard error",
+          "pdf_pages": [
+            6
+          ]
+        },
+        "ablation_axes": [
+          "agent scaffold",
+          "hardware",
+          "runtime",
+          "attempt count",
+          "contamination conditions"
+        ],
+        "analysis_axes": [
+          "human medal thresholds",
+          "resource scaling",
+          "per-task outcomes",
+          "competition familiarity"
+        ],
+        "evidence_pdf_pages": [
+          1,
+          6,
+          7,
+          8,
+          9,
+          14
+        ]
+      },
+      "transferable_lesson": "Treat compute, runtime, and attempt count as evaluation variables; report uncertainty and compare with real human leaderboard thresholds."
+    }
+  ],
+  "review_rubric": [
+    {
+      "id": "reference_fit",
+      "requirement": "Verify at least 15 accepted, topic-matched primary papers and read their full text before finalizing the experiment and visual plans.",
+      "evidence_required": [
+        "official acceptance record",
+        "full-text reading record",
+        "experiment and visual comparison matrix"
+      ],
+      "failure": "Preprints, workshops or title-only search results are counted as accepted main-conference peers."
+    },
+    {
+      "id": "claim_evidence",
+      "requirement": "Bind every principal claim to executed measurements and an experiment with a clear argumentative duty.",
+      "evidence_required": [
+        "task-specific success criterion",
+        "raw observations",
+        "execution receipts",
+        "claim-to-result mapping"
+      ],
+      "failure": "A planner prediction, model-written number, synthetic replacement, or passing self-authored test is presented as an observed result."
+    },
+    {
+      "id": "evaluation_scale",
+      "requirement": "Evaluate full relevant test splits or a justified prespecified sample with uncertainty; compare scale to the closest peers and expand evidence where generality claims require it.",
+      "evidence_required": [
+        "dataset provenance",
+        "split and unit of analysis",
+        "sample counts",
+        "peer-relative coverage rationale"
+      ],
+      "failure": "A few convenient examples or a tiny plotted sample substitutes for the primary evaluation."
+    },
+    {
+      "id": "baseline_fairness",
+      "requirement": "Include the strongest relevant competing methods and simple diagnostic baselines under comparable data, model, budget and evaluator conditions.",
+      "evidence_required": [
+        "baseline selection rationale",
+        "reported-versus-reproduced labels",
+        "matched conditions",
+        "cost and resource accounting"
+      ],
+      "failure": "Only weak baselines or unmarked copied scores support the central advantage."
+    },
+    {
+      "id": "mechanism_and_robustness",
+      "requirement": "Remove each claimed mechanism, test meaningful operating conditions, and resolve alternative explanations.",
+      "evidence_required": [
+        "component ablations",
+        "sensitivity or subgroup analysis",
+        "generalization or transfer when claimed",
+        "negative-result accounting"
+      ],
+      "failure": "An architecture diagram is treated as proof of the mechanism, or inconvenient observations are omitted from the scientific record."
+    },
+    {
+      "id": "uncertainty",
+      "requirement": "Use independent repetitions where stochastic variation affects conclusions; report denominators, dispersion or confidence intervals and paired comparisons where applicable.",
+      "evidence_required": [
+        "seed or run identifiers",
+        "aggregation protocol",
+        "mean and variability",
+        "unit of independence"
+      ],
+      "failure": "Repeated adaptive retries are called independent seeds or best-of-k results are compared with pass-at-one without labeling."
+    },
+    {
+      "id": "visual_semantics",
+      "requirement": "Choose diagrams, plots and tables according to their explanatory duty and data structure; analytical charts must be produced from observed data.",
+      "evidence_required": [
+        "figure purpose",
+        "data binding",
+        "units and legend",
+        "aggregation and uncertainty",
+        "caption explaining the scientific inference"
+      ],
+      "failure": "Decorative generated images impersonate measurements, or several isolated points are expanded into redundant charts."
+    },
+    {
+      "id": "scientific_visual_narrative",
+      "requirement": "Default architecture figures explain a grounded problem bottleneck, the specific mechanism or information-flow intervention, and an evidence-supported consequence or visibly labeled testable expectation. Explicit simple-method requests retain their supplied topology without fabricated scientific claims.",
+      "evidence_required": [
+        "problem and mechanism evidence identities",
+        "specific intervention and labeled information dependencies",
+        "actual input, output and operating boundary",
+        "measured consequence binding or explicit hypothesis and discriminating test",
+        "baseline identity and neutral structure or actual limitation evidence",
+        "candidate-specific scientific, visual and editorial reviews at final print size"
+      ],
+      "failure": "A generic module directory passes as an explanatory scientific architecture, a causal arrow is claimed as empirical proof, or a baseline failure/winning outcome is invented to improve the picture."
+    },
+    {
+      "id": "placement",
+      "requirement": "Place the overview beside the introduced method or problem; place each result visual next to its first substantive discussion and cite it in the text.",
+      "evidence_required": [
+        "stable visual identifier",
+        "section and paragraph anchor",
+        "in-text reference",
+        "rendered page audit"
+      ],
+      "failure": "Visuals collect at the manuscript end, move before their premise, or captions and references become detached."
+    },
+    {
+      "id": "independent_visual_review",
+      "requirement": "Have separate reviewers inspect scientific fidelity, quantitative analysis, comparative information value, and rendered layout before selecting final candidates.",
+      "evidence_required": [
+        "candidate-specific reviewer scores and rationale",
+        "evidence bindings",
+        "selected candidate",
+        "placement decision",
+        "rendered confirmation"
+      ],
+      "failure": "The image generator self-approves without a data or layout audit."
+    },
+    {
+      "id": "bounded_iteration",
+      "requirement": "Repeat benchmark comparison, experiment repair, manuscript revision and rendered review until concrete acceptance criteria pass or the authorized resource budget is exhausted.",
+      "evidence_required": [
+        "criterion-level gaps",
+        "targeted repairs",
+        "actual rerun outcomes",
+        "budget status"
+      ],
+      "failure": "A time, money or infrastructure stop is silently reported as meeting the scientific delivery requirements."
+    }
+  ],
+  "comparison_summary": {
+    "paper_count": 16,
+    "main_figure_counts": [
+      3,
+      6,
+      5,
+      8,
+      4,
+      6,
+      6,
+      6,
+      5,
+      0,
+      4,
+      4,
+      6,
+      3,
+      4,
+      5
+    ],
+    "main_table_counts": [
+      4,
+      8,
+      4,
+      3,
+      5,
+      3,
+      2,
+      2,
+      3,
+      2,
+      3,
+      5,
+      4,
+      6,
+      3,
+      4
+    ],
+    "main_body_page_counts": [
+      9,
+      10,
+      9,
+      9,
+      9,
+      9,
+      10,
+      10,
+      9,
+      9,
+      9,
+      10,
+      9,
+      9,
+      10,
+      10
+    ],
+    "figure_median": 5.0,
+    "table_median": 3.5,
+    "interpretation": "Descriptive context only. Count matching is not a gate or proof of scientific quality."
+  }
+}

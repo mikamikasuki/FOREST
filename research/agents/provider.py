@@ -253,7 +253,8 @@ class ModelClient:
             raise ProviderError('Maximum output tokens must be positive', code='configuration')
         plain = [{'role': m['role'], 'content': m['content']} for m in messages]
         if self.api == 'ollama':
-            payload = {'model': model, 'messages': plain, 'stream': False, 'options': {
+            ollama_messages = [{**m, **({'images': messages[index]['images']} if messages[index].get('images') else {})} for index, m in enumerate(plain)]
+            payload = {'model': model, 'messages': ollama_messages, 'stream': False, 'options': {
                 'temperature': cfg.get('temperature', .2), 'num_predict': maximum, 'num_ctx': cfg.get('context_length', 8192)}}
             if json_mode:
                 payload['format'] = 'json'

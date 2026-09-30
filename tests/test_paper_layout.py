@@ -142,3 +142,32 @@ def test_ambiguous_line_and_calibration_groups_are_not_silently_pooled(tmp_path)
           for dataset in ('first','second') for label in (0,1)]
     with pytest.raises(ValueError,match='pooling_scope'):
         render_figure(tmp_path/'calibration',rows,{},'calibration')
+
+
+def test_real_delayed_float_is_repaired_from_actual_compiled_pages(tmp_path):
+    # Earlier queued floats occupy successive pages. The final small visual
+    # initially lands several pages after its argument; no mocked compiler.
+    source = r"""\documentclass{article}
+\usepackage{graphicx,flafter,placeins}
+\begin{document}
+Queued large actual layout panels.
+"""
+    for index in range(3):
+        source += r"\begin{figure}[p]\centering\rule{9cm}{18cm}\caption{Layout panel}" + r"\label{fig:queued" + str(index) + r"}\end{figure}" + '\n'
+    source += r"\label{argument:target}This paragraph motivates Figure~\ref{fig:target}." + '\n'
+    source += r"% FOREST visual anchor fig:target argument:target" + '\n'
+    source += r"\begin{figure}[p]\centering\rule{9cm}{2cm}\caption{Target layout panel}\label{fig:target}\end{figure}" + '\n'
+    source += r"\end{document}"
+    (tmp_path/'paper.tex').write_text(source)
+    first=compile_paper(tmp_path)
+    if first['status']=='unavailable':pytest.skip('Actual TeX compiler required')
+    assert first['status']=='completed'
+    assert first['preflight']['visual_placements'][0]['page_distance']>1
+    repaired=compile_paper(tmp_path,repair_layout=True)
+    assert repaired['status']=='completed'
+    assert repaired['preflight']['visual_placements'][0]['page_distance']<=1
+    assert repaired['layout_repair_attempts']==1
+    assert (tmp_path/'layout_repairs/attempt-1-before.tex').read_text()==source
+    current=(tmp_path/'paper.tex').read_text()
+    assert current.count('FOREST placement repair before argument:target')==1
+    assert source.count('\\caption')==current.count('\\caption')

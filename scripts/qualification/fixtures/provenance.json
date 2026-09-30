@@ -5,9 +5,9 @@
   "split": "train_test_split, test_size=0.25, random_state=19, stratify=labels",
   "runs": {
     "long17": {
-      "run_id": "2bc0ab7c-d74f-4ab0-a2f1-69440b3250a2",
-      "project_id": "988df481-e1e8-4b12-aa01-86cb7048a8ab",
-      "source_path": "var/projects/988df481-e1e8-4b12-aa01-86cb7048a8ab/runs/2bc0ab7c-d74f-4ab0-a2f1-69440b3250a2/workspace/predictions.csv",
+      "run_id": "fixture-long17",
+      "project_id": "fixture-digits",
+      "source_path": "long17.csv",
       "metrics": {
         "dataset": "sklearn_digits",
         "seed": 17,
@@ -21,9 +21,9 @@
       }
     },
     "short18": {
-      "run_id": "7189edd7-41e2-4ecb-b607-89db63183f56",
-      "project_id": "988df481-e1e8-4b12-aa01-86cb7048a8ab",
-      "source_path": "var/projects/988df481-e1e8-4b12-aa01-86cb7048a8ab/runs/7189edd7-41e2-4ecb-b607-89db63183f56/workspace/predictions.csv",
+      "run_id": "fixture-short18",
+      "project_id": "fixture-digits",
+      "source_path": "short18.csv",
       "metrics": {
         "dataset": "sklearn_digits",
         "seed": 18,
@@ -37,9 +37,9 @@
       }
     },
     "short19": {
-      "run_id": "03a3ca3f-d5b8-4b2e-85ee-4aac65926027",
-      "project_id": "988df481-e1e8-4b12-aa01-86cb7048a8ab",
-      "source_path": "var/projects/988df481-e1e8-4b12-aa01-86cb7048a8ab/runs/03a3ca3f-d5b8-4b2e-85ee-4aac65926027/workspace/predictions.csv",
+      "run_id": "fixture-short19",
+      "project_id": "fixture-digits",
+      "source_path": "short19.csv",
       "metrics": {
         "dataset": "sklearn_digits",
         "seed": 19,
@@ -53,5 +53,6 @@
       }
     }
   },
-  "limitations": "Same held-out observations. Short runs have equal epoch counts but different random seeds and regularization. The long run has a different compute budget. These are runtime qualification runs, not a controlled scientific comparison or novelty evidence."
+  "limitations": "Same held-out observations. Short runs have equal epoch counts but different random seeds and regularization. The long run has a different compute budget. These are runtime qualification runs, not a controlled scientific comparison or novelty evidence.",
+  "identity_policy": "Original local project and run identities are anonymized; public prediction rows and measured values are unchanged."
 }

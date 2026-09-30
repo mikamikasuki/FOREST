@@ -118,7 +118,20 @@ def test_all_task_controls_fit_actual_runtime_context_builder(tmp_path):
         g={'nodes':[{'id':'task','branch_id':'branch','title':task.id,'instructions':instructions,'config':{'kind':'agent'}}], 'branches':[{'id':'branch','workspace':'workspace'}], 'edges':[], 'goal':'Complete bounded executable qualification with actual artifacts.', 'budget':{'allow_paid':False}}
         packet=ContextBuilder(g,tmp_path).build('task','Engineer',{'max_chars':capacity})
         assert packet['controls']['instructions']==instructions
-        assert packet['capacity']['used_content_chars']<=capacity
+        # Static packet allocation is a soft preview hint. Policy growth must
+        # not cause task controls to be dropped to satisfy an obsolete hint.
+        preview=packet['capacity']
+        assert preview['max_chars']==capacity
+        assert preview['used_content_chars']==len(packet['text'])
+        assert preview['used_content_chars']<=preview['effective_preview_chars']
+        assert preview['effective_preview_chars']>=preview['required_control_chars']
+        from research.agents.runtime import model_task_message
+        config={'instructions':instructions,'required_outputs':list(task.outputs),
+                'metrics_file':'result.json','metrics_required_keys':list(task.expected)}
+        message=json.loads(model_task_message(packet,config)['content'])
+        assert message['task']==instructions
+        assert message['required_outputs']==list(task.outputs)
+        assert message['metrics_required_keys']==list(task.expected)
 
 
 def test_actual_report_lock_prevents_second_monitor(tmp_path):

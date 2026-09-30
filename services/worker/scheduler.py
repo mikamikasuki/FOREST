@@ -1,6 +1,6 @@
 """Database-backed scheduling with one dependency map per selected research DAG."""
 from copy import deepcopy
-from sqlalchemy import select, func, text as sql_text
+from sqlalchemy import select, func
 from services.api.db import *
 from services.api.common import get, error, project_dir, graph_from_db, emit
 
@@ -14,7 +14,11 @@ def _lock_project(s, project_id):
         # Already-held graph-command transactions are reused. SQLite requires
         # a real writer lock because SELECT FOR UPDATE is ignored there.
         if not connection.connection.driver_connection.in_transaction:
-            s.execute(sql_text('BEGIN IMMEDIATE'))
+            # Session.execute can autoflush a pending Project/PaperDocument
+            # immediately before this statement, opening a SQLite transaction
+            # after the check above. Acquire the writer transaction directly
+            # on this connection before ORM autoflush is allowed to run.
+            connection.exec_driver_sql('BEGIN IMMEDIATE')
     p = s.scalar(select(Project).where(Project.id == project_id).with_for_update())
     if p is None:
         error('NOT_FOUND', 'Project does not exist', 404)
@@ -47,6 +51,13 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     if remaining is not None:
         timeout = min(timeout, remaining) if timeout is not None else remaining
     merged = {**config, 'timeout': timeout, 'project_goal': p.goal, 'allow_paid': bool(budget.get('allow_paid', False))}
+    from research.publication.profile import publication_profile
+    try:
+        merged['publication_profile'] = publication_profile({**p.config, **config})
+    except (ValueError, TypeError) as exc:
+        error('INVALID_PUBLICATION_PROFILE', str(exc), 422)
+    if kind == 'paper_generate':
+        merged.setdefault('manuscript_type', 'full_paper')
     # Attempts belong to one run. A user retry creates a fresh run.
     for key in ('execution_attempt','_recovery_failures','_next_attempt'):
         merged.pop(key, None)

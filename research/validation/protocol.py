@@ -89,3 +89,35 @@ def validate_claims(claims, evidence_ids):
             if ref not in available:
                 raise ValueError(f"Claim {claim['id']} refers to unavailable evidence {ref}")
     return deepcopy(claims)
+
+
+def validate_submission_design(plan, profile=None):
+    """Validate the full design before execution, without inventing measurements."""
+    from research.publication.profile import publication_profile
+    profile=profile or publication_profile()
+    result=deepcopy(plan)
+    if profile['id']=='operational':return result
+    _text(result,('target_venue','dataset_scale_rationale','baseline_selection_rationale',
+                  'replicate_justification','fair_compute_policy','leakage_checks',
+                  'uncertainty_analysis','multiplicity_policy','confirmation_policy'))
+    for field in ('datasets','baselines','ablations'):
+        rows=result.get(field)
+        if not isinstance(rows,list) or len(rows)<profile[field]:
+            raise ValueError(f"Full submission requires at least {profile[field]} concrete {field}; a pilot cannot replace this design")
+        ids=[row.get('id') for row in rows if isinstance(row,dict)]
+        if len(ids)!=len(rows) or any(not isinstance(i,str) or not i.strip() for i in ids) or len(set(ids))!=len(ids):
+            raise ValueError(field+' must have distinct concrete IDs')
+    seeds=result.get('seeds')
+    if not isinstance(seeds,list) or len(seeds)<profile['seeds'] or any(isinstance(x,bool) or not isinstance(x,int) for x in seeds) or len(set(seeds))!=len(seeds):
+        raise ValueError(f"Full submission requires {profile['seeds']} distinct seeds/replicate IDs justified by uncertainty")
+    studies=result.get('studies')
+    if not isinstance(studies,list) or any(not isinstance(x,dict) for x in studies):
+        raise ValueError('Design executable effectiveness, mechanism, scenario and alternative-explanation studies')
+    if not DUTIES<={x.get('argumentative_duty') for x in studies}:
+        raise ValueError('Full submission must cover all four experimental argumentative duties')
+    papers=result.get('accepted_source_ids')
+    if not isinstance(papers,list) or any(not isinstance(x,str) or not x for x in papers) or len(set(papers))<profile['accepted_papers']:
+        raise ValueError(f"Design must cite {profile['accepted_papers']} distinct accepted-paper source IDs; verify full text and acceptance in the delivery audit")
+    result['publication_profile']=profile
+    result['completion_policy']='Full matrix, raw data, independent statistical review and compiled manuscript required; budget exhaustion preserves unfinished work'
+    return result

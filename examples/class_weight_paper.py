@@ -236,8 +236,8 @@ Training and inference run on CPU. The source package records dataset URLs and l
 \section{Conclusion}
 Known class weights provide a direct population-level relation between a balanced posterior and natural-prevalence probabilities. @@MEASURED_CONCLUSION@@ The learned-intercept, sigmoid, unweighted, and nonlinear controls make the resulting decision explicit: select the repair using its measured probability scores and additional-label requirement, and compare available model replacements separately.
 
-\section*{Data, code, and AI-use statement}
-Both datasets are public UCI resources distributed under CC BY 4.0. No new human-participant data were collected. This draft, implementation, experiment execution, and figure generation were produced with AI assistance through FOREST/Codex. The numerical results come from executed Python experiments. Document status: reproducible empirical draft.
+\section*{Data and code availability}
+Both datasets are public UCI resources distributed under CC BY 4.0. No new human-participant data were collected. The source package includes executable code, configurations, raw predictions and numeric result bindings.
 \bibliographystyle{plainnat}
 \bibliography{references}
 

@@ -62,6 +62,12 @@ npm run demo
 
 ---
 
+## Submission Workflow
+
+Scientific projects default to a complete submission and `full_paper`, with real experiments, accepted-paper comparison and a review-and-repair loop. A pilot or exhausted budget leaves the full delivery incomplete. See the [submission workflow](docs/PUBLICATION_DELIVERY.md) and [16-paper official reference corpus](docs/PUBLICATION_REFERENCE_CORPUS.md). [Paper authoring](docs/PAPER_AUTHORING.md) explains independent visual selection, manuscript placement and manual insertion from Figure Studio.
+
+---
+
 ## Why FOREST
 
 Modern language models can formulate hypotheses, write code, inspect literature, run tools, interpret results, and draft technical papers. The harder problem begins when these capabilities are composed into a research process that unfolds over hundreds of dependent decisions.

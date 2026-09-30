@@ -15,7 +15,8 @@ ROOT=Path(__file__).resolve().parents[1]
 DIRECTORIES={'apps','docs','examples','packages','research','runners','scripts','services','tests','.github'}
 ROOT_FILES={'README.md','LICENSE','CONTRIBUTING.md','SECURITY.md','CHANGELOG.md','pyproject.toml','requirements.lock.txt','Dockerfile','compose.yaml','.gitignore','.dockerignore','.env.example'}
 EXCLUDED={'.git','.venv','node_modules','dist','build','var','output','tmp','temp','__pycache__','.pytest_cache','.mypy_cache','.ruff_cache','.cache','test-results','playwright-report','.forest-processes','.idea','.vscode','htmlcov','coverage'}
-PRIVATE_DOCUMENTS={'docs/ACCEPTANCE.md','docs/QUALIFICATION_REPORT.md','docs/RESEARCH_FINDINGS.md','docs/WRITING_REVIEW.md','docs/FEATURES.md','docs/RUNTIME_UPGRADE.md'}
+PRIVATE_DOCUMENTS={'docs/ACCEPTANCE.md','docs/QUALIFICATION_REPORT.md','docs/RESEARCH_FINDINGS.md','docs/WRITING_REVIEW.md','docs/FEATURES.md','docs/RUNTIME_UPGRADE.md','docs/PIPELINE_LIVE_VALIDATION.md'}
+PRIVATE_DIRECTORIES={'docs/research_tasks'}
 SUFFIXES={'.py','.md','.txt','.json','.csv','.ts','.tsx','.css','.html','.svg','.sh','.cjs','.yaml','.yml','.toml','.tex','.bib'}
 SECRET_NAME=re.compile(r'(^\.env($|\.)|^(credentials?|secrets?|api[-_]?keys?|tokens?)(\.(json|ya?ml|toml|txt))?$|^owner[-_]token(\.txt)?$|^id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$|\.(pem|key|p12|pfx|keystore)$)',re.I)
 SECRET_VALUE=re.compile(rb'-----BEGIN (?:RSA |DSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{24,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{40,}|\bglpat-[A-Za-z0-9_-]{20,}|\bxox[baprs]-[A-Za-z0-9-]{20,}|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b')
@@ -23,11 +24,13 @@ SECRET_VALUE=re.compile(rb'-----BEGIN (?:RSA |DSA |EC |OPENSSH |ENCRYPTED )?PRIV
 
 def excluded_path(relative):
     """Keep local state out of the archive, including nested copies."""
+    path=relative.as_posix()
     return (
-        relative.as_posix() in PRIVATE_DOCUMENTS
+        path in PRIVATE_DOCUMENTS
+        or any(path == directory or path.startswith(directory + '/') for directory in PRIVATE_DIRECTORIES)
         or any(part in EXCLUDED or part.endswith('.egg-info') for part in relative.parts)
         or any(part.startswith('._') for part in relative.parts)
-        or (relative.as_posix() != '.env.example' and any(SECRET_NAME.search(part) for part in relative.parts))
+        or (path != '.env.example' and any(SECRET_NAME.search(part) for part in relative.parts))
     )
 
 

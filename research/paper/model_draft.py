@@ -8,6 +8,38 @@ import uuid
 from research.paper.evidence import manuscript_prompt, validate_draft
 
 
+def _required_figures(required_figure_ids, evidence):
+    if required_figure_ids is None:
+        return None
+    if not isinstance(required_figure_ids, (list, tuple)) or any(not isinstance(identifier, str) or not identifier.strip() for identifier in required_figure_ids) or len(set(required_figure_ids)) != len(required_figure_ids):
+        raise ValueError('Required figure IDs must be a sequence of unique actual figure identifiers')
+    missing = set(required_figure_ids) - {figure['id'] for figure in evidence.get('figures', [])}
+    if missing:
+        raise ValueError('Explicitly selected figures are unavailable in the supplied evidence: ' + ', '.join(sorted(missing)))
+    return list(required_figure_ids)
+
+
+def validate_manuscript_contract(draft, evidence, expected_type=None, *, required_figure_ids=None):
+    """One final-output contract for fresh responses and recorded-response reuse.
+
+    Recorded author revisions can repair an earlier response; the final authored
+    manuscript still includes every selected asset and omits AI boilerplate.
+    """
+    required = _required_figures(required_figure_ids, evidence)
+    validation = validate_draft(draft, evidence, expected_type)
+    if required is not None:
+        missing = set(required) - set(validation['referenced_figures'])
+        if missing:
+            raise ValueError('Insert every explicitly selected figure at its scientific argument: ' + ', '.join(sorted(missing)))
+        validation['required_figure_ids'] = required
+    from research.paper.structure import validate_structure
+    from research.paper.style import ai_declarations
+    declarations = ai_declarations('\n'.join([draft['title'], draft['abstract'], draft['conclusion'], *validate_structure(draft, evidence)[0]]))
+    if declarations:
+        raise ValueError('Remove unsolicited AI-writing declarations from manuscript prose; keep execution provenance in research records: ' + '; '.join(declarations))
+    return validation
+
+
 def draft_changes(before, after):
     """Record actual changed JSON fields without attributing edits to a model."""
     changes = []
@@ -30,7 +62,7 @@ def draft_changes(before, after):
 
 def draft_from_saved_response(response_path, evidence, output_dir, *, origin_run_id,
                               origin_response_path, expected_type, original_evidence_path=None,
-                              revision_path=None, revision_project_path=None):
+                              revision_path=None, revision_project_path=None, required_figure_ids=None):
     """Validate an explicitly selected saved response without invoking a model."""
     if expected_type not in ('full_paper', 'research_note'):
         raise ValueError('Saved-response reuse requires an explicit manuscript_type')
@@ -55,10 +87,9 @@ def draft_from_saved_response(response_path, evidence, output_dir, *, origin_run
         revision = json.loads(Path(revision_path).read_text(encoding='utf-8'))
         if not isinstance(revision, dict) or not isinstance(revision.get('draft'), dict) or any(not isinstance(revision.get(key), str) or not revision[key].strip() for key in ('editor','reason')):
             raise ValueError('Draft revision requires draft, editor and reason fields')
-        revised_validation = validate_draft(revision['draft'], evidence, expected_type)
         changes = draft_changes(draft, revision['draft'])
         draft = revision['draft']
-        validation = revised_validation
+    validation = validate_manuscript_contract(draft, evidence, expected_type, required_figure_ids=required_figure_ids)
     provenance = {'mode': 'saved_response_revalidation', 'origin_run_id': origin_run_id,
                   'origin_response_path': origin_response_path, 'original_model': response['model'],
                   'original_usage': response['usage'], 'original_request_id': response.get('request_id'),
@@ -86,7 +117,7 @@ def draft_from_saved_response(response_path, evidence, output_dir, *, origin_run
     return draft, response, provenance
 
 
-def draft_with_model(client, evidence, goal, output_dir, *, title=None, attempts=3, system='', expected_type=None, layout=None):
+def draft_with_model(client, evidence, goal, output_dir, *, title=None, attempts=3, system='', expected_type='full_paper', layout=None, publication=None, required_figure_ids=None):
     """Request at most the configured number of actual model responses.
 
     Syntax and reference failures return exact feedback to the connected model.
@@ -97,6 +128,7 @@ def draft_with_model(client, evidence, goal, output_dir, *, title=None, attempts
         raise ValueError('paper_draft_attempts must be a positive integer')
     if expected_type not in (None, 'full_paper', 'research_note'):
         raise ValueError('Requested manuscript type must be full_paper or research_note')
+    required_figure_ids = _required_figures(required_figure_ids, evidence)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     (output / 'input_evidence.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2))
@@ -104,6 +136,11 @@ def draft_with_model(client, evidence, goal, output_dir, *, title=None, attempts
     response_dir = output / 'model_responses' / generation_id
     response_dir.mkdir(parents=True)
     (response_dir / 'input_evidence.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2))
+    if publication is not None:
+        from research.publication.profile import publication_instructions
+        system += '\n' + publication_instructions(publication)
+    if required_figure_ids is not None:
+        system += '\nInsert every explicitly selected actual figure into the manuscript with its argumentative duty and real paragraph anchor: ' + json.dumps(required_figure_ids)
     initial = [{'role': 'system', 'content': system},
                {'role': 'user', 'content': manuscript_prompt(evidence, goal, title, expected_type, layout)}]
     messages = list(initial)
@@ -123,7 +160,11 @@ def draft_with_model(client, evidence, goal, output_dir, *, title=None, attempts
     for number in range(1, attempts + 1):
         try:
             from research.planning.model import context_model_json
-            _, response = context_model_json(client, messages, response_dir / 'context_sessions', char_hint=64000, parse_result=False)
+            # Full manuscript evidence commonly exceeds a small planning page.
+            # This editable working preference preserves the complete request;
+            # an actual provider context rejection still enters paged recovery.
+            preference=int(client.config.get('manuscript_context_chars',256000))
+            _, response = context_model_json(client, messages, response_dir / 'context_sessions', char_hint=preference, parse_result=False)
         except Exception as exc:
             record({'attempt': number, 'valid': False, 'provider_error': type(exc).__name__, 'error': str(exc)})
             raise
@@ -135,7 +176,7 @@ def draft_with_model(client, evidence, goal, output_dir, *, title=None, attempts
             draft = json.loads(response['text'])
             if not isinstance(draft, dict):
                 raise ValueError('The manuscript must be a JSON object with title, abstract, sections, conclusion, and claim_ids')
-            validation = validate_draft(draft, evidence, expected_type)
+            validation = validate_manuscript_contract(draft, evidence, expected_type, required_figure_ids=required_figure_ids)
         except (ValueError, KeyError, TypeError) as exc:
             record({**entry, 'valid': False, 'validation_error': str(exc)})
             if number == attempts:
