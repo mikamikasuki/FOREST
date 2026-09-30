@@ -1,70 +1,117 @@
 # FOREST
 
-### Persistent Research State for Long-Horizon Autonomous Science
+**Give it a research question. Turn it into ideas, real experiments, evidence, and a complete paper.**
 
-**LLMs propose. Evidence decides.**
+FOREST is an end-to-end research agent framework for carrying a scientific project from an early question to a finished manuscript.
 
-FOREST is a goal-driven research runtime for long-horizon scientific work. It gives language-model agents persistent research state, executable experiments, independent verification, and explicit control over branching, pruning, recovery, and claim formation.
+It can explore and compare research directions, search the literature, turn promising ideas into testable hypotheses, design experiments, run real code on your compute, analyze the results, and decide what to try next. As the project develops, FOREST can revise its plan, abandon weak directions, branch into alternatives, and build the figures, tables, and manuscript around the evidence that survives.
 
-A frontier model can be highly capable at an individual step and still lose a research trajectory over hundreds of steps. FOREST is designed around that distinction.
+Instead of keeping the research process inside a long chat history, FOREST represents it as an editable research graph. Ideas, hypotheses, experiments, results, decisions, and paper sections remain connected. You can inspect the graph, change a plan, replace a hypothesis, branch from an earlier point, or redirect the research without starting over.
+
+**Idea discovery → literature review → hypothesis formation → experiment design → real execution → result analysis → research-path revision → baselines & ablations → figures & tables → full-paper generation**
+
+
+## What FOREST does
+
+**Finds research directions.**  
+Start with a broad question or an unfinished idea. FOREST explores possible directions, compares them, checks the surrounding literature, and turns the strongest candidates into concrete research paths.
+
+**Turns ideas into experiments.**  
+Hypotheses are converted into executable plans with baselines, controls, metrics, ablations, and explicit conditions for success or failure.
+
+**Runs real experiments.**  
+FOREST writes and executes research code, launches training and evaluation jobs, collects logs and metrics, and keeps experimental artifacts attached to the research path that produced them.
+
+**Analyzes the evidence and changes course.**  
+Results are not treated as the end of a task. FOREST interprets them, compares competing explanations, identifies what failed, and decides whether to extend, revise, or drop a direction.
+
+**Keeps the research path editable.**  
+Researchers can intervene at any point: edit a node, change an experiment, revisit an earlier assumption, or branch the graph to investigate an alternative approach without losing the existing work.
+
+**Builds scientific figures and tables.**  
+Experimental results can be turned into publication-ready visualizations and tables while remaining tied to their underlying runs and observations.
+
+**Writes the paper.**  
+FOREST carries the surviving evidence into a full manuscript, including related work, methods, experiments, results, figures, tables, and discussion. Metrics, figures, and scientific claims remain traceable to the evidence used to produce them.
 
 ---
 
 ## Quick Start
 
-### macOS
+### macOS / Linux
 
-Launch with:
+Requires **Python 3.11+** and **Node.js 22+**.
 
-```text
-Start Forest.command
-```
-
-or run in development mode:
+Clone the repository, install dependencies, and launch:
 
 ```bash
-npm install
-npm run doctor
-npm run dev
+git clone https://github.com/mikamikasuki/FOREST.git
+cd FOREST
+
+python3.11 scripts/install.py
+.venv/bin/python scripts/start.py
 ```
 
-Before a serious research run:
+Open [localhost:8000](http://127.0.0.1:8000), configure a model provider in **Settings**, and create a project with a research goal and an explicit spending budget.
+
+For development mode, after installation:
 
 ```bash
-npm run verify
+./scripts/dev.sh
 ```
 
-Common commands:
+Check the local environment:
 
 ```bash
-npm run dev
-npm run build
-npm run test
-npm run test:e2e
-npm run benchmark
-npm run demo
+.venv/bin/python scripts/doctor.py
 ```
 
-### Execution Modes
+Run backend tests, frontend compilation, and frontend tests:
 
-- **LIVE LLM** — full autonomous research with a configured model provider and real experiment execution.
-- **LOCAL BENCHMARK** — controlled workloads for testing, ablations, and architecture evaluation.
-- **VERIFIED REPLAY** — reconstructs persisted runs without repeating model calls or experiments.
+```bash
+./scripts/test.sh
+```
+
+PDF compilation requires `tectonic` or `pdflatex`.
+
+The backend dependencies are defined in [`pyproject.toml`](pyproject.toml) and [`requirements.lock.txt`](requirements.lock.txt). The frontend package and commands are in [`apps/web/package.json`](apps/web/package.json).
+
+See [Deployment](docs/DEPLOYMENT.md) for Docker, PostgreSQL, background services, backups, and Windows setup through WSL2 or Docker Desktop.
+
+### Research Modes
+
+Project configuration supports `manual`, `assisted`, and `auto` modes.
+
+- **Manual** — author and edit the research graph and choose executable tasks.
+- **Assisted** — use model-assisted planning and research tools while directing the workflow.
+- **Auto** — enable the research controller to alternate planning and execution within the configured goals, budgets, and delivery requirements.
+
+Saved runs expose decisions, logs, metrics, artifacts, and execution history for inspection.
 
 ### Runtime Notes
 
-- Prefer a strong remote model API when the local GPU is needed for experiments. Local inference and long KV caches can compete directly with training, simulation, or vision workloads and cause OOM failures.
-- Execute model-generated code in an isolated workspace or container when possible.
-- Bound wall time, API spend, process count, disk usage, GPU allocation, and retries before long runs.
-- Recompute important results from raw artifacts rather than validating only another agent's summary.
-- Record dependency versions, dataset versions, model IDs, seeds, and runtime configuration for experiments supporting scientific claims.
+- Prefer a remote model API when experiments need the local GPU. Local model inference and long attention caches compete with training and evaluation for memory.
+- Local execution runs generated code with the worker account’s permissions. For untrusted tasks, select the Docker execution backend and restrict mounted data, network access, and resources. A separate working directory does not provide operating-system isolation.
+- Configure model spending, task duration, worker capacity, and execution limits before unattended runs. Container resource limits require the container backend.
+- Recompute important results from raw artifacts.
+- Record dependency versions, dataset versions, model IDs, seeds, and execution configuration for experiments supporting scientific claims.
 - Keep provider credentials and machine-specific configuration outside the repository.
+
+See [Security](SECURITY.md) and [Deployment](docs/DEPLOYMENT.md) for execution boundaries and configuration.
 
 ---
 
 ## Submission Workflow
 
-Scientific projects default to a complete submission and `full_paper`, with real experiments, accepted-paper comparison and a review-and-repair loop. A pilot or exhausted budget leaves the full delivery incomplete. See the [submission workflow](docs/PUBLICATION_DELIVERY.md) and [16-paper official reference corpus](docs/PUBLICATION_REFERENCE_CORPUS.md). [Paper authoring](docs/PAPER_AUTHORING.md) explains independent visual selection, manuscript placement and manual insertion from Figure Studio.
+Scientific projects default to a complete submission and `full_paper`, with real experiments, accepted-paper comparison, and a review-and-repair loop.
+
+The workflow connects literature, experimental design, baseline reproduction, execution, independent analysis, visual selection, manuscript authoring, and submission review. Delivery checks retain missing evidence and outstanding work when a pilot finishes or a budget is exhausted.
+
+Figures and manuscript values bind to completed runs and recorded observations. Visuals attach to argumentative paragraphs, and compilation checks their actual placement in the document.
+
+See the [submission workflow](docs/PUBLICATION_DELIVERY.md) and [16-paper reference corpus](docs/PUBLICATION_REFERENCE_CORPUS.md). The reference corpus informs framework design; each research project selects topic-matched papers.
+
+[Paper authoring](docs/PAPER_AUTHORING.md) explains independent visual selection, manuscript placement, and manual insertion from Figure Studio.
 
 ---
 
@@ -72,13 +119,13 @@ Scientific projects default to a complete submission and `full_paper`, with real
 
 Modern language models can formulate hypotheses, write code, inspect literature, run tools, interpret results, and draft technical papers. The harder problem begins when these capabilities are composed into a research process that unfolds over hundreds of dependent decisions.
 
-Long-horizon research creates a compounding state-management problem. As the trajectory grows, decision-relevant evidence is diluted by accumulated context, unverified interpretations propagate into later decisions, and locally reasonable actions can gradually shift the process away from its original objective. Summarization may discard failure-relevant information, competing hypotheses can remain unresolved, and self-critique can reproduce correlated errors when it relies on the same underlying assumptions.
+Long-horizon research creates a compounding state-management problem. As the trajectory grows, decision-relevant evidence can become harder to retrieve, unverified interpretations can propagate into later decisions, and locally reasonable actions can shift the process away from its original objective. Summarization may discard failure-relevant information, competing hypotheses can remain unresolved, and self-critique can reproduce correlated errors when it relies on the same underlying assumptions.
 
-Existing work already exposes several parts of this failure surface. *Lost in the Middle* and RULER show that usable long-context reasoning can degrade well before the nominal context window is exhausted [1,2]. Recent work on long-horizon search identifies **context rot** and increasing **premature termination** as trajectories grow [3]. Goal-drift evaluations show that autonomous agents can gradually deviate from their assigned objectives [4]. Intrinsic self-correction is also unreliable without external feedback: reconsidering a previous answer can preserve or even amplify the original error [5].
+Existing work identifies related failure modes. *Lost in the Middle* and RULER examine how effective use of context differs from nominal context capacity [1,2]. Work on long-horizon search identifies context rot and premature termination as context grows [3](https://arxiv.org/abs/2606.29718). Goal-drift evaluations motivate explicit goal tracking across extended trajectories [4]. Research on intrinsic self-correction shows that reconsidering an answer without reliable external feedback can preserve or amplify errors [5].
 
-FOREST frames autonomous research as a **state-control problem**: the central challenge is not only choosing a good next action, but maintaining a scientifically valid state from which that action is chosen.
+FOREST frames autonomous research as a **state-control problem**: each decision should draw on an explicit goal, current dependencies, and inspectable evidence.
 
-> **Stronger models can reduce local reasoning error. FOREST targets the mechanisms through which local errors accumulate, propagate, and eventually distort the global research trajectory.**
+> **FOREST makes a research claim traceable to its evidence and a changed premise traceable to the work it affects.**
 
 ---
 
@@ -89,7 +136,7 @@ We use **Long-Horizon Research Drift** to describe the progressive divergence be
 Let:
 
 - $g$ denote the research goal;
-- $z_t$ denote the latent scientific state after step $t$;
+- $z_t$ denote the scientific state relevant to step $t$;
 - $\hat{z}_t$ denote the scientific state represented to the agent;
 - $a_t$ denote the next research action.
 
@@ -99,30 +146,28 @@ The agent selects:
 a_t \sim \pi_\theta(a \mid \hat{z}_t, g)
 ```
 
-A conventional transcript-driven agent maintains an accumulated history:
+A transcript-centered workflow retains an accumulated history:
 
 ```math
 H_t = H_{t-1} \oplus (a_t, o_{t+1})
 ```
 
-As the trajectory grows, an increasing fraction of the working state is encoded in accumulated text rather than explicit scientific structure.
+As the trajectory grows, reconstructing the current goal, valid evidence, and unresolved dependencies from that history becomes an increasingly important part of every decision.
 
-This creates four recurring sources of drift:
+Four recurring sources of drift motivate explicit research state:
 
 | Failure Mode | Effect |
 |---|---|
-| **Context dilution** | Decision-relevant evidence occupies a decreasing fraction of active context. |
-| **Verification debt** | Unchecked intermediate claims become assumptions for later claims. |
-| **Goal displacement** | Locally attractive tasks gradually replace the original research objective. |
-| **Premature conservative convergence** | Accumulated uncertainty becomes a reason to stop exploring even when discriminating experiments remain available. |
+| **Context dilution** | Decision-relevant evidence becomes harder to locate within accumulated context. |
+| **Verification debt** | Unchecked interpretations become assumptions for later claims. |
+| **Goal displacement** | Locally attractive tasks replace the original research objective. |
+| **Premature conservative convergence** | Uncertainty becomes a stopping reason while useful discriminating experiments remain available. |
 
 The final failure mode is particularly important in scientific work.
 
-Uncertainty is a property of the current evidence state. It should not automatically become a terminal action.
+Uncertainty describes the current evidence state. A useful next decision identifies what remains unresolved and which observation could change the conclusion.
 
-Statements such as *insufficient evidence* or *more research is required* have limited scientific value unless the system can identify what evidence is missing and which experiment could change the decision.
-
-FOREST keeps uncertainty executable: an unresolved claim remains connected to the experiments capable of resolving it.
+FOREST keeps uncertainty actionable: an unresolved claim can remain connected to the experiments capable of resolving it.
 
 ---
 
@@ -131,16 +176,19 @@ FOREST keeps uncertainty executable: an unresolved claim remains connected to th
 Let $\epsilon_t$ denote the conditional probability of a trajectory-breaking error at step $t$, given that no previous step has already broken the trajectory:
 
 ```math
-\epsilon_t = P(D_t = 1 \mid D_1 = 0, \ldots, D_{t-1} = 0)
+\epsilon_t =
+P(D_t = 1 \mid D_1 = 0, \ldots, D_{t-1} = 0)
 ```
 
-The probability that a research trajectory remains valid through $T$ consequential steps is then:
+By the chain rule, the probability that the trajectory remains valid through $T$ consequential steps is:
 
 ```math
-P_{\mathrm{valid}}(T) = \prod_{t=1}^{T}(1-\epsilon_t)
+P_{\mathrm{valid}}(T)
+=
+\prod_{t=1}^{T}(1-\epsilon_t)
 ```
 
-If the local failure probability is bounded below by a persistent rate $\epsilon > 0$:
+If the conditional failure probabilities satisfy:
 
 ```math
 \epsilon_t \ge \epsilon > 0
@@ -149,26 +197,26 @@ If the local failure probability is bounded below by a persistent rate $\epsilon
 then:
 
 ```math
-P_{\mathrm{valid}}(T) \le (1-\epsilon)^T \approx e^{-\epsilon T}
+P_{\mathrm{valid}}(T)
+\le (1-\epsilon)^T
+\le e^{-\epsilon T}
 ```
 
-Long-horizon reliability is therefore highly sensitive to persistent local error, even when the per-step error rate is small.
+Trajectory reliability therefore depends on both the local error rate and the number of consequential steps.
 
-A stronger base model can reduce $\epsilon_t$. It does not remove the compounding effect of trajectory length.
-
-FOREST changes the transition process itself.
+FOREST exposes intermediate state and evidence checks at the handoffs where an unsupported result could become a downstream premise.
 
 ---
 
 ## Research State as a Graph
 
-FOREST externalizes scientific state into a persistent typed graph:
+FOREST externalizes research state into an editable graph:
 
 ```math
 G_t = (V_t, E_t)
 ```
 
-Typical node types include:
+Nodes and associated records represent concepts such as:
 
 ```text
 Goal
@@ -184,53 +232,29 @@ Decision
 Artifact
 ```
 
-Typical relations include:
-
-```text
-tests
-supports
-contradicts
-depends_on
-derived_from
-supersedes
-motivates
-blocks
-```
+Execution dependencies determine which tasks can run and which upstream outputs they consume. Evidence relationships connect results, sources, and claims.
 
 Each scientific claim can retain the evidence supporting it, the experiments that tested it, its dependencies, and unresolved competing hypotheses.
 
-Nodes also carry explicit lifecycle state:
+The runtime tracks execution, research, and deliverable status separately. This distinction allows a task to finish executing while its scientific interpretation or manuscript contribution still requires review.
 
-```text
-proposed
-scheduled
-running
-tested
-supported
-contradicted
-unresolved
-superseded
-pruned
-verified
-```
+The complete graph can grow throughout a research program while each model request receives a selected working context.
 
-The complete graph can grow throughout a long research program without forcing the model to consume the entire state at every step.
-
-FOREST instead constructs an **active frontier**:
+Conceptually, FOREST constructs an **active frontier**:
 
 ```math
-F_t = R_K(G_t, g)
+F_t = R(G_t, g)
 ```
 
-Here, $R_K$ denotes a retrieval policy that selects the goal, relevant hypotheses, unresolved evidence, dependencies, current artifacts, and immediate decision context.
+Here, $R$ selects the goal, relevant branch state, dependencies, current artifacts, and immediate decision context. Retained originals remain available for further inspection.
 
-Persistent scientific state may grow for hours. Active reasoning context does not need to grow at the same rate.
+Persistent project state and per-request reasoning context serve different purposes: the former preserves the research record; the latter supports the current decision.
 
 ---
 
 ## Goal Contract
 
-Every FOREST run begins with a **Goal Contract**:
+FOREST retains the project goal, constraints, success criteria, and budgets as explicit planning inputs. These form a conceptual **Goal Contract**:
 
 ```math
 C = (g, S, K, B)
@@ -243,50 +267,56 @@ where:
 - $K$ contains operational and scientific constraints;
 - $B$ contains compute, time, model, and experiment budgets.
 
-The Goal Contract remains outside the rolling conversation history and participates directly in planning.
+These inputs remain outside the rolling conversation history and participate in planning.
 
-A planner can be interpreted through an action utility:
+The planner’s trade-offs can be expressed through a conceptual action utility:
 
 ```math
-U(a) = \lambda_g R_g(a) + \lambda_i I_G(a) - \lambda_c C(a) - \lambda_r R(a)
+U(a)
+=
+\lambda_g R_g(a)
++
+\lambda_i I_G(a)
+-
+\lambda_c C(a)
+-
+\lambda_r R(a)
 ```
 
 where:
 
-- $R_g(a)$ measures relevance to the Goal Contract;
-- $I_G(a)$ measures expected information gain;
-- $C(a)$ measures resource cost;
-- $R(a)$ measures execution or scientific risk.
+- $R_g(a)$ represents relevance to the goal;
+- $I_G(a)$ represents expected information value;
+- $C(a)$ represents resource cost;
+- $R(a)$ represents execution or scientific risk.
 
-The exact policy may vary between workflows. The invariant is that the next action is selected from explicit scientific state rather than narrative momentum alone.
+This expression describes the decision criteria. The implemented planner receives the stored project goal, constraints, budgets, graph state, and research evidence.
 
 ---
 
-## Zero-Trust Research
+## Evidence-Grounded Research
 
-Agent output is treated as a proposal until an external consequence supports it.
+Agent output is treated as a proposal until execution or supporting evidence establishes the relevant result.
 
-FOREST separates the research loop into distinct roles:
+FOREST assigns distinct responsibilities across the research workflow:
 
 ```text
-Planner
+Planning
    ↓
-Builder / Researcher
+Literature / Design / Implementation
    ↓
-Executor
+Experiment Execution
    ↓
-Tester
+Independent Analysis
    ↓
-Challenger
+Evidence and Claim Review
    ↓
-Validator
+Figures and Manuscript
    ↓
-Evidence Gate
+Submission Review
 ```
 
-A generated interpretation cannot establish its own correctness.
-
-Code is executed. Metrics are recomputed. Assertions are checked against artifacts. Competing explanations can be challenged. Failed operations remain visible in the research state.
+Code is executed. Metrics can be recomputed from original observations. Assertions are checked against referenced artifacts. Competing explanations can be examined through additional analysis or experiments. Failed operations remain visible in the research record.
 
 A claim can therefore be rejected even when the prose describing it is persuasive.
 
@@ -296,31 +326,33 @@ A claim can therefore be rejected even when the prose describing it is persuasiv
 
 ## Independent Verification
 
-Self-reflection is useful for proposing possible mistakes. Verification should come from a different information path whenever practical.
+Independent verification grounds judgments in executed code, recomputed metrics, and original artifacts.
 
-Suppose a harmful local error occurs with probability $\epsilon_t$. Let $d_t$ be the probability that independent verification detects it, and let $r_t$ be the probability that the recovery path successfully repairs the detected error.
+Consider a harmful local error with conditional probability $\epsilon_t$. Let $d_t$ be the probability of detecting that error, conditional on its occurrence. Let $r_t$ be the probability of successful repair, conditional on detection.
 
-Under the simplifying assumption that successful repair prevents the local failure from propagating, the effective hazard becomes:
+Holding the local error opportunities fixed, and assuming verification and repair introduce no additional harmful errors, the propagated-error hazard becomes:
 
 ```math
 \epsilon'_t = \epsilon_t(1-d_t r_t)
 ```
 
-The corresponding trajectory survival probability becomes:
+The corresponding survival probability under this model is:
 
 ```math
-P_{\mathrm{FOREST}} = \prod_t \left(1-\epsilon_t(1-d_t r_t)\right)
+P_{\mathrm{model}}
+=
+\prod_t \left(1-\epsilon_t(1-d_t r_t)\right)
 ```
 
-Whenever:
+For a step with $\epsilon_t > 0$, detection and repair reduce its propagated-error probability when:
 
 ```math
 d_t r_t > 0
 ```
 
-independent verification reduces the effective probability of propagated error under this model.
+This model identifies measurable evaluation targets: local error, detection and repair rates, trajectory drift, compute cost, and final-task utility. System-level reliability is evaluated through matched end-to-end comparisons.
 
-This is a mechanism-level argument rather than an empirical performance claim. Its components can be measured directly through controlled evaluation: local error rate, detection rate, repair rate, trajectory drift, compute cost, and final-task utility.
+[Design notes](docs/DESIGN.md) develop conditional bounds, progress-versus-rejection trade-offs, dependency-local repair, and their correspondence to the implementation.
 
 ---
 
@@ -335,45 +367,48 @@ FOREST allows the research structure to change as evidence arrives:
 Goal ─ Question ─┤
                  ├── Hypothesis B ── Experiment ── Supported ── Expand
                  │
-                 └── Hypothesis C ── Failure ── Repair ── Retest
+                 └── Hypothesis C ── Run Failure ── Repair ── Retest
 ```
 
-A graph rewrite may:
+Graph operations include:
 
 ```text
-branch
-prune
+fork
+clone
 merge
 split
 re-parent
-supersede
-reactivate
-recover
+prune
+restore
+undo
+redo
 ```
 
-Pruning is a resource-allocation operation. Once a research direction is contradicted by evidence, it should stop consuming model tokens, GPU time, and experimental budget. Its evidence remains available so the same failed direction does not need to be rediscovered later.
+Pruning is a resource-allocation decision. When evidence resolves a direction against further investment, the branch can be removed from active work while its evidence remains available to later decisions.
 
-FOREST also distinguishes **experiment failure** from **hypothesis falsification**. A failed run says that an experiment did not produce usable evidence; a falsified hypothesis says that valid evidence contradicted a scientific claim.
+FOREST also distinguishes **experiment failure** from **hypothesis falsification**. A failed run records an execution problem or missing usable evidence; a falsified hypothesis records evidence contradicting a scientific claim.
+
+Declared dependencies identify downstream work affected by an upstream change. This supports targeted re-analysis, figure regeneration, or experiment reruns according to the nature of the edit.
 
 ---
 
 ## Premature Conservative Convergence
 
-Preference-tuned language models can exhibit systematic response biases, including sycophancy [6]. Intrinsic self-correction can fail without reliable external signals [5]. Long-horizon search research further suggests that models can terminate early or produce uncertain incorrect answers as context grows [3].
+Preference-tuned language models can exhibit response biases, including sycophancy [6]. Intrinsic self-correction can fail without reliable external signals [5]. Long-horizon search research also identifies premature termination under extensive context [3](https://arxiv.org/abs/2606.29718).
 
-FOREST treats premature convergence as a control-flow problem.
+FOREST treats stopping as an explicit planning decision.
 
-An agent may express uncertainty at any stage. Terminating a branch requires a concrete condition:
+Its research policy asks the planner to connect a stopping decision to evidence, feasibility, resource limits, or completion criteria, such as:
 
 - the hypothesis is contradicted by evidence;
 - the relevant claim is sufficiently resolved;
-- a predefined feasibility or budget boundary has been reached;
+- a specified feasibility or budget boundary has been reached;
 - available actions have negligible expected information value;
-- the Goal Contract has been satisfied.
+- the requested deliverable has satisfied its completion criteria.
 
-Otherwise, uncertainty remains an unresolved state and the planner searches for a discriminating action.
+Otherwise, the planner identifies a discriminating action for the unresolved question.
 
-This preserves scientific calibration while preventing generic caution from silently becoming a stopping policy.
+For full-submission projects, the controller also checks the current delivery audit. A completed task queue and a completed scientific submission have separate states, so remaining literature, experiment, analysis, and manuscript requirements stay visible.
 
 ---
 
@@ -405,13 +440,13 @@ This preserves scientific calibration while preventing generic caution from sile
                                    │                         │
                                    ▼                         │
                      ┌──────────────────────────┐            │
-                     │ Tester / Challenger /    │            │
-                     │ Independent Validator    │            │
+                     │ Independent Analysis /   │            │
+                     │ Evidence Review          │            │
                      └────────────┬─────────────┘            │
                                   │                          │
                                   ▼                          │
                          ┌────────────────────┐              │
-                         │   Evidence Gate    │              │
+                         │   Evidence Checks  │              │
                          └─────────┬──────────┘              │
                                    │                         │
                                    ▼                         │
@@ -420,36 +455,55 @@ This preserves scientific calibration while preventing generic caution from sile
                          └─────────┬──────────┘
                                    │
                          branch / prune / merge
-                         repair / supersede
+                         repair / refresh
                                    │
                                    ▼
                          ┌────────────────────┐
-                         │ Verified Research  │
-                         │ HTML / PDF / Data  │
+                         │ Evidence-linked    │
+                         │ LaTeX / PDF / Data │
                          └────────────────────┘
 ```
+
+The API stores project state and exposes editing and inspection tools. Workers execute queued tasks and retain process outcomes. Research components handle planning, evidence analysis, figures, and manuscript generation.
 
 ---
 
 ## Research Lifecycle
 
-A typical FOREST run follows:
+A full-submission workflow follows:
 
 ```text
-Goal Contract
-→ research decomposition
+Goal and success criteria
+→ literature and benchmark selection
 → competing hypotheses
 → executable experiments
 → evidence collection
-→ challenge and verification
+→ independent analysis
 → branch / prune / recovery
-→ holdout confirmation
+→ confirmation studies
 → claim construction
 → evidence-linked manuscript
-→ HTML / PDF
+→ visual and submission review
+→ LaTeX / PDF
 ```
 
 The manuscript sits downstream of the evidence graph, allowing scientific claims to remain traceable to the experiments and artifacts that support them.
+
+For example, an experiment saves `predictions.csv`; an analysis task consumes that file through a declared dependency and produces metrics for a figure and manuscript table. FOREST retains the run and artifact references behind those values. When a declared upstream dependency changes, the graph identifies affected downstream work for refresh.
+
+```text
+Experiment
+  └── predictions.csv
+         ↓ declared input
+Independent analysis
+  └── metrics.json
+         ↓ evidence binding
+Figure + manuscript table
+         ↓ compilation and placement checks
+Paper PDF
+```
+
+See [Evidence Workflow](docs/EVIDENCE_WORKFLOW.md) and [Manuscript Pipeline](docs/MANUSCRIPT_PIPELINE.md) for artifact bindings and authoring behavior.
 
 ---
 
@@ -459,18 +513,20 @@ FOREST exposes the evolving research state directly.
 
 The workspace includes:
 
-- Goal Contract and run status;
-- editable Research Graph;
+- project goals and controller status;
+- an editable research graph;
 - hypotheses and competing branches;
-- experiment state;
+- experiment execution state;
 - evidence and claim relationships;
-- challenge and verification state;
 - metrics and figures;
-- event stream;
-- paper workspace;
-- run replay.
+- process logs and event streams;
+- file and terminal views;
+- a manuscript workspace;
+- saved run history and lineage.
 
-Research paths can be inspected and edited while preserving the underlying evidence structure.
+Research paths can be inspected and edited while preserving their evidence relationships.
+
+Figure Studio supports editable data plots, scientific mechanism diagrams, and conceptual illustrations. The paper workspace supports source editing, figure insertion, compilation, and layout inspection.
 
 ---
 
@@ -478,18 +534,65 @@ Research paths can be inspected and edited while preserving the underlying evide
 
 | Layer | Stack |
 |---|---|
-| UI | React, TypeScript, Vite, Tailwind |
+| UI | React, TypeScript, Vite, CSS |
 | Research Graph | `@xyflow/react` |
-| Metrics / Figures | Recharts, SVG |
-| Runtime | Node.js, TypeScript, Express |
-| Experiment Execution | `worker_threads` and local processes |
-| Validation | Zod |
-| Streaming | Server-Sent Events |
-| Persistence | Filesystem-backed `runs/<runId>/` artifacts |
-| Paper Export | Playwright |
-| Tests | Vitest, Playwright |
+| Metrics / Figures | Python, pandas, Matplotlib; SVG/PDF output |
+| Runtime | Python, FastAPI, Uvicorn |
+| Experiment Execution | Supervised local subprocesses; optional Docker and SSH backends |
+| Validation | Pydantic and executable protocol, evidence, and artifact checks |
+| Streaming | Server-Sent Events; WebSockets for terminals |
+| Persistence | SQLAlchemy with SQLite by default or PostgreSQL; project-scoped artifact files |
+| Paper Export | LaTeX compilation through `tectonic` or `pdflatex` |
+| Tests | pytest, Vitest, Playwright |
 
 The local server binds to `127.0.0.1` by default.
+
+### Repository Structure
+
+```text
+apps/web/        React and TypeScript interface
+services/api/    FastAPI endpoints and persistent state
+services/worker/ Task scheduling, execution, and recovery
+research/        Agents, graph operations, analysis, figures, and papers
+runners/         Local, Docker, and SSH execution backends
+scripts/         Installation, operation, qualification, and packaging
+tests/           Backend regression tests
+docs/            Architecture, workflows, deployment, and security guidance
+```
+
+### Execution Boundary
+
+The default local backend runs with the worker user’s operating-system permissions.
+
+The optional Docker task backend applies a non-root user, a read-only root filesystem, dropped capabilities, resource limits, and disabled networking by default. Tasks receive a writable workspace mount. Configure that mount and network access according to the task’s requirements.
+
+Running the application service in a container and selecting container execution for individual research tasks are separate configuration choices.
+
+See [Security](SECURITY.md) for the trust model and [Deployment](docs/DEPLOYMENT.md) for backend setup.
+
+---
+
+## Validation and Release Qualification
+
+The release qualification suite evaluates distinct parts of the system against explicit completion criteria.
+
+| Dimension | Evaluated behavior |
+|---|---|
+| Local regression | Backend behavior, frontend compilation, and component tests |
+| Agent tasks | Outputs and execution receipts for 30 bounded tasks, checked by external oracles |
+| Graph scale | Graph storage, pagination, dependency preservation, and editing |
+| Compute endurance | Observed continuous execution and independently recomputed prediction metrics |
+| Service soak | API operations and worker execution across an observed monitoring interval |
+
+Qualification reports record the executed configuration, results, and observed duration. The suite’s task counts and duration targets describe its evaluation scope; completion is established by the corresponding run reports.
+
+Run local regression checks with:
+
+```bash
+./scripts/test.sh
+```
+
+See [Release Qualification](docs/RELEASE.md) for qualification commands, report formats, opt-in model tests, and the scope of each check.
 
 ---
 
@@ -499,41 +602,41 @@ FOREST builds on several lines of research.
 
 ### Long-Context Reliability
 
-*Lost in the Middle* [1], RULER [2], and recent work on context rot [3] show that nominal context length can overstate reliable long-context reasoning.
+*Lost in the Middle* [1], RULER [2], and work on context rot [3](https://arxiv.org/abs/2606.29718) examine failures in the effective use of extended context.
 
-FOREST stores persistent research state outside the prompt and constructs a decision-specific active frontier.
+FOREST stores persistent research state outside the prompt and constructs a decision-specific working context.
 
 ### Goal Stability
 
 Goal-drift evaluations [4] motivate explicit goal anchoring across long autonomous trajectories.
 
-FOREST stores the Goal Contract as persistent runtime state and uses it throughout planning.
+FOREST retains project goals, constraints, and budgets as persistent planning inputs.
 
 ### Feedback and Self-Correction
 
-Reflexion demonstrates the value of feedback across agent attempts [7], while later work shows that intrinsic self-correction without reliable external signals can fail [5].
+Reflexion studies feedback across agent attempts [7], while research on intrinsic self-correction examines failures when external feedback is absent [5].
 
-FOREST therefore prioritizes executable and independently recomputed feedback.
+FOREST supports executable checks and independent recomputation from original artifacts.
 
 ### Search Over Reasoning Trajectories
 
-Tree of Thoughts and Language Agent Tree Search demonstrate the value of branching, lookahead, backtracking, and environment feedback [8].
+Tree of Thoughts and Language Agent Tree Search examine branching, lookahead, backtracking, and environment feedback [8].
 
-AIDE applies structured search to iterative machine-learning engineering. AI Scientist-v2 extends agentic tree search toward automated scientific discovery [9,10].
+AIDE applies structured search to machine-learning engineering [10](https://arxiv.org/abs/2502.13138). The AI Scientist-v2 extends agentic tree search to automated scientific discovery [9](https://arxiv.org/abs/2504.08066).
 
-FOREST focuses on the **lifecycle of scientific state across the entire research program**.
+FOREST focuses on the **lifecycle of scientific state across the research program**.
 
-Its graph can express dependencies between branches, shared evidence, contradictions, failed experiments, supersession, recovery, and claims that reuse evidence generated elsewhere in the graph. Search policy and scientific provenance therefore share the same persistent state.
+Its graph connects dependencies between branches, shared evidence, failed experiments, revisions, recovery, and claims that reuse earlier artifacts. Search decisions and scientific provenance therefore remain accessible within the same persistent workspace.
 
 ---
 
 ## Design Principle
 
-A long-running research agent should not depend on its transcript alone to remember the project.
+A long-running research agent needs persistent, inspectable project state across decisions.
 
-The model performs stochastic research operations. The runtime carries scientific state. The graph carries dependencies. Artifacts carry evidence. Verification controls promotion from observation to claim. The Goal Contract controls direction.
+The model proposes research operations. The runtime records execution. The graph carries dependencies. Artifacts carry evidence. Verification checks the grounds for advancing a claim. The project goal guides the next decision.
 
-That separation is the core of FOREST.
+That separation makes a research trajectory inspectable and revisable from its objective to its final manuscript.
 
 ---
 
@@ -542,45 +645,62 @@ That separation is the core of FOREST.
 **[1]** Liu, N. F., Lin, K., Hewitt, J., Paranjape, A., Bevilacqua, M., Petroni, F., & Liang, P.  
 *Lost in the Middle: How Language Models Use Long Contexts.*  
 Transactions of the Association for Computational Linguistics, 2024.  
-DOI: `10.1162/tacl_a_00638`
+[Paper](https://aclanthology.org/2024.tacl-1.9/)
 
-**[2]** Hsieh, C.-P., Sun, S., Kriman, S., Acharya, S., Rekesh, D., Jia, F., Zhang, Y., & Ginsburg, B.  
+**[2]** Hsieh, C.-P., Sun, S., Kriman, S., Acharya, S., Rekesh, D., Zhang, F., & Ginsburg, B.  
 *RULER: What's the Real Context Size of Your Long-Context Language Models?*  
-arXiv:`2404.06654`, 2024.
+2024.  
+[Paper](https://arxiv.org/abs/2404.06654)
 
 **[3]** Xia, S., Wang, Y., Huang, Z., & Liu, P.  
 *Diagnosing and Mitigating Context Rot in Long-horizon Search.*  
-arXiv:`2606.29718`, 2026.
+2026.  
+[Paper](https://arxiv.org/abs/2606.29718)
 
 **[4]** Arike, R., Donoway, E., Bartsch, H., & Hobbhahn, M.  
 *Evaluating Goal Drift in Language Model Agents.*  
 AAAI/ACM Conference on AI, Ethics, and Society, 2025.  
-DOI: `10.1609/aies.v8i1.36541`
+[Paper](https://doi.org/10.1609/aies.v8i1.36541)
 
 **[5]** Huang, J., Chen, X., Mishra, S., Zheng, H. S., Yu, A., Song, X., & Zhou, D.  
 *Large Language Models Cannot Self-Correct Reasoning Yet.*  
-ICLR, 2024.
+ICLR, 2024.  
+[Paper](https://arxiv.org/abs/2310.01798)
 
 **[6]** Sharma, M., Tong, M., Korbak, T., et al.  
 *Towards Understanding Sycophancy in Language Models.*  
-ICLR, 2024.
+ICLR, 2024.  
+[Paper](https://arxiv.org/abs/2310.13548)
 
 **[7]** Shinn, N., Cassano, F., Gopinath, A., Narasimhan, K., & Yao, S.  
 *Reflexion: Language Agents with Verbal Reinforcement Learning.*  
-NeurIPS, 2023.
+NeurIPS, 2023.  
+[Paper](https://arxiv.org/abs/2303.11366)
 
 **[8]** Yao, S., Yu, D., Zhao, J., et al.  
 *Tree of Thoughts: Deliberate Problem Solving with Large Language Models.*  
-NeurIPS, 2023.
+NeurIPS, 2023.  
+[Paper](https://arxiv.org/abs/2305.10601)
 
 Zhou, A., Yan, K., Shlapentokh-Rothman, M., Wang, H., & Wang, Y.-X.  
 *Language Agent Tree Search Unifies Reasoning, Acting, and Planning in Language Models.*  
-ICML, 2024.
+ICML, 2024.  
+[Paper](https://arxiv.org/abs/2310.04406)
 
 **[9]** Yamada, Y., Lange, R. T., Lu, C., Hu, S., Lu, C., Foerster, J., Clune, J., & Ha, D.  
 *The AI Scientist-v2: Workshop-Level Automated Scientific Discovery via Agentic Tree Search.*  
-arXiv:`2504.08066`, 2025.
+2025.  
+[Paper](https://arxiv.org/abs/2504.08066)
 
 **[10]** Jiang, Z., Schmidt, D., Srikanth, D., Xu, D., Kaplan, I., Jacenko, D., & Wu, Y.  
 *AIDE: AI-Driven Exploration in the Space of Code.*  
-arXiv:`2502.13138`, 2025.
+2025.  
+[Paper](https://arxiv.org/abs/2502.13138)
+
+---
+
+## Contributing and License
+
+See [Contributing](CONTRIBUTING.md) for development guidance and [Security](SECURITY.md) for vulnerability reporting.
+
+FOREST is licensed under [Apache-2.0](LICENSE). Dependencies and imported research materials retain their respective licenses.
