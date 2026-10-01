@@ -32,7 +32,7 @@ def closed(properties):
 
 COMMAND = {'anyOf': [string('An actual shell command'), {'type': 'array', 'items': string(), 'minItems': 1}]}
 PROCESS = {'command': COMMAND, 'cwd': optional(string()), 'env_json': optional(string('JSON object of string environment values, or null')), 'timeout': optional({'type': 'number', 'minimum': 0.001})}
-OPEN_RECORDS = {'update_memory', 'graph_command', 'experiment_run', 'context_update', 'theory_check'}
+OPEN_RECORDS = {'update_memory', 'graph_command', 'experiment_run', 'verification_run', 'context_update', 'theory_check'}
 SPECS = {
     'read_file': ('Read an existing workspace file, in bytes.', {'path': string(), 'offset': optional(integer()), 'limit': optional(integer(1, 1_000_000))}),
     'write_file': ('Write a short complete editable file. Build larger source files incrementally with write_file_chunk.',
@@ -66,6 +66,7 @@ SPECS = {
     'update_memory': ('Update editable public research notes; this does not execute a computation.', {'arguments_json': string('JSON object with public goal, decisions, evidence, unresolved_questions and next_experiment as needed')}),
     'graph_command': ('Apply an editable graph command.', {'arguments_json': string('JSON object containing the graph command and its arguments')}),
     'experiment_run': ('Submit a real experiment task.', {'arguments_json': string('JSON object containing the experiment run configuration')}),
+    'verification_run': ('Execute an existing editable verification node. The worker checks actual source artifacts and rerun outputs; an agent verdict cannot grant acceptance. Create the node through graph_command first, and inspect its completed verification state with results.', {'arguments_json': string('JSON object containing node_id and optional request_id; the node must have config.kind=verification')}),
     'context_update': ('Update editable node context metadata.', {'arguments_json': string('JSON object containing node context overrides')}),
     'theory_check': ('Submit a real symbolic or numerical theory check.', {'arguments_json': string('JSON object containing the theory check configuration')}),
 }

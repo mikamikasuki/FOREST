@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Download, GitBranch, RefreshCw } from "lucide-react";
 import { api, formatDate } from "./api";
 import type { Json } from "./api";
-import { Badge, Button } from "./ui";
+import { Badge, Button, JsonView } from "./ui";
 import "./run-evidence.css";
 
 type EvidenceFile = { path: string; bytes: number };
@@ -24,6 +24,8 @@ export function RunEvidence({ runId }: { runId: string }) {
   const [open, setOpen] = useState(false);
   const [lineage, setLineage] = useState<Lineage | null>(null);
   const [session, setSession] = useState<SessionState | null>(null);
+  const [verification, setVerification] = useState<Json | null>(null);
+  const [verificationError, setVerificationError] = useState("");
   const [selected, setSelected] = useState(runId);
   const [error, setError] = useState("");
   const [sessionError, setSessionError] = useState("");
@@ -31,7 +33,7 @@ export function RunEvidence({ runId }: { runId: string }) {
   const [filter, setFilter] = useState("");
   const [visibleFiles, setVisibleFiles] = useState(15);
   useEffect(() => {
-    setSelected(runId); setLineage(null); setSession(null); setFilter(""); setVisibleFiles(15);
+    setSelected(runId); setLineage(null); setSession(null); setVerification(null); setVerificationError(""); setFilter(""); setVisibleFiles(15);
   }, [runId]);
   useEffect(() => {
     if (!open) return;
@@ -42,6 +44,7 @@ export function RunEvidence({ runId }: { runId: string }) {
       const result = await Promise.allSettled([
         api<Lineage>(`/runs/${runId}/lineage`),
         api<SessionState>(`/runs/${selected}/session?summary=true`),
+        api<Json>(`/runs/${selected}/verification`),
       ]);
       if (active) {
         if (result[0].status === "fulfilled") {
@@ -50,6 +53,8 @@ export function RunEvidence({ runId }: { runId: string }) {
         } else setError(String(result[0].reason?.message || result[0].reason));
         if (result[1].status === "fulfilled") { setSession(result[1].value); setSessionError(""); }
         else { setSession(null); setSessionError(String(result[1].reason?.message || result[1].reason)); }
+        if (result[2].status === "fulfilled") { setVerification(result[2].value); setVerificationError(""); }
+        else { setVerification(null); setVerificationError(String(result[2].reason?.message || result[2].reason)); }
       }
       busy = false;
     };
@@ -64,7 +69,7 @@ export function RunEvidence({ runId }: { runId: string }) {
   const files = (run?.files || []).filter((file) => file.path.toLowerCase().includes(filter.toLowerCase()));
   const saved = session?.session;
   const steps = saved?.transcript_count ?? saved?.steps ?? saved?.transcript?.length;
-  const select = (id: string) => { setSelected(id); setSession(null); setVisibleFiles(15); setFilter(""); };
+  const select = (id: string) => { setSelected(id); setSession(null); setVerification(null); setVerificationError(""); setVisibleFiles(15); setFilter(""); };
   return (
     <details className="run-evidence" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary><GitBranch size={14} /> Evidence and recovery</summary>
@@ -88,6 +93,12 @@ export function RunEvidence({ runId }: { runId: string }) {
               <span>{!run.node_id ? "Run record" : run.current ? "Matches current node" : "Node has changed"}</span>
               {run.node_id && <span>Used revision {run.node_revision}; current {run.current_node_revision ?? "unavailable"}</span>}
             </div>
+            {verificationError && <p role="alert" className="run-evidence-error">Verification: {verificationError}</p>}
+            {verification && <details className="run-evidence-attempts" open>
+              <summary>Evidence verification · {verification.verification_status || "unverified"}</summary>
+              <p>{verification.verification_scope}</p>
+              <JsonView value={verification} />
+            </details>}
             {!!run.dependencies?.length && <div className="run-evidence-dependencies"><span>Depends on</span>
               {run.dependencies.map((id) => <button type="button" key={id} onClick={() => select(id)}>
                 {lineage.runs.find((item) => item.id === id)?.node_title || id.slice(0, 8)}

@@ -74,6 +74,8 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     if node:
         merged.update(instructions=node.instructions, node_type=node.type, node_title=node.title,
                       context_overrides=deepcopy(node.context_overrides), input_references=deepcopy(node.inputs))
+    from services.api.verification import prepare_verification_enqueue
+    merged, dependencies = prepare_verification_enqueue(s, p, kind, merged, node, dependencies)
     provider_id = merged.get('provider_id') or p.config.get('provider_id')
     if not provider_id:
         preference=s.get(Preference,'settings')
@@ -90,12 +92,13 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
                   dependencies=dependencies or [], priority=int(config.get('priority', 0)))
     s.add(run)
     s.flush()
+    run.resource = {**run.resource, 'verification_status': 'unverified'}
     if merged.get('provider_snapshot'):
         run.config = {**merged,'provider_snapshot':{**merged['provider_snapshot'],'_usage_context':{'project_id':project_id,'run_id':run.id}}}
     run.output_path = f'runs/{run.id}'
     if node:
         node.execution_status = 'queued'
-        node.extra = {**node.extra, 'latest_run_id': run.id}
+        node.extra = {**node.extra, 'latest_run_id': run.id, 'verification_status': 'unverified'}
     emit(s, project_id, 'run_queued', {'run_id': run.id, 'node_id': run.node_id})
     return run
 
@@ -153,6 +156,7 @@ def enqueue_selected(s, node_ids, request_id=None, overrides=None):
     Request IDs identify each selected node consistently across repeated calls.
     """
     from research.kernel import topological_order
+    from research.kernel.graph import execution_edges
     selected = set(node_ids)
     if not selected:
         return []
@@ -163,15 +167,7 @@ def enqueue_selected(s, node_ids, request_id=None, overrides=None):
     if not selected <= nodes.keys():
         error('CROSS_PROJECT', 'All selected nodes must belong to the same project', 422)
     branches = {b['id']: b for b in graph['branches']}
-    edges = [e for e in graph['edges'] if e['relation'] in ('depends_on', 'consumes')]
-    # Explicit node inputs are operational dependencies even when the canvas
-    # omits an arrow. This prevents a consumer from racing its producer.
-    for n in graph['nodes']:
-        for ref in n.get('inputs', []):
-            if isinstance(ref, dict) and ref.get('node_id') in nodes:
-                pair = (ref['node_id'], n['id'])
-                if not any((e['source'], e['target']) == pair for e in edges):
-                    edges.append({'source': pair[0], 'target': pair[1], 'relation': 'consumes'})
+    edges = execution_edges(graph)
     execution_graph = {**graph, 'edges': edges}
     ordered = topological_order(execution_graph, selected)
     created = {}
@@ -203,21 +199,18 @@ def enqueue_selected(s, node_ids, request_id=None, overrides=None):
         cfg = dict(overrides or {})
         kind = cfg.get('kind') or n.config.get('kind')
         if not kind:
-            kind = 'command' if n.config.get('command') else 'experiment' if n.type in ('experiment', 'baseline') else 'analysis' if n.type == 'analysis' else 'agent'
+            kind = 'verification' if n.type == 'verification' else 'command' if n.config.get('command') else 'experiment' if n.type in ('experiment', 'baseline') else 'analysis' if n.type == 'analysis' else 'agent'
         created[nid] = enqueue(s, p.id, kind, cfg, f'{request_id}:{nid}', n, list(dict.fromkeys(dependencies)))
     return list(created.values())
 
 
 def enqueue_nodes(s, node_id, scope='single', request_id=None, overrides=None):
+    from research.kernel.graph import execution_edges
     node = get(s, Node, node_id)
     p = _lock_project(s, node.project_id)
     graph = graph_from_db(s, p)
     nodes = {n['id']: n for n in graph['nodes'] if not n.get('archived')}
-    edges = [e for e in graph['edges'] if e['relation'] in ('depends_on', 'consumes')]
-    for n in graph['nodes']:
-        for ref in n.get('inputs', []):
-            if isinstance(ref, dict) and ref.get('node_id') in nodes:
-                edges.append({'source': ref['node_id'], 'target': n['id']})
+    edges = execution_edges(graph)
     selected = {node_id}
     direction = 'up' if scope in ('ancestors', 'to_here') else 'down'
     if scope != 'single':

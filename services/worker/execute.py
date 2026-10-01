@@ -135,6 +135,13 @@ def execute(run_id):
     with Session() as s:
         run=get(s,TaskRun,run_id); config=run.config; pid=run.project_id; kind=run.kind; node_id=run.node_id; branch=s.get(Branch,run.branch_id) if run.branch_id else s.scalar(select(Branch).where(Branch.project_id==pid,Branch.is_main==True)); branch_workspace=branch.workspace if branch else '.'
         output=safe_path(project_dir(pid),run.output_path); root=project_dir(pid); source_workspace=safe_path(root,branch_workspace)
+        from services.api.verification import verification_gate
+        gate=verification_gate(s,run)
+        if not gate['ready']:
+            from research.agents.runtime import AgentYield
+            run.resource={**run.resource,'blocked_reason':gate['blocked_reason'],'verification_gate':gate}
+            s.add(run); s.commit()
+            raise AgentYield('waiting_input',reason=gate['message'])
     output.mkdir(parents=True,exist_ok=True); workspace=output/'workspace'; workspace.mkdir(exist_ok=True)
     # Capture editable working files at task start, excluding previous run output.
     if source_workspace!=root and config.get('execution_attempt',{}).get('number',1)==1:
@@ -143,6 +150,15 @@ def execute(run_id):
                 target=workspace/f.relative_to(source_workspace); target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(f,target)
     for binding in (config.get('resolved_inputs',[]) if config.get('execution_attempt',{}).get('number',1)==1 else []):
         origin=safe_path(root,binding['source_path'],True); destination=safe_path(workspace,binding['destination']); destination.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(origin,destination)
+    if kind!='verification':
+        with Session() as s:
+            gate=verification_gate(s,get(s,TaskRun,run_id),copied_workspace=workspace)
+        if not gate['ready']:
+            from research.agents.runtime import AgentYield
+            with Session.begin() as s:
+                live=get(s,TaskRun,run_id)
+                live.resource={**live.resource,'blocked_reason':gate['blocked_reason'],'verification_gate':gate}
+            raise AgentYield('waiting_input',reason=gate['message'])
     config={k:v for k,v in config.items() if k!='_repository_source'}
     repository_source=None
     if config.get('repository') is not None or kind=='repository_clone':
@@ -167,6 +183,36 @@ def execute(run_id):
         result=run_agent(run_id,workspace,config)
         # Completed agent files are a proposed output; explicit branch copy keeps active edits safe.
         return with_repository(result)
+    if kind=='verification':
+        from services.api.verification import finish_verification, _contract, _artifacts
+        contract=_contract(config)
+        command=config.get('command')
+        if command:
+            # Branch snapshots or imported producer outputs cannot stand in for
+            # outputs of this actual independent execution.
+            reconnect=(config.get('execution_backend')=='container' and
+                       config.get('execution_attempt',{}).get('mode')=='container_reconnect')
+            for scope,relative in _artifacts(contract):
+                if scope=='verifier' and not reconnect:
+                    target=safe_path(workspace,relative)
+                    if target.is_file(): target.unlink()
+            if config.get('execution_backend')=='container':
+                if config.get('remote'): raise ValueError('Choose container execution or remote SSH, not both')
+                from runners.container import execute_container
+                execute_container(config,workspace,output)
+            elif config.get('remote'):
+                from runners.remote import execute_remote
+                outputs=[relative for scope,relative in _artifacts(contract) if scope=='verifier']
+                remote={**config['remote'],'outputs':list(dict.fromkeys([*config['remote'].get('outputs',[]),*outputs]))}
+                execute_remote({**config,'remote':remote},workspace,output)
+            else:
+                argv=['/bin/sh','-c',command] if isinstance(command,str) else command
+                proc=local_command(argv,workspace,output,config)
+                if proc.returncode: raise RuntimeError('Verification command exited '+str(proc.returncode))
+        return finish_verification(run_id)
+    if kind=='research_route_review':
+        from research.planning.route_review import execute_route_review
+        return execute_route_review(run_id,config,output)
     if kind=='research_plan':
         from research.planning.loop import planning_context,compact_planning_context,apply_plan,PLANNER_INSTRUCTIONS
         context=planning_context(pid)
@@ -619,7 +665,8 @@ def main():
     out.mkdir(parents=True,exist_ok=True)
     try: result=execute(args.run_id); receipt={'status':'completed','exit_code':0,'metrics':result,'elapsed_seconds':time.monotonic()-start}
     except __import__('research.agents.runtime',fromlist=['AgentYield']).AgentYield as exc:
-        receipt={'status':exc.status,'wait_for':exc.wait_for,'resume_after':exc.resume_after,'reason':exc.reason,'exit_code':0,'elapsed_seconds':time.monotonic()-start}
+        receipt={'status':exc.status,'wait_for':exc.wait_for,'resume_after':exc.resume_after,'reason':exc.reason,
+                 'error':exc.reason,'exit_code':0,'elapsed_seconds':time.monotonic()-start}
     except __import__('research.agents.budget',fromlist=['BudgetExceeded']).BudgetExceeded as exc:
         receipt={'status':'budget_exhausted','reason':str(exc),'error':str(exc),'exit_code':0,'elapsed_seconds':time.monotonic()-start}
     except Exception as exc:

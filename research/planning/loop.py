@@ -1,5 +1,6 @@
 """Real model proposals, checked against the current editable graph before adoption."""
 import json
+from copy import deepcopy
 from pathlib import Path
 from sqlalchemy import select
 from services.api.db import Session, Project, TaskRun, SourcePaper, ResearchClaim, Hypothesis, uid, now, asdict
@@ -11,6 +12,11 @@ PLANNER_INSTRUCTIONS = '''An example COMMAND SHAPE (replace branch_id and task d
 Context uses an automatically selected working set: inspect context_coverage before inferring that work or evidence is absent. Counts describe the complete project; omitted records remain in full_context_artifact and can be read now through read_context_segment. Read every required control page before submitting a plan; full project goals and constraints retain their original authority. Trial dispositions and global best summaries refer to the entire measured history, not only displayed runs.
 You plan the next real research work in an editable project. Establish a strong baseline before candidate comparisons. Follow measured results, investigate failures, propose ablations and discriminating experiments, and keep all contrary evidence. The publication profile defaults to full_submission. Its submission_quality gaps and remaining real experiment matrix drive the next cycle; a pilot or an empty queue cannot satisfy full delivery. Retrieve and read the accepted-paper corpus, infer complete comparison/data/statistical workload, execute it, independently review the actual draft and repair the resulting gaps. Never substitute a bundled example for the user's question. Every experiment has a duty: effectiveness, mechanism, scenario_value or alternative_explanation. No simulated providers, numbers, progress or completion. All files and research choices remain editable. Work in English.
 Return JSON {"action":"continue|completed|blocked", "rationale":"evidence-grounded decision", "evidence_run_ids":[], "best_estimate":"...", "against":"...", "decisive_unknown":"...", "cheapest_resolution":"...", "commands":[]}. Commands use {"operation":"add_node|edit_node|add_dependency|fork_branch|prune_branch|set_main_branch", "targets":[], "params":{}}. For add_node supply id (unique descriptive string), branch_id from the graph, type, title, instructions, config, inputs and position:{x,y}. config for research steps uses kind:'agent', role from the supplied specialist roles and expected_outputs when known. Specialist roles include Literature Scout, Benchmark Curator, Experiment Designer, Baseline Reproducer, Engineer, Experimenter, Analyst, Figure Designer, Visual Selector, Layout Reviewer, Writer and Submission Reviewer. For executable existing scripts use kind:'experiment', command:argv, metrics_file:'metrics.json', experiment_duty, and input references to producer node files. Never invent executable paths that have not been produced. Add depends_on edges via add_dependency params {source:id,target:id}. Use inputs [{node_id:id,path:'file',destination:'file',branch_id:id}] to consume actual producer files. Engineer writes code and checkpoint support, Experimenter runs it with start_process and wait_for_process and saves predictions/metrics, Analyst independently recalculates. Use a few useful nodes at a time; do not create empty tasks to inflate graph size. Completed requires achieved goal and cited completed measured runs with required deliverables present AND a ready submission audit for full_submission, not simply an empty queue. Blocked must state an exact missing external input, not merely unfinished experiments or a rejected delivery audit. A failed attempt is evidence for repair or a different path, never successful research. Do not silently replace existing working files or discard results.'''
+PLANNER_INSTRUCTIONS += '''
+Critical measured handoffs require editable independent verifier DAG nodes, not a producer's self-issued pass or LLM praise. Add config.kind='verification', config.verification={producer_node_id:actual_producer_id,checks:[{id:'recompute-score',kind:'numeric_compare',source:'metrics.json',repeat:'metrics.json',pointers:['/score'],absolute_tolerance:0,relative_tolerance:0}]} and an actual distinct recomputation command that writes repeat files. For source-data checks use explicit csv_coverage identities, numeric columns and the declared expected matrix. Connect producer->verifier->consumer; consumers declare required_verification:[verifier_id] or source input verification_node_id. Read server-bound verification_status and exact check scope. Rejected or inconclusive material requires repair/new evidence; do not announce scientific truth from a limited arithmetic or coverage check. Evidence Verifier specifies checks; Open Source Research Advisor offers implementation advice only.
+Declare a complete comparison_signature containing dataset, dataset_version, split, evaluation_protocol, metric, statistical_unit and budget, plus objective comparison_fields. Missing or contradictory declarations remain unverified/incomparable, not baseline champions. Preserve selection history, confirmation access and contrary observations; use comparable reruns after editable protocol changes.
+Read route_health and latest_route_review. Research Direction Reviewer reads the complete recorded route; its advice does not verify results. When controller.replan_required is true, return action:'continue' and replanning:{reason:'concrete signal and response',new_direction:'new scientific question/hypothesis/data/method',goal_alignment:'why this serves the unchanged original goal',stop_node_ids:[actual_ids],evidence_run_ids:[actual_ids]}. Cite the actual signal runs and materially edit the relevant work or retire the old nodes/branch, then add an executable scientific step. Title/layout edits, identical retries, duplicate nodes, only review/verification tasks and more counterexample checks cannot resolve a route failure. Declared research_activity:'counterexample' has a default allowance of two consecutive checks; after excess choose a different useful direction immediately. Keep all prior evidence editable and preserved.
+'''
 
 
 def measurement_excerpt(value, limit=3200):
@@ -61,16 +67,30 @@ def planning_context(project_id):
     with Session() as s:
         p=get(s,Project,project_id); graph=graph_from_db(s,p); graph.pop('_history',None)
         runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==p.id).order_by(TaskRun.created_at.desc())))
+        from services.api.verification import verification_for_run, numerical_coverage_for_run, required_policy
+        from research.planning.route_review import route_health
+        verifications={r.id:verification_for_run(s,r) for r in runs}
+        numerical={r.id:numerical_coverage_for_run(s,r) for r in runs if r.kind in ('experiment','command','agent','analysis') and r.status=='completed'}
         from .scoreboard import compare_trials
-        trial_rows=compare_trials([{'id':r.id,'kind':r.kind,'status':r.status,'metrics':r.metrics,'config':r.config,'created_at':r.created_at} for r in runs],p.config.get('objective'))
+        trial_rows=compare_trials([{'id':r.id,'kind':r.kind,'status':r.status,'metrics':r.metrics,'config':r.config,'created_at':r.created_at,
+                                   'verification_status':verifications[r.id]['verification_status'],
+                                   'numerical_verification':numerical.get(r.id,{}),
+                                   'verification_policy':'required' if required_policy(s,r) else 'optional'} for r in runs],p.config.get('objective'))
         profile=publication_profile(p.config)
         sources=[{'id':x.id,'title':x.title,'data':x.data} for x in s.scalars(select(SourcePaper).where(SourcePaper.project_id==p.id))]
-        audit=assess_submission(project_dir(p.id),profile,sources=sources,runs=[_audit_run(r) for r in runs])
+        audit=submission_audit(s,p)
         from research.publication.references import reference_context
         summary={**{k:v for k,v in audit.items() if k not in ('gaps','remaining_cells','profile')},
                  'gaps':[{**g,'finding':g['finding'][:600]} for g in audit['gaps'][:24]],'total_gaps':len(audit['gaps'])}
-        return {'trials':trial_rows,'publication_audit':audit,'framework_reference_corpus':reference_context(),'project':{'id':p.id,'goal':p.goal,'budget':p.budget,'controller':p.config.get('controller',{}),'objective':p.config.get('objective'),'publication_profile':profile,'submission_quality':summary,'publication_instructions':publication_instructions(profile),'planner_context_chars':p.config.get('planner_context_chars',24000)},'graph':graph,
+        health=route_health(graph,[asdict(r) for r in runs],p.config)
+        return {'trials':trial_rows,'publication_audit':audit,'framework_reference_corpus':reference_context(),
+                'route_health':health,'latest_route_review':_latest_route_review(p,runs),
+                'project':{'id':p.id,'goal':p.goal,'budget':p.budget,'controller':p.config.get('controller',{}),'objective':p.config.get('objective'),
+                           'verification_policy':p.config.get('verification_policy','optional'),
+                           'publication_profile':profile,'submission_quality':summary,'publication_instructions':publication_instructions(profile),'planner_context_chars':p.config.get('planner_context_chars',24000)},'graph':graph,
                 'runs':[{'id':r.id,'node_id':r.node_id,'status':r.status,'kind':r.kind,'metrics':r.metrics,'error':r.error,'output_path':r.output_path,
+                         'verification':verifications[r.id],
+                         'numerical_verification':numerical.get(r.id,{}),
                          'artifact_observations':run_artifact_observations(r,project_dir(p.id)) if i<12 else []} for i,r in enumerate(runs)],
                 'sources':sources,
                 'claims':[asdict(x) for x in s.scalars(select(ResearchClaim).where(ResearchClaim.project_id==p.id))]}
@@ -80,11 +100,63 @@ def _audit_run(run):
     return {key:getattr(run,key) for key in ('id','status','kind','output_path','config','metrics')}
 
 
+def _latest_route_review(project,runs):
+    """Expose actual completed, attempt-bound advice and its currentness."""
+    for run in runs:
+        if run.kind!='research_route_review' or run.status!='completed':continue
+        directory=safe_path(project_dir(project.id),run.output_path)
+        try:
+            receipt=json.loads((directory/'result.json').read_text())
+            report=json.loads((directory/'route_review.json').read_text())
+            expected=run.config.get('execution_attempt',{}).get('id')
+            if receipt.get('status')!='completed' or (expected and receipt.get('attempt_id')!=expected):continue
+            if report.get('review_run_id')!=run.id or not report.get('model'):continue
+            return {**report,'current':report.get('project_revision')==project.revision and report.get('project_goal')==project.goal,
+                    'authority':'Scientific direction proposal; not a source-bound verification verdict'}
+        except (OSError,ValueError,TypeError):continue
+    return None
+
+
 def submission_audit(session, project):
     """One current delivery check shared by autonomous and assisted completion."""
     runs=list(session.scalars(select(TaskRun).where(TaskRun.project_id==project.id).order_by(TaskRun.created_at.desc())))
     sources=[{'id':x.id,'data':x.data} for x in session.scalars(select(SourcePaper).where(SourcePaper.project_id==project.id))]
-    return assess_submission(project_dir(project.id),publication_profile(project.config),sources=sources,runs=[_audit_run(r) for r in runs])
+    audit=assess_submission(project_dir(project.id),publication_profile(project.config),sources=sources,runs=[_audit_run(r) for r in runs])
+    from services.api.verification import verification_for_run, numerical_coverage_for_run
+    critical=set()
+    if project.config.get('verification_policy')=='required':
+        if audit.get('manifest_path'):
+            try:
+                manifest=json.loads(safe_path(project_dir(project.id),audit['manifest_path']).read_text())
+                critical.update(row['run_id'] for row in manifest.get('measured_cells',[]) if isinstance(row,dict) and row.get('run_id'))
+                critical.update(manifest.get('analysis_run_ids',[]))
+            except (OSError,ValueError,TypeError):pass
+    # Current node policy applies to its latest actual attempt. Superseded
+    # evidence remains recorded without becoming a permanent completion gate.
+    node_policies={node['id']:node.get('config',{}).get('verification_policy')
+                   for node in graph_from_db(session,project)['nodes']}
+    seen=set()
+    for run in runs:
+        if run.kind not in ('experiment','command','agent','analysis'):continue
+        key=run.node_id or (run.kind,run.branch_id)
+        if key in seen:continue
+        seen.add(key)
+        required=(node_policies.get(run.node_id)=='required' or run.config.get('verification_policy')=='required'
+                  or (project.config.get('verification_policy')=='required' and not audit.get('manifest_path')))
+        if required and run.status=='completed':critical.add(run.id)
+    checks=[]
+    for run in runs:
+        if run.id not in critical:continue
+        observed=verification_for_run(session,run)
+        observed={**observed,'numerical_verification':numerical_coverage_for_run(session,run)}
+        checks.append(observed)
+        if observed['verification_status']!='accepted' or not observed['numerical_verification']['ready']:
+            audit['gaps'].append({'code':'independent_verification','finding':'Critical measured run '+run.id+' requires current source-bound acceptance of its numerical evidence; actual status: '+observed['verification_status']+', numeric coverage: '+str(observed['numerical_verification']['ready']),'next_role':'Evidence Verifier'})
+    if checks:
+        audit['independent_verification']=checks
+        audit['ready']=not audit['gaps']
+        audit['status']='ready' if audit['ready'] else 'needs_revision'
+    return audit
 
 
 def compact_planning_context(context, char_budget=24000):
@@ -112,10 +184,15 @@ def compact_planning_context(context, char_budget=24000):
     result={'project':project,'graph':{'revision':graph['revision'],'nodes':[],'edges':[],'branches':[]},
             'graph_summary':{'execution_status_counts':dict(Counter(n.get('execution_status','idle') for n in nodes))},
             'runs':[],'trials':[],'sources':[],'claims':[],'global_best_by_conditions':[], 'context_coverage':coverage}
+    if 'route_health' in context:result['route_health']=deepcopy(context['route_health'])
+    if context.get('latest_route_review') is not None:
+        review=context['latest_route_review']
+        result['latest_route_review']={key:deepcopy(review[key]) for key in ('review_run_id','current','decision','summary','findings','stop_node_ids','recommendation','authority') if key in review}
+        result['latest_route_review']['coverage_retrievable_from']='full_context_artifact'
     # Build champions from all measured trials, not the display window.
     champions={}; direction=(project.get('objective') or {}).get('direction','min')
     for trial in trials:
-        if trial.get('value') is None: continue
+        if trial.get('value') is None or trial.get('comparison_eligible') is not True: continue
         key=encoded(trial.get('conditions',{})); old=champions.get(key)
         if old is None or (trial['value']<old['value'] if direction=='min' else trial['value']>old['value']): champions[key]=trial
     best=list(champions.values()); best_ids={x['run_id'] for x in best}
@@ -136,12 +213,16 @@ def compact_planning_context(context, char_budget=24000):
     for branch in sorted(graph.get('branches',[]),key=lambda b:(b['id']!=selected,not b.get('is_main',False))):
         add(result['graph'],'branches',{k:branch.get(k) for k in ('id','name','status','is_main')},budget//10)
     for trial in best:
-        add(result,'global_best_by_conditions',{'run_id':trial['run_id'],'metric':trial['metric'],'value':trial['value'],'conditions':trial.get('conditions',{}),'scope':'entire_project_history'},budget//8)
+        add(result,'global_best_by_conditions',{'run_id':trial['run_id'],'metric':trial['metric'],'value':trial['value'],'conditions':trial.get('conditions',{}),
+            'verification_status':trial.get('verification_status','unverified'),'scope':'Declared comparable conditions in entire project history; numerical ranking is not scientific confirmation'},budget//8)
     ordered_trials=sorted(trials,key=lambda t:(t['run_id'] not in best_ids,t['run_id'] not in recent_ids,t.get('disposition')!='baseline'))
     for trial in ordered_trials: add(result,'trials',trial,budget//6)
     ordered_runs=sorted(enumerate(runs),key=lambda item:(item[1]['id'] not in best_ids|recent_ids,item[0]))
     for _,run in ordered_runs:
         card={k:run.get(k) for k in ('id','node_id','status','kind','output_path')}
+        if run.get('verification'):
+            card['verification']={key:run['verification'].get(key) for key in ('verification_status','verification_scope','checks')}
+        if run.get('numerical_verification'):card['numerical_verification']=deepcopy(run['numerical_verification'])
         if run.get('error'): card['error']=str(run['error'])[:400]
         # Numeric objectives live in trials. Large per-example measurements are
         # retrievable from the full context and actual output path.
@@ -163,6 +244,8 @@ def compact_planning_context(context, char_budget=24000):
         card['title']=str(node.get('title',''))[:160]
         card['instructions_excerpt']=str(node.get('instructions',''))[:500]
         cfg=node.get('config',{});card['execution_kind']=cfg.get('kind');card['inputs']=node.get('inputs',[])
+        for name in ('verification','required_verification','verification_policy','research_activity'):
+            if name in cfg:card[name]=deepcopy(cfg[name])
         if size(card['inputs'])>1000: card['inputs']=card['inputs'][:3];card['inputs_omitted']=True
         add(result['graph'],'nodes',card,budget//3)
     included_nodes={n['id'] for n in result['graph']['nodes']}
@@ -179,6 +262,77 @@ def compact_planning_context(context, char_budget=24000):
     coverage['global_best_groups_included']=len(result['global_best_by_conditions'])
     coverage['exceeds_working_set_hint']=size(result)>budget
     return result
+
+
+def validate_replanning(plan,before,after,runs,control,health,goal):
+    """Check an executable route change against real recorded repetition.
+
+    This validates references and changed work, not the scientific merit of a
+    model's new direction. Original goals and historical evidence stay intact.
+    """
+    if not control.get('replan_required'):return None
+    if plan.get('action')!='continue':
+        raise ValueError('A required route revision needs actual new graph work before completion')
+    revision=plan.get('replanning')
+    if not isinstance(revision,dict):raise ValueError('Required replanning needs reason, new_direction, goal_alignment, stop_node_ids and evidence_run_ids')
+    for name in ('reason','new_direction','goal_alignment'):
+        if not isinstance(revision.get(name),str) or not revision[name].strip():
+            raise ValueError('Replanning must state '+name)
+    if before.get('goal',goal)!=after.get('goal',goal) or after.get('goal',goal)!=goal:
+        raise ValueError('Replanning must preserve the current original research goal')
+    old={node['id']:node for node in before['nodes']};new={node['id']:node for node in after['nodes']}
+    actual_runs={run['id'] for run in runs}
+    stopped=revision.get('stop_node_ids');evidence=revision.get('evidence_run_ids')
+    for name,refs,available in (('stop_node_ids',stopped,set(old)),('evidence_run_ids',evidence,actual_runs)):
+        if not isinstance(refs,list) or any(not isinstance(ref,str) or ref not in available for ref in refs) or len(set(refs))!=len(refs):
+            raise ValueError('Replanning '+name+' must reference unique actual records')
+    if not evidence:raise ValueError('Replanning requires actual evidence run references')
+    signal_runs={rid for signal in health.get('signals',[]) for rid in signal.get('run_ids',[])}
+    if signal_runs and not signal_runs.intersection(evidence):
+        raise ValueError('Replanning must cite the actual detected route failures')
+    active={branch['id'] for branch in after.get('branches',[]) if branch.get('status','active')=='active'}
+    scientific_keys={'command','entrypoint','research_question','hypothesis','dataset','dataset_version','datasets',
+                     'split','split_policy','evaluation_protocol','metric','statistical_unit','seeds','baseline',
+                     'candidate','method','algorithm','parameters','condition','comparison_budget','fair_budget'}
+    review_roles={'Reviewer','Evidence Verifier','Research Direction Reviewer','Open Source Research Advisor',
+                  'Submission Reviewer','Layout Reviewer','Visual Selector','Figure Designer'}
+    def scientific(node):
+        cfg=node.get('config',{})
+        return {'instructions':str(node.get('instructions','')).strip(),
+                'config':{key:deepcopy(value) for key,value in cfg.items() if key in scientific_keys},
+                'inputs':deepcopy(node.get('inputs',[]))}
+    def productive(node):
+        cfg=node.get('config',{})
+        return (not node.get('archived') and node.get('branch_id') in active and
+                cfg.get('kind') in ('agent','experiment','command','analysis') and
+                cfg.get('role') not in review_roles and cfg.get('research_activity') not in ('counterexample','counterexample_check'))
+    changed=[]
+    for ident,node in new.items():
+        if not productive(node):continue
+        description=scientific(node)
+        if ident in old:
+            original=scientific(old[ident])
+            meaningful=description['config']!=original['config'] or description['inputs']!=original['inputs']
+            if node.get('config',{}).get('kind')=='agent' and description['instructions'] and description['instructions']!=original['instructions']:
+                # Instructions define an editable agent task. Structural route
+                # admission does not pretend to prove its scientific merit.
+                meaningful=True
+        else:
+            meaningful=bool(description['instructions'] and
+                            (description['config'] or node.get('config',{}).get('kind')=='agent') and
+                            all(description!=scientific(existing) for existing in old.values()))
+        if meaningful:changed.append(ident)
+    if not changed:raise ValueError('Replanning needs a materially changed scientific task; title/layout edits, duplicate retries and only review/verification/counterexample work do not qualify')
+    affected={nid for signal in health.get('signals',[]) for nid in signal.get('node_ids',[]) if nid in old and not old[nid].get('archived')}
+    affected.update(nid for nid in control.get('route_replan_node_ids',[]) if nid in old and not old[nid].get('archived'))
+    if affected-set(stopped):
+        raise ValueError('Replanning must identify the affected route nodes in stop_node_ids')
+    for ident in stopped:
+        node=new.get(ident)
+        if node and not node.get('archived') and node.get('branch_id') in active and ident not in changed:
+            raise ValueError('Retire or materially repair each stopped node before continuing the route')
+    return {**deepcopy(revision),'changed_scientific_node_ids':changed,
+            'verification_scope':'Actual references and editable task changes; new scientific direction remains an evidence-grounded proposal'}
 
 def apply_plan(project_id, run_id, plan, expected_revision):
     if plan.get('action') not in ('continue','completed','blocked') or not str(plan.get('rationale','')).strip():
@@ -197,6 +351,8 @@ def apply_plan(project_id, run_id, plan, expected_revision):
             emit(s,p.id,'plan_changed',{'run_id':run_id,'status':'stale','revision':p.revision})
             return {'status':'proposal_only','reason':'Project edited while planning; next cycle will use the current graph','plan':plan}
         graph=graph_from_db(s,p)
+        original_graph=deepcopy(graph)
+        project_runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==p.id)))
         for c in commands:
             if c.get('operation') not in allowed: raise ValueError('Unsupported autonomous graph operation')
             params=c.get('params',{})
@@ -207,7 +363,15 @@ def apply_plan(project_id, run_id, plan, expected_revision):
                     raise ValueError('Experiment requires an explicit argumentative duty')
                 if cfg.get('kind')=='experiment' and not (cfg.get('command') or cfg.get('entrypoint')):
                     raise ValueError('Implement the experiment first; no example fallback exists')
+                if cfg.get('kind')=='verification':
+                    spec=cfg.get('verification',{})
+                    checks=spec.get('checks') if isinstance(spec,dict) else None
+                    if not isinstance(spec,dict) or not spec.get('producer_node_id') or not isinstance(checks,list) or not checks or any(not isinstance(check,dict) or not check.get('id') or not check.get('kind') for check in checks):
+                        raise ValueError('A verification node requires an actual producer and explicit identified executable checks')
             graph=GraphCommandService(graph,project_dir(p.id)).apply({**c,'request_id':uid(),'expected_revision':graph['revision']})['graph']
+        from research.planning.route_review import route_health
+        health=route_health(original_graph,[asdict(run) for run in project_runs],p.config)
+        replanned=validate_replanning(plan,original_graph,graph,[asdict(run) for run in project_runs],control,health,p.goal)
         evidence=[]
         for rid in plan.get('evidence_run_ids',[]):
             r=get(s,TaskRun,rid)
@@ -223,6 +387,13 @@ def apply_plan(project_id, run_id, plan, expected_revision):
                 expected=evidence_run.config.get('execution_attempt',{}).get('id')
                 if content.get('status')!='completed' or (expected and content.get('attempt_id')!=expected):
                     raise ValueError('Evidence receipt does not match the completed run: '+evidence_run.id)
+                node=next((item for item in graph['nodes'] if item['id']==evidence_run.node_id),None)
+                required=p.config.get('verification_policy')=='required' or evidence_run.config.get('verification_policy')=='required' or (node and node.get('config',{}).get('verification_policy')=='required')
+                if required and evidence_run.kind in ('experiment','command','agent','analysis'):
+                    from services.api.verification import verification_for_run, numerical_coverage_for_run
+                    accepted=verification_for_run(s,evidence_run)
+                    if accepted['verification_status']!='accepted' or not numerical_coverage_for_run(s,evidence_run)['ready']:
+                        raise ValueError('Critical completion evidence requires current source-bound verification: '+evidence_run.id+' ('+accepted['verification_status']+')')
             pending=[n for n in graph['nodes'] if not n.get('archived') and (not control.get('branch_id') or n['branch_id']==control['branch_id']) and n.get('execution_status') in ('queued','running','waiting','paused','pausing','budget_exhausted')]
             if pending: raise ValueError('Research cannot complete while selected work is still pending')
             missing=[x for x in control.get('required_artifacts',[]) if not safe_path(project_dir(p.id),x).is_file()]
@@ -246,6 +417,8 @@ def apply_plan(project_id, run_id, plan, expected_revision):
         record=Hypothesis(project_id=p.id,title='Research decision',status='adopted' if commands else plan['action'],data={**plan,'origin':'research_controller','run_id':run_id,'graph_revision':p.revision,'evidence_label':'INFERRED'})
         s.add(record); s.flush()
         control={**control,'phase':'EXECUTE' if commands else 'CONFIRM','last_decision_id':record.id,'last_rationale':plan['rationale'], 'last_plan_run':run_id, 'cycles':int(control.get('cycles',0))+1}
+        if replanned is not None:
+            control.update(replan_required=False,last_replanning=replanned,replan_reason=None,route_replan_node_ids=[])
         if plan['action']!='continue': control.update(status=plan['action'],reason=plan['rationale'])
         p.config={**p.config,'controller':control}
         emit(s,p.id,'controller_changed',control)

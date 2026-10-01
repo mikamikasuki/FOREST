@@ -1,9 +1,11 @@
 """Persistent research controller: execute ready work, then plan from actual evidence."""
 from sqlalchemy import select
 from services.api.db import *
-from services.api.common import get,project_dir,safe_path,emit
+from services.api.common import get,project_dir,safe_path,emit,graph_from_db
 from services.worker.scheduler import enqueue_nodes,enqueue,ACTIVE
 from research.planning.loop import submission_audit
+from research.planning.route_review import route_health, route_review_transition, CONTROL_KINDS
+from research.kernel import execution_edges
 
 def advance_projects():
     with Session() as s:
@@ -17,17 +19,61 @@ def advance_projects():
                 if run.status not in ACTIVE: return False
                 # Missing produced inputs can be repaired by the planner. Owner
                 # breakpoints, paused work and budgets still require a decision.
-                return not (run.status=='waiting_input' and run.resource.get('blocked_reason') in ('input_missing','dependency_failed'))
+                return not (run.status=='waiting_input' and run.resource.get('blocked_reason') in (
+                    'input_missing','dependency_failed','verification_required','verification_rejected',
+                    'verification_inconclusive','verification_stale','verification_scope_missing','verification_input_changed',
+                    'verification_scope','verification_source','verification_source_changed','verification_configuration',
+                    'research_route_replan'))
             if any(owns_pending_work(r) for r in runs): continue
+            graph=graph_from_db(s,p)
+            health=route_health(graph,[asdict(r) for r in runs],p.config)
+            route_state=control.get('route_review',{})
+            review_run=s.get(TaskRun,route_state.get('run_id')) if route_state.get('run_id') else None
+            signal_run_ids=sorted({rid for signal in health['signals'] for rid in signal['run_ids']})
+            review_needed=health['replan_required'] and route_state.get('handled_run_ids')!=signal_run_ids
+            real_runs=[r.id for r in runs if r.kind not in CONTROL_KINDS and r.status in ('completed','failed','interrupted')]
+            last_reviewed=set(route_state.get('covered_run_ids',[]))
+            periodic=health['settings']['enabled'] and len(set(real_runs)-last_reviewed)>=health['settings']['review_every_runs']
+            if control.get('max_cycles') is not None and int(control.get('cycles',0))>=int(control['max_cycles']):
+                review_needed=periodic=False
+            if review_run and review_run.status=='completed' and not route_state.get('consumed'):
+                report=review_run.metrics
+                current=report.get('project_revision')==p.revision and report.get('project_goal')==p.goal
+                route_state={**route_state,'consumed':True,'covered_run_ids':report.get('reviewed_run_ids',[]),
+                             'handled_run_ids':route_state.get('trigger_run_ids',[]),'current':current}
+                control=route_review_transition({**control,'route_review':route_state},report,current)
+                review_needed=periodic=False
+                if control.get('status')!='running':
+                    p.config={**p.config,'controller':control};emit(s,pid,'controller_changed',control);continue
+            elif review_run and review_run.status in ('failed','interrupted','cancelled') and not route_state.get('consumed'):
+                control={**control,'status':'blocked','phase':'ROUTE_REVIEW',
+                         'reason':review_run.error or 'Research direction review did not complete',
+                         'route_review':{**route_state,'consumed':True}}
+                p.config={**p.config,'controller':control};emit(s,pid,'controller_changed',control);continue
+            if review_needed or periodic:
+                control={**control,'replan_required':True,'route_health':health,'phase':'ROUTE_REVIEW'}
+                if control.get('autonomous',p.mode=='auto'):
+                    try:
+                        with s.begin_nested():
+                            reviewed=enqueue(s,pid,'research_route_review',{'branch_id':control.get('branch_id')},'route-review:'+uid())
+                        control['route_review']={'run_id':reviewed.id,'trigger_run_ids':signal_run_ids,
+                                                 'covered_run_ids':route_state.get('covered_run_ids',[]),'consumed':False}
+                        control['last_run']=reviewed.id
+                    except Exception as exc:
+                        detail=getattr(exc,'detail',{})
+                        control.update(status='budget_exhausted' if isinstance(detail,dict) and 'BUDGET' in detail.get('code','') else 'blocked',
+                                       reason=detail.get('message',str(exc)) if isinstance(detail,dict) else str(exc))
+                else:
+                    control.update(status='waiting_input',reason='Review the research route and choose a new direction before continuing.')
+                p.config={**p.config,'controller':control};emit(s,pid,'controller_changed',control);continue
             nodes=list(s.scalars(select(Node).where(Node.project_id==pid,Node.archived==False)))
             eligible_branches={b.id for b in s.scalars(select(Branch).where(Branch.project_id==pid)) if b.status=='active'}
             selected_nodes=[n for n in nodes if n.branch_id in eligible_branches and (not control.get('branch_id') or n.branch_id==control['branch_id'])]
-            edges=[(e.source,e.target) for e in s.scalars(select(Edge).where(Edge.project_id==pid,Edge.relation.in_(['depends_on','consumes'])))]
-            edges.extend((ref['node_id'],n.id) for n in nodes for ref in n.inputs if isinstance(ref,dict) and ref.get('node_id'))
+            edges=[(e['source'],e['target']) for e in execution_edges(graph)]
             completed={n.id for n in nodes if n.execution_status=='completed' and n.deliverable_status!='needs_update' and n.extra.get('results_current',True)}
             ready=[n for n in selected_nodes if n.id not in completed and (n.execution_status in ('idle','not_started','needs_update','completed') or n.deliverable_status=='needs_update') and all(source in completed for source,target in edges if target==n.id)]
             try:
-                if ready:
+                if ready and not control.get('replan_required'):
                     target=sorted(ready,key=lambda n:n.created_at)[0]
                     with s.begin_nested(): run=enqueue_nodes(s,target.id,'single','controller:'+uid())[0]
                     control={**control,'phase':'EXECUTE','current_node':target.id,'last_run':run.id}

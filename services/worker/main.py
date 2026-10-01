@@ -158,10 +158,20 @@ class WorkerLoop:
                             candidate=safe_path(project_dir(r.project_id),producer.output_path+'/workspace/'+ref['path'])
                             if candidate.is_file(): actual={'available':True,'path':str(candidate),'relative_path':str(candidate.relative_to(project_dir(r.project_id)))}
                     if not actual.get('available'): missing.append(ref)
-                    elif actual.get('path'): bound.append({'source_path':actual['relative_path'],'destination':ref.get('destination') or Path(ref['path']).name})
+                    elif actual.get('path'): bound.append({'source_path':actual['relative_path'],
+                        'destination':ref.get('destination') or Path(ref['path']).name,
+                        'source_node_id':ref.get('node_id'), 'reference_path':ref.get('path')})
                 if missing:
                     r.status='waiting_input'; r.resource={**r.resource,'blocked_reason':'input_missing'}; r.error='Required produced files are missing: '+json.dumps(missing,ensure_ascii=False); emit(s,r.project_id,'run_changed',{'run_id':r.id,'status':r.status}); continue
                 r.config={**r.config,'resolved_inputs':bound}
+                from services.api.verification import dispatch_verification
+                gate=dispatch_verification(s,r,resolved_inputs=bound)
+                if not gate['ready']:
+                    r.status='waiting_input'; r.resource={**r.resource,'blocked_reason':gate['blocked_reason'],
+                        'verification_gate':gate}; r.error=gate['message']
+                    emit(s,r.project_id,'run_changed',{'run_id':r.id,'status':r.status,'error':r.error,
+                        'blocked_reason':gate['blocked_reason']}); continue
+                r.resource={**r.resource,'verification_gate':gate}
                 b=s.get(Branch,r.branch_id) if r.branch_id else None
                 if b and b.status in ('pruned','archived','disabled'): r.status='waiting_input'; r.error='Branch is paused/pruned/archived'; continue
                 p=get(s,Project,r.project_id)
@@ -318,18 +328,31 @@ class WorkerLoop:
                     emit(s,r.project_id,'run_waiting',{'run_id':r.id,'status':r.status,'wait_for':outcome.get('wait_for',{})})
                 else:
                     r.status=outcome['status']; r.exit_code=outcome.get('exit_code'); r.error=outcome.get('error'); r.metrics=outcome.get('metrics',{}); r.finished_at=now()
+                    from services.api.verification import verification_for_run
+                    verification=verification_for_run(s,r)
+                    r.resource={**r.resource,'verification_status':verification['verification_status'],
+                        'verification':verification}
+                    if r.kind=='verification':
+                        producer_id=verification.get('producer_node_id')
+                        producer=s.get(Node,producer_id) if producer_id else None
+                        source=s.get(TaskRun,verification.get('producer_run_id')) if verification.get('producer_run_id') else None
+                        if producer and source:
+                            current=verification_for_run(s,source)
+                            producer.extra={**producer.extra,'verification_status':current['verification_status'],
+                                'latest_verification_run_id':r.id}
                     emit(s,r.project_id,'run_completed' if r.status=='completed' else 'run_failed',{'run_id':r.id,'status':r.status,'error':r.error})
                 n=s.get(Node,r.node_id) if r.node_id else None
                 if n and n.revision==r.node_revision and n.extra.get('latest_run_id')==r.id:
                     n.execution_status=r.status
                     if r.status in ('completed','failed','interrupted'):
                         n.deliverable_status='ready_for_review' if r.status=='completed' else 'draft'
-                        n.extra={**n.extra,'results_current':r.status=='completed','last_run_id':r.id,'result_revision':r.node_revision}
+                        n.extra={**n.extra,'results_current':r.status=='completed','last_run_id':r.id,'result_revision':r.node_revision,
+                            'verification_status':r.resource.get('verification_status','unverified')}
                         if r.kind=='experiment' and r.status=='completed':
                             recovery=r.metrics.get('mechanism_recovery',[])
                             n.research_status='supported' if recovery and all(x['supported_descriptively'] for x in recovery) else 'not_supported' if recovery else 'unevaluated'
                         n.outputs=[{'kind':'run','id':r.id,'path':r.output_path+'/result.json','project_scope':True,'node_revision':r.node_revision}]
-                        for filename in ('metrics.json','predictions.csv','sources.json','workspace/agent_result.json','workspace/theory_check.json'):
+                        for filename in ('metrics.json','predictions.csv','sources.json','verification.json','workspace/agent_result.json','workspace/theory_check.json'):
                             if (output/filename).is_file(): n.outputs.append({'kind':'file','path':r.output_path+'/'+filename,'project_scope':True,'node_revision':r.node_revision})
                 self.processes.pop(ident,None)
     def run(self):

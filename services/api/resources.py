@@ -239,11 +239,17 @@ def launch(ident:str,body:dict=Body(default={})):
         return asdict(enqueue(s,e.project_id,'experiment',{**e.data,**body,'experiment_id':ident,'experiment_revision':e.revision},body.get('request_id'),n))
 @router.post('/api/experiments/compare')
 def compare_experiments(body:dict=Body(...)):
+    from research.validation.comparability import assess_comparability
+    run_ids=body.get('run_ids')
+    if not isinstance(run_ids,list) or not run_ids or any(not isinstance(rid,str) or not rid.strip() for rid in run_ids) or len(set(run_ids))!=len(run_ids):
+        error('INVALID_COMPARISON','Select a nonempty list of unique run IDs',422)
     with Session() as s:
-        runs=[get(s,TaskRun,rid) for rid in body.get('run_ids',[])]
+        runs=[get(s,TaskRun,rid) for rid in run_ids]
         if len({r.project_id for r in runs})>1: error('CROSS_PROJECT','Runs belong to different projects')
-        protocols=[r.config.get('protocol_version',1) for r in runs]
-        return {'runs':[{'id':r.id,'status':r.status,'metrics':r.metrics,'resource':r.resource,'config':{k:v for k,v in r.config.items() if k!='provider_snapshot'}} for r in runs], 'directly_comparable':len(set(protocols))<=1,'reason':'Same declared protocol revision' if len(set(protocols))<=1 else 'Evaluation protocol changed; reevaluate for direct comparison'}
+        rows=[{'id':r.id,'status':r.status,'metrics':r.metrics,'resource':r.resource,'config':{k:v for k,v in r.config.items() if k!='provider_snapshot'}} for r in runs]
+        try:comparison=assess_comparability(rows,body.get('objective'))
+        except (TypeError,ValueError) as exc:error('INVALID_COMPARISON',str(exc),422)
+        return {'runs':rows,**comparison}
 @router.post('/api/analysis/run')
 def analysis(body:dict=Body(...)):
     with Session.begin() as s: return asdict(enqueue(s,body['project_id'],'analysis',body,body.get('request_id')))

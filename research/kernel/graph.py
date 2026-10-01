@@ -36,9 +36,36 @@ def _index(graph):
     return {n["id"]: n for n in graph.get("nodes", [])}
 
 
+def execution_edges(graph):
+    """Include file and verification bindings in the editable execution DAG."""
+    nodes = _index(graph)
+    edges = [e for e in graph.get("edges", []) if e.get("relation", "depends_on") in EXECUTION]
+    pairs = {(e["source"], e["target"]) for e in edges}
+    for node in nodes.values():
+        config = node.get("config") or {}
+        sources = []
+        for ref in node.get("inputs", []):
+            if isinstance(ref, dict):
+                sources.extend([ref.get("node_id"), ref.get("verification_node_id")])
+        verification = config.get("verification") or {}
+        if isinstance(verification, dict):
+            sources.append(verification.get("producer_node_id"))
+        required = config.get("required_verification") or []
+        if isinstance(required, list):
+            sources.extend(required)
+        for source in sources:
+            if isinstance(source, str) and source in nodes and (source, node["id"]) not in pairs:
+                edges.append({"source": source, "target": node["id"], "relation": "consumes", "implicit": True})
+                pairs.add((source, node["id"]))
+    return edges
+
+
 def _closure(graph, ids, *, reverse=False, relations=EXECUTION):
     adjacency = {}
-    for edge in graph.get("edges", []):
+    edges = graph.get("edges", [])
+    if relations & EXECUTION:
+        edges = [e for e in edges if e.get("relation", "depends_on") not in EXECUTION] + execution_edges(graph)
+    for edge in edges:
         if edge.get("relation", "depends_on") in relations:
             source, target = (edge["target"], edge["source"]) if reverse else (edge["source"], edge["target"])
             adjacency.setdefault(source, []).append(target)
@@ -56,7 +83,7 @@ def topological_order(graph, node_ids=None):
     ids = set(node_ids) if node_ids is not None else set(_index(graph))
     degree = {n: 0 for n in ids}
     children = {n: [] for n in ids}
-    for e in graph.get("edges", []):
+    for e in execution_edges(graph):
         if e.get("relation", "depends_on") in EXECUTION and e["source"] in ids and e["target"] in ids:
             children[e["source"]].append(e["target"])
             degree[e["target"]] += 1
@@ -248,7 +275,9 @@ class GraphCommandService:
             if isinstance(value, list):
                 return [remap_inputs(v, mapping) for v in value]
             if isinstance(value, dict):
-                return {k: mapping.get(v, v) if k in {"node_id", "source_node_id"} and isinstance(v, str) else remap_inputs(v, mapping) for k, v in value.items()}
+                return {k: ([mapping.get(item, item) for item in v] if k == "required_verification" and isinstance(v, list)
+                            else mapping.get(v, v) if k in {"node_id", "source_node_id", "producer_node_id", "verification_node_id"} and isinstance(v, str)
+                            else remap_inputs(v, mapping)) for k, v in value.items()}
             return value
 
         def clone(ids, branch_id, copy_results="reference"):
@@ -260,6 +289,12 @@ class GraphCommandService:
                 fields = deepcopy(source)
                 fields.update(id=mapping[nid], branch_id=branch_id, revision=0, execution_status="idle", research_status="not_evaluated", deliverable_status="draft")
                 fields["inputs"] = remap_inputs(fields.get("inputs", []), mapping)
+                fields["config"] = remap_inputs(fields.get("config", {}), mapping)
+                # Execution receipts belong to the original route. A clone
+                # retains its editable checks and obtains its own verdict.
+                for key in ("verification", "verification_status", "latest_verification_run_id"):
+                    fields.pop(key, None)
+                fields["results_current"] = False
                 for ref in fields["inputs"]:
                     if isinstance(ref, dict) and ref.get("node_id") in mapping.values() and "branch_id" in ref:
                         ref["branch_id"] = branch_id

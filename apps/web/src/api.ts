@@ -56,6 +56,28 @@ export type Run = {
   metrics: Json;
   output_path: string;
 };
+
+export function executionLinks(graph: Graph): (Graph["edges"][number] & { implicit?: boolean })[] {
+  const edges: (Graph["edges"][number] & { implicit?: boolean })[] = [...graph.edges];
+  const nodes = new Set(graph.nodes.map((node) => node.id));
+  const pairs = new Set(edges.filter((edge) => ["depends_on", "consumes"].includes(edge.relation))
+    .map((edge) => JSON.stringify([edge.source, edge.target])));
+  for (const node of graph.nodes) {
+    const config = node.config || {};
+    const sources = [config.verification?.producer_node_id,
+      ...(Array.isArray(config.required_verification) ? config.required_verification : []),
+      ...(node.inputs || []).flatMap((ref) => typeof ref === "object" && ref
+        ? [ref.node_id, ref.verification_node_id] : [])];
+    for (const source of sources) {
+      const pair = JSON.stringify([source, node.id]);
+      if (typeof source === "string" && nodes.has(source) && !pairs.has(pair)) {
+        edges.push({ id: `binding:${pair}`, source, target: node.id, relation: "consumes", implicit: true });
+        pairs.add(pair);
+      }
+    }
+  }
+  return edges;
+}
 export type RecordItem = {
   id: string;
   project_id: string;
@@ -147,6 +169,7 @@ export function parseJson(value: string) {
   }
 }
 export function hasCycle(graph: Graph, source: string, target: string) {
+  const edges = executionLinks(graph);
   const stack = [target],
     visited = new Set<string>();
   while (stack.length) {
@@ -154,7 +177,7 @@ export function hasCycle(graph: Graph, source: string, target: string) {
     if (id === source) return true;
     if (visited.has(id)) continue;
     visited.add(id);
-    graph.edges
+    edges
       .filter(
         (e) =>
           e.source === id && ["depends_on", "consumes"].includes(e.relation),

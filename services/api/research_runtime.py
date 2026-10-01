@@ -7,6 +7,32 @@ from .db import *
 from .common import get,project_dir,safe_path,emit,error
 router=APIRouter()
 
+@router.get('/api/projects/{ident}/research/route-health')
+def research_route_health(ident:str):
+    from .common import graph_from_db
+    from research.planning.route_review import route_health
+    with Session() as s:
+        project=get(s,Project,ident)
+        runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident)))
+        return route_health(graph_from_db(s,project),[asdict(run) for run in runs],project.config)
+
+@router.post('/api/projects/{ident}/research/route-review')
+def review_research_route(ident:str,body:dict=Body(default={})):
+    from services.worker.scheduler import enqueue
+    from .common import graph_from_db
+    from research.planning.route_review import route_health
+    with Session.begin() as s:
+        project=get(s,Project,ident)
+        runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident)))
+        health=route_health(graph_from_db(s,project),[asdict(run) for run in runs],project.config)
+        run=enqueue(s,ident,'research_route_review',body,body.get('request_id'))
+        control=project.config.get('controller',{})
+        if control.get('route_review',{}).get('run_id')!=run.id:
+            project.config={**project.config,'controller':{**control,'route_review':{
+                'run_id':run.id,'trigger_run_ids':sorted({rid for signal in health['signals'] for rid in signal['run_ids']}),
+                'covered_run_ids':control.get('route_review',{}).get('covered_run_ids',[]),'consumed':False}}}
+        return asdict(run)
+
 @router.get('/api/writing-policy')
 def writing_policy():
     from research.paper.style import writing_profile, writing_contract
@@ -47,7 +73,11 @@ def research_state(ident:str):
         runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident).order_by(TaskRun.created_at.desc())))
         active=[{'id':r.id,'kind':r.kind,'status':r.status,'node_id':r.node_id,'resource':r.resource} for r in runs if r.status in ('queued','running','waiting','waiting_input','paused','pausing','budget_exhausted')]
         from research.planning.scoreboard import compare_trials
-        trials=compare_trials([{'id':r.id,'kind':r.kind,'status':r.status,'metrics':r.metrics,'config':r.config,'created_at':r.created_at} for r in runs],p.config.get('objective'))
+        from services.api.verification import verification_for_run,numerical_coverage_for_run,required_policy
+        trials=compare_trials([{'id':r.id,'kind':r.kind,'status':r.status,'metrics':r.metrics,'config':r.config,'created_at':r.created_at,
+                               'verification_status':verification_for_run(s,r)['verification_status'],
+                               'numerical_verification':numerical_coverage_for_run(s,r),
+                               'verification_policy':'required' if required_policy(s,r) else 'optional'} for r in runs],p.config.get('objective'))
         return {'objective':p.config.get('objective',{}),'trials':trials,'controller':p.config.get('controller',{}),'active_runs':active,'decisions':[asdict(x) for x in decisions if x.data.get('origin')=='research_controller'], 'counts':{'runs':len(runs),'completed':sum(r.status=='completed' for r in runs),'failed':sum(r.status in ('failed','interrupted') for r in runs)}}
 
 @router.get('/api/projects/{ident}/usage')
@@ -125,7 +155,9 @@ def configure_run(ident:str,body:dict=Body(...)):
     with Session.begin() as s:
         run=get(s,TaskRun,ident)
         # Execution identities belong to the runner; research parameters remain editable.
-        blocked={'provider_snapshot','execution_attempt','resolved_inputs','project_goal','_repository_source'}
+        blocked={'provider_snapshot','execution_attempt','resolved_inputs','project_goal','_repository_source',
+                 '_verification_binding','_verification_contract','_verification_sources',
+                 'verification_result','verification_status'}
         if blocked & body.keys(): error('INVALID_CONFIGURATION','Execution identity fields are managed by the runner',422)
         if 'repository' in body:
             from research.execution.repository import normalize_repository, RepositoryError
@@ -133,6 +165,14 @@ def configure_run(ident:str,body:dict=Body(...)):
                 error('INVALID_REPOSITORY','This task kind does not accept repository inputs',422)
             try: body={**body,'repository':normalize_repository(body['repository'])}
             except RepositoryError as exc:error(exc.code,str(exc),422)
+        changed={key for key,value in body.items() if value!=run.config.get(key)}
+        operational={'budget','agent_budget','timeout','priority','allow_paid','context_char_budget'}
+        if changed-operational and (run.started_at or run.config.get('execution_attempt')):
+            run.resource={**run.resource,'configuration_changed_after_execution':True,'verification_status':'unverified'}
+        if run.kind=='verification' and changed:
+            resource={**run.resource,'verification_status':'unverified'}
+            resource.pop('verification_receipt',None)
+            run.resource=resource
         run.config={**run.config,**body}
         emit(s,run.project_id,'run_changed',{'run_id':ident,'status':run.status,'configuration_updated':True})
         return {'run_id':ident,'config':{k:v for k,v in run.config.items() if k not in ('provider_snapshot','env')}}
