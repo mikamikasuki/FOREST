@@ -37,6 +37,8 @@ DEFAULT_VARIANTS = [
     {'id': 'print', 'prompt_suffix': 'Use a restrained print-oriented composition with high contrast and minimal visual clutter.'},
 ]
 MAX_PNG_BYTES = 64 * 1024 * 1024
+MAX_REFERENCE_PNG_BYTES = 50 * 1024 * 1024
+MAX_REFERENCE_IMAGES = 4
 
 
 def image_generation_config(config):
@@ -121,17 +123,79 @@ def _png(value, request_id):
     return content, width, height, data[0].get('revised_prompt') if isinstance(data[0].get('revised_prompt'), str) else None
 
 
-def generate_image_candidates(client, output_dir, prompt, variants=None):
+def generate_image_candidates(client, output_dir, prompt, variants=None, *, reference_paths=None):
     """Generate three actual alternatives by default and register for reviews.
 
     ``variants`` is a list of {id, prompt_suffix} presentation instructions or
     suffix strings. Only successful actual PNG outputs enter the candidate bundle.
     No synthetic fallback, URL download, model substitution, or automatic retry is
     performed. A partial job retains its actual files and safe failure metadata.
+    Explicit PNG references use the compatible image-edit endpoint. Only the
+    passed files are uploaded, in order; absent references retain generation.
     """
+    return _generate_images(client, output_dir, prompt, variants, reference_paths=reference_paths)
+
+
+def generate_image_asset(client, output_dir, prompt, identifier='illustration'):
+    """Make one real illustration component; composition owns text and arrows.
+
+    This uses the same request authorization, transport and atomic spending
+    reservations as complete-image candidates. It does not synthesize a
+    placeholder when the configured image provider is unavailable.
+    """
+    return _generate_images(client, output_dir, prompt, [{
+        'id': identifier,
+        'prompt_suffix': ('Draw only this isolated scientific object on a plain white or '
+                          'explicitly configured transparent background. No text, letters, '
+                          'numbers, labels, arrows, panels, legend or surrounding workflow. '
+                          'Use precise scientific illustration, coherent lighting and '
+                          'clean contours. The editable composition supplies all typography '
+                          'and connections separately.'),
+    }], asset=True)
+
+
+def _reference_images(reference_paths):
+    """Read only explicit, bounded PNG inputs before reserving a request."""
+    if reference_paths is None:
+        return []
+    if not isinstance(reference_paths, (list, tuple)) or len(reference_paths) > MAX_REFERENCE_IMAGES:
+        raise ValueError('Image references must be a list of at most four explicit PNG files')
+    references, total = [], 0
+    for index, filename in enumerate(reference_paths):
+        if not isinstance(filename, (str, Path)) or not str(filename).strip():
+            raise ValueError('Image references must identify explicit local PNG files')
+        try:
+            path = Path(filename)
+            if not path.is_file():
+                raise ValueError('Expected a file')
+            with path.open('rb') as source:
+                content = source.read(MAX_REFERENCE_PNG_BYTES + 1)
+            total += len(content)
+            if (not content.startswith(b'\x89PNG\r\n\x1a\n')
+                    or len(content) > MAX_REFERENCE_PNG_BYTES or total > MAX_PNG_BYTES):
+                raise ValueError('PNG reference exceeds its bounded input')
+            with warnings.catch_warnings():
+                warnings.simplefilter('error', Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(content)) as image:
+                    if image.format != 'PNG':
+                        raise ValueError('Expected PNG')
+                    width, height = image.size
+                    image.verify()
+        except (OSError, ValueError, UnidentifiedImageError,
+                Image.DecompressionBombError, Image.DecompressionBombWarning):
+            raise ValueError('Image reference must be a valid bounded PNG file; local paths are not exposed') from None
+        references.append({'filename': f'reference-{index + 1}.png', 'content': content,
+                           'width_px': width, 'height_px': height})
+    return references
+
+
+def _generate_images(client, output_dir, prompt, variants=None, *, asset=False, reference_paths=None):
     image, _ = build_image_request(client, prompt)
+    if asset and reference_paths:
+        raise ValueError('Isolated image assets do not accept complete-figure references')
+    references = _reference_images(reference_paths)
     variants = deepcopy(DEFAULT_VARIANTS if variants is None else variants)
-    if not isinstance(variants, list) or len(variants) < 2:
+    if not isinstance(variants, list) or len(variants) < (1 if asset else 2):
         raise ValueError('Image review needs at least two independently generated candidates')
     normalized, seen = [], set()
     for index, item in enumerate(variants):
@@ -158,14 +222,24 @@ def generate_image_candidates(client, output_dir, prompt, variants=None):
         for suffix in ('.prompt.txt', '.metadata.json', '.png'):
             if not (generated / (variant['id'] + suffix)).resolve().is_relative_to(output):
                 raise ValueError('Image output files must remain within the job directory')
-    headers = {'Content-Type': 'application/json'}
+    headers = {} if references else {'Content-Type': 'application/json'}
     if client.key:
         headers['Authorization'] = f'Bearer {client.key}'
     candidates = []
     for index, variant in enumerate(normalized):
         actual_prompt = ILLUSTRATION_RULE + '\n\nScientific mechanism:\n' + prompt + '\n\nDesign variant:\n' + variant['prompt_suffix']
         _, payload = build_image_request(client, actual_prompt)
-        encoded = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        endpoint = '/images/edits' if references else '/images/generations'
+        if references:
+            request = httpx.Request('POST', client.base + endpoint, headers=headers,
+                                    data={key: str(value) for key, value in payload.items()},
+                                    files=[('image[]', (item['filename'], item['content'], 'image/png'))
+                                           for item in references])
+            encoded = request.read()
+            request_headers = dict(request.headers)
+        else:
+            encoded = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+            request_headers = headers
         metadata_path = generated / (variant['id'] + '.metadata.json')
         prompt_path = generated / (variant['id'] + '.prompt.txt')
         prompt_path.write_text(actual_prompt)
@@ -173,6 +247,10 @@ def generate_image_candidates(client, output_dir, prompt, variants=None):
                     'candidate_id': variant['id'], 'candidate_index': index + 1,
                     'evidence_role': 'conceptual_illustration', 'status': 'request_pending',
                     'parameters': {key: value for key, value in payload.items() if key != 'prompt'}}
+        if references:
+            metadata.update(endpoint='images/edits', reference_images=[
+                {'index': index + 1, 'width_px': item['width_px'], 'height_px': item['height_px'],
+                 'bytes': len(item['content'])} for index, item in enumerate(references)])
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2))
         start = time.monotonic()
         reservation = guard({'phase': 'before', 'api': 'images', 'model': image['model'],
@@ -188,7 +266,7 @@ def generate_image_candidates(client, output_dir, prompt, variants=None):
         try:
             with httpx.Client(timeout=image.get('timeout', client.timeout), follow_redirects=False) as transport:
                 try:
-                    response = transport.post(client.base + '/images/generations', headers=headers, content=encoded)
+                    response = transport.post(client.base + endpoint, headers=request_headers, content=encoded)
                 except httpx.RequestError as exc:
                     rejected = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
                     guard({'phase': 'error', 'api': 'images', 'reservation': reservation,
@@ -229,4 +307,4 @@ def generate_image_candidates(client, output_dir, prompt, variants=None):
                             ambiguous=exc.ambiguous, request_id=exc.request_id)
             metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2))
             raise
-    return register_candidates(output, candidates, kind='image')
+    return candidates[0] if asset else register_candidates(output, candidates, kind='image')

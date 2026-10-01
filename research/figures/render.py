@@ -43,6 +43,11 @@ def render_figure(output_dir, data, style=None, kind="bar"):
         data = json.loads(source.read_text()) if source.suffix == ".json" else pd.read_csv(source).to_dict("records")
     (output / "figure_data.json").write_text(json.dumps(data, indent=2))
     (output / "style.json").write_text(json.dumps({**style, "kind": kind}, indent=2))
+    if isinstance(data, dict) and data.get('production_scene') is not None:
+        if kind not in ('method', 'image'):
+            raise ValueError('Editable illustration scenes cannot replace empirical plots')
+        from research.figures.scene import render_scene
+        return render_scene(output, data, style)
     if kind == 'method' and isinstance(data, dict) and (data.get('narrative_mode') == 'scientific_story' or isinstance(data.get('storyboard'), dict) and data['storyboard'].get('mode') == 'scientific_story'):
         return render_scientific_story(output, data, style)
     if kind == 'method' and style.get('example') != 'class_weight_calibration':

@@ -1,8 +1,28 @@
 # Actual image candidates
 
+Architecture and conceptual figures use the [editable production workflow](SCIENTIFIC_VISUAL_NARRATIVE.md#editable-production-workflow).
+`research.figures.images.generate_image_asset` makes one actual request for an
+isolated scientific illustration component using the same transport and spending
+reservations described below. Native text, formulae and arrows are composed
+separately. Components are embedded in the selected scene and editable SVG.
+Temporary production prompts, replies and unsuccessful candidates are removed.
+The selected figure retains necessary source and quality metadata.
+
+When native composition exhausts its configured passes, the final image layer
+uses the complete scientific context, actual draft images and review defects to
+design one batch of five full-image candidates. The same three reviewers inspect
+the results; source-faithful selection publishes one noneditable PNG and a PDF
+containing that bitmap. The final prompt explicitly targets a top-tier journal
+or conference illustration. See the [production workflow](SCIENTIFIC_VISUAL_NARRATIVE.md#editable-production-workflow).
+
+The lower-level complete-image candidate interface is:
+
 `research.figures.images.generate_image_candidates(client, output_dir, prompt,
-variants=None)` posts to the saved provider's `/images/generations` endpoint using
-the existing validated `ModelClient`. The default is three separate, actual
+variants=None, reference_paths=None)` posts to the saved provider's
+`/images/generations` endpoint using the existing validated `ModelClient`.
+Supplying up to four explicit PNG references instead uses multipart
+`/images/edits`; no local paths are included in uploaded metadata.
+The lower-level default is three separate, actual
 conceptual illustration requests. It returns the `register_candidates` bundle
 for independent design, scientific-content and print-layout review. The worker
 must run those reviews and manuscript placement after generation.
