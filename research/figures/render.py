@@ -41,6 +41,12 @@ def render_figure(output_dir, data, style=None, kind="bar"):
     if isinstance(data, (str, Path)):
         source = Path(data)
         data = json.loads(source.read_text()) if source.suffix == ".json" else pd.read_csv(source).to_dict("records")
+    if isinstance(data, dict) and 'statistical_results' in data:
+        from research.figures.statistical import render_statistical_plot
+        return render_statistical_plot(output, data, style, kind)
+    if kind == 'calibration':
+        from research.figures.calibration import render_calibration
+        return render_calibration(output, data, style)
     (output / "figure_data.json").write_text(json.dumps(data, indent=2))
     (output / "style.json").write_text(json.dumps({**style, "kind": kind}, indent=2))
     if isinstance(data, dict) and data.get('production_scene') is not None:
@@ -171,7 +177,9 @@ def render_figure(output_dir, data, style=None, kind="bar"):
         ax.legend(frameon=False, ncol=legend_columns, fontsize=font, loc='upper center', bbox_to_anchor=(.5, -.3 if error else -.2))
         ax.set_ylabel(style.get('ylabel', metric.replace('_', ' ').title() + (' (' + str(style['unit']) + ')' if style.get('unit') else '')))
     elif kind == "line":
-        xkey = style.get("x", "seed")
+        xkey = style.get("x")
+        if not isinstance(xkey, str) or not xkey:
+            plt.close(fig); raise ValueError('Line charts require an explicit measured x variable; seed is a repetition identity')
         if xkey not in frame or metric not in frame:
             raise ValueError(f"Line chart requires {xkey} and {metric} columns")
         group = "method" if "method" in frame else None

@@ -140,8 +140,12 @@ def test_ambiguous_line_and_calibration_groups_are_not_silently_pooled(tmp_path)
         render_figure(tmp_path/'line',[{'method':'observed','x':1,'score':sum(range(n))} for n in (4,5)],{'metric':'score','x':'x'},'line')
     rows=[{'method':'observed','dataset':dataset,'y_true':label,'probability':(.8 if label else .2)}
           for dataset in ('first','second') for label in (0,1)]
-    with pytest.raises(ValueError,match='pooling_scope'):
+    with pytest.raises(ValueError,match='seed'):
         render_figure(tmp_path/'calibration',rows,{},'calibration')
+    paths=render_figure(tmp_path/'calibration-facets',[{**row,'seed':0} for row in rows],{},'calibration')
+    report=json.loads(Path(paths['report']).read_text())
+    assert set(report['datasets'])=={'first','second'}
+    assert report['uncertainty']['unit']=='seed'
 
 
 def test_real_delayed_float_is_repaired_from_actual_compiled_pages(tmp_path):
