@@ -13,11 +13,21 @@ import time
 from processes import atomic_json, read_json
 import psutil
 
+# This supervisor is launched by absolute filename from a task workspace.
+# Resolve the shared checkout policy from its installation, not task files.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from research.execution.repository import task_environment
+
 
 def execute_child(folder):
     request = read_json(folder / 'request.json')
     os.chdir(request['cwd'])
-    env = {**os.environ, 'PATH': str(Path(sys.executable).parent) + os.pathsep + os.environ.get('PATH', ''), 'PYTHONUNBUFFERED': '1', 'MPLBACKEND': 'Agg', **{str(k): str(v) for k, v in request['env'].items()}}
+    # Repository credentials belong to the worker's checkout step. Detached
+    # tasks do not inherit its Git helpers, SSH agent or registry location.
+    env = task_environment({
+        'PATH': str(Path(sys.executable).parent) + os.pathsep + os.environ.get('PATH', ''),
+        'PYTHONUNBUFFERED': '1', 'MPLBACKEND': 'Agg',
+        **{str(k): str(v) for k, v in request['env'].items()}})
     atomic_json(folder / 'identity.json', {'pid': os.getpid(), 'process_created': psutil.Process().create_time(), 'resolved_executable': shutil.which(request['command'][0], path=env['PATH']), 'python_environment': sys.executable})
     os.execvpe(request['command'][0], request['command'], env)
 

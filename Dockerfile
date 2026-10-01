@@ -1,4 +1,5 @@
 FROM python:3.11-slim-bookworm AS task
+RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN groupadd --gid 10001 forest && useradd --uid 10001 --gid forest --create-home forest
 WORKDIR /forest
 COPY requirements.lock.txt ./
