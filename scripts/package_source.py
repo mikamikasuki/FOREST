@@ -12,9 +12,9 @@ import shutil
 import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
-DIRECTORIES={'apps','docs','examples','packages','research','runners','scripts','services','tests','.github'}
+DIRECTORIES={'apps','docs','examples','packages','research','runners','scripts','services','tests','forest_cli','.github'}
 ROOT_FILES={'README.md','LICENSE','CONTRIBUTING.md','SECURITY.md','CHANGELOG.md','pyproject.toml','requirements.lock.txt','Dockerfile','compose.yaml','.gitignore','.dockerignore','.env.example'}
-EXCLUDED={'.git','.venv','node_modules','dist','build','var','output','tmp','temp','__pycache__','.pytest_cache','.mypy_cache','.ruff_cache','.cache','test-results','playwright-report','.forest-processes','.idea','.vscode','htmlcov','coverage'}
+EXCLUDED={'.git','.venv','node_modules','dist','build','var','output','tmp','temp','__pycache__','.pytest_cache','.mypy_cache','.ruff_cache','.cache','test-results','playwright-report','.forest-processes','.forest','.idea','.vscode','htmlcov','coverage'}
 PRIVATE_DOCUMENTS={'docs/ACCEPTANCE.md','docs/QUALIFICATION_REPORT.md','docs/RESEARCH_FINDINGS.md','docs/WRITING_REVIEW.md','docs/FEATURES.md','docs/RUNTIME_UPGRADE.md','docs/PIPELINE_LIVE_VALIDATION.md'}
 PRIVATE_DIRECTORIES={'docs/research_tasks'}
 SUFFIXES={'.py','.md','.txt','.json','.csv','.ts','.tsx','.css','.html','.svg','.sh','.cjs','.yaml','.yml','.toml','.tex','.bib'}

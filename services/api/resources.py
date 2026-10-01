@@ -395,9 +395,13 @@ def export_paper(ident:str,body:dict=Body(default={})):
     with Session() as s:
         p=s.get(PaperDocument,ident) or s.scalar(select(PaperDocument).where(PaperDocument.project_id==ident))
         if not p: error('NOT_FOUND','Paper missing',404)
+        if body.get('expected_revision',p.revision)!=p.revision:
+            error('REVISION_CONFLICT','Manuscript changed before export; read its current revision',409)
         root=project_dir(p.project_id); pdf=p.data.get('pdf_path')
         if body.get('format')=='pdf':
             if not pdf: error('PDF_UNAVAILABLE','Compile the draft first',409)
+            if p.data.get('compiled_revision')!=p.revision:
+                error('STALE_PDF','Compile the current manuscript revision before exporting its PDF',409)
             return FileResponse(safe_path(root,pdf,True),filename='forest-paper.pdf')
         out=io.BytesIO(); assets={}
         # Generated LaTeX includes results_macros.tex and figures/... relative

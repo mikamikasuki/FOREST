@@ -62,6 +62,7 @@ coverage/
 .idea/
 .vscode/
 .forest-processes/
+.forest/
 *.pyc
 *.tsbuildinfo
 .DS_Store

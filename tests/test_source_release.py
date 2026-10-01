@@ -77,6 +77,21 @@ def test_packaging_clis_share_public_allowlist_and_exclude_private_files(source_
         assert archive.testzip() is None
 
 
+def test_source_archive_includes_cli_and_excludes_directory_binding(source_tree, tmp_path):
+    cli = source_tree / 'forest_cli'
+    cli.mkdir()
+    (cli / 'main.py').write_text('def main(): return 0\n')
+    binding = cli / '.forest'
+    binding.mkdir()
+    (binding / 'project.json').write_text('{"project_id": "private-local-binding"}')
+    destination = tmp_path / 'cli-source.zip'
+    result = run_packager('package_source.py', source_tree, destination)
+    assert result.returncode == 0, result.stderr
+    with zipfile.ZipFile(destination) as archive:
+        assert 'forest/forest_cli/main.py' in archive.namelist()
+        assert not any('.forest/' in name for name in archive.namelist())
+
+
 @pytest.mark.parametrize('token', [
     'github_pat_' + 'x' * 50,
     'glpat-' + 'x' * 25,

@@ -50,6 +50,37 @@ def research_state(ident:str):
         trials=compare_trials([{'id':r.id,'kind':r.kind,'status':r.status,'metrics':r.metrics,'config':r.config,'created_at':r.created_at} for r in runs],p.config.get('objective'))
         return {'objective':p.config.get('objective',{}),'trials':trials,'controller':p.config.get('controller',{}),'active_runs':active,'decisions':[asdict(x) for x in decisions if x.data.get('origin')=='research_controller'], 'counts':{'runs':len(runs),'completed':sum(r.status=='completed' for r in runs),'failed':sum(r.status in ('failed','interrupted') for r in runs)}}
 
+@router.get('/api/projects/{ident}/usage')
+def project_usage(ident:str):
+    """Read project spending and report account-wide provider limits separately."""
+    from research.agents.budget import totals,micro
+    with Session() as s:
+        project=get(s,Project,ident)
+        rows=list(s.scalars(select(ModelRequest).where(ModelRequest.project_id==ident)))
+        runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident)))
+        estimated,reserved=totals(rows)
+        limit=project.budget.get('cost_usd')
+        provider_ids={row.provider_id for row in rows}
+        if project.config.get('provider_id'): provider_ids.add(project.config['provider_id'])
+        providers=[]
+        for provider_id in sorted(provider_ids):
+            provider=s.get(Provider,provider_id)
+            if not provider: continue
+            provider_rows=list(s.scalars(select(ModelRequest).where(ModelRequest.provider_id==provider_id)))
+            used,held=totals(provider_rows);provider_limit=provider.config.get('budget_usd')
+            providers.append({'id':provider.id,'name':provider.name,'scope':'all_projects',
+                'allow_paid':provider.allow_paid,'limit_usd':provider_limit,
+                'estimated_cost_usd':used/1000000,'reserved_usd':held/1000000,
+                'remaining_usd':max(0,micro(provider_limit)-used-held)/1000000 if provider_limit is not None else None})
+        elapsed=sum(float(run.resource.get('elapsed_seconds',0)) for run in runs)
+        return {'project_id':ident,'allow_paid':bool(project.budget.get('allow_paid',False)),
+            'limits':project.budget,'estimated_cost_usd':estimated/1000000,'reserved_usd':reserved/1000000,
+            'remaining_usd':max(0,micro(limit)-estimated-reserved)/1000000 if limit is not None else None,
+            'cost_source':'configured_rates_estimate','uncertain_requests':sum(row.status=='uncertain' for row in rows),
+            'run_count':len(runs),'elapsed_seconds':elapsed,'providers':providers,
+            'active_run_limits':[{'run_id':run.id,'status':run.status,'agent_budget':run.config.get('agent_budget',{})}
+                for run in runs if run.status in ('queued','running','waiting','waiting_input','paused','pausing','budget_exhausted')]}
+
 @router.get('/api/runs/{ident}/lineage')
 def run_lineage(ident:str):
     with Session() as s:

@@ -22,6 +22,8 @@ coverage
 .idea
 .vscode
 .forest-processes
+.forest
+*.egg-info
 test-results
 playwright-report
 **/.DS_Store

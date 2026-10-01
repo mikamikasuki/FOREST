@@ -37,6 +37,7 @@ def main():
     parser.add_argument('--mode', choices=['local', 'compose'], default='local')
     parser.add_argument('--secrets-dir', type=Path, default=ROOT / 'var/deployment/secrets')
     parser.add_argument('--prepare-only', action='store_true', help='Prepare Compose secrets without building or starting services')
+    parser.add_argument('--headless', action='store_true', help='Local install: API and worker only, without Node.js or Web assets')
     args = parser.parse_args()
     if args.mode == 'compose':
         report = prepare_secrets(args.secrets_dir)
@@ -56,20 +57,24 @@ def main():
         return
     if sys.version_info < (3, 11):
         raise SystemExit('Python 3.11 or newer is required')
-    if not shutil.which('npm'):
-        raise SystemExit('Node.js 22+ with npm is required')
-    version = subprocess.check_output(['node', '--version'], text=True).strip()
-    if int(version.lstrip('v').split('.')[0]) < 22:
-        raise SystemExit('Node.js 22+ is required')
     if os.name == 'nt':
         raise SystemExit('Run local services inside WSL2, or use Compose with Docker Desktop. Native Windows is supported for source/project archive inspection only.')
+    if not args.headless:
+        if not shutil.which('npm') or not shutil.which('node'):
+            raise SystemExit('Node.js 22+ with npm is required (or use --headless)')
+        version = subprocess.check_output(['node', '--version'], text=True).strip()
+        if int(version.lstrip('v').split('.')[0]) < 22:
+            raise SystemExit('Node.js 22+ is required')
     subprocess.run([sys.executable, '-m', 'venv', str(ROOT / '.venv')], check=True)
     python = ROOT / '.venv/bin/python'
     subprocess.run([str(python), '-m', 'pip', 'install', '-r', str(ROOT / 'requirements.lock.txt')], check=True)
-    subprocess.run(['npm', 'ci'], cwd=ROOT / 'apps/web', check=True)
-    subprocess.run(['npm', 'run', 'build'], cwd=ROOT / 'apps/web', check=True)
+    subprocess.run([str(python), '-m', 'pip', 'install', '--no-deps', '-e', str(ROOT)], check=True)
+    if not args.headless:
+        subprocess.run(['npm', 'ci'], cwd=ROOT / 'apps/web', check=True)
+        subprocess.run(['npm', 'run', 'build'], cwd=ROOT / 'apps/web', check=True)
     subprocess.run([str(python), '-m', 'services.api.db'], cwd=ROOT, check=True)
-    print('Ready. Start with .venv/bin/python scripts/start.py; install a user service with scripts/service.py install.')
+    command = '.venv/bin/forest serve' + (' --headless' if args.headless else '')
+    print('Ready. Start with ' + command + '; install a user service explicitly with scripts/service.py install' + (' --headless' if args.headless else '') + '.')
 
 
 if __name__ == '__main__':

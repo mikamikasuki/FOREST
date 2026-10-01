@@ -2,6 +2,9 @@
 
 ## Unreleased — release candidate
 
+- Installable `forest` CLI and `python -m forest_cli` client for project/node/run control, logs, evidence lineage, research controllers, manuscript tasks and exports through the existing API.
+- Local connection/project binding, JSON output, revision-aware graph edits, request IDs for supported submissions, and explicit wait/interruption exit codes.
+- Headless installation and foreground API/worker startup with a configurable data directory; Web building remains optional for API-only use.
 - Editable research graph, file workspace, branch operations, and evidence-linked writing.
 - Durable API/worker execution, managed process waiting and cancellation, and checkpoint-aware recovery.
 - Real model tools with saved decisions and process/output evidence.
