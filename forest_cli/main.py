@@ -126,6 +126,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--page", choices=["workspace", "paper", "figures", "library"], default="workspace")
     p.add_argument("--print-url", action="store_true", help="Print the URL without opening a browser")
 
+    p = _command(commands, "repo", "Validate and prepare reproducible repository inputs")
+    group = p.add_subparsers(dest="action", required=True)
+    p = _command(group, "validate", "Validate a repository specification locally without network access")
+    _file(p)
+    p = _command(group, "clone", "Queue a repository checkout in the selected project's run workspace")
+    p.add_argument("url")
+    p.add_argument("--ref", default="HEAD", help="Branch, tag or commit; the resolved commit is recorded")
+    p.add_argument("--directory", default="source", help="Relative directory inside the run workspace")
+    p.add_argument("--transport", choices=["auto", "https", "ssh"], default="auto")
+    p.add_argument("--credential", help="Operator-defined authentication profile name; never a token or host path")
+    _queued(p)
+    p = _command(group, "inspect", "Read the recorded source commit for a persisted run")
+    p.add_argument("id")
+
     p = _command(commands, "project", "Manage projects and directory bindings")
     group = p.add_subparsers(dest="action", required=True)
     p = _command(group, "list", "List projects")
@@ -165,8 +179,9 @@ def build_parser() -> argparse.ArgumentParser:
     group = p.add_subparsers(dest="action", required=True)
     p = _command(group, "list", "List project runs")
     p.add_argument("--limit", type=positive_int, default=100)
-    for action in ["show", "evidence", "pause", "resume", "cancel", "retry"]:
-        p = _command(group, action, f"{action.capitalize()} a persisted run")
+    for action in ["show", "evidence", "diagnostics", "pause", "resume", "cancel", "retry"]:
+        help_text = "Inspect saved execution diagnostics" if action == "diagnostics" else f"{action.capitalize()} a persisted run"
+        p = _command(group, action, help_text)
         p.add_argument("id")
         if action == "resume": _file(p, "--budget-file", required=False, help="Absolute agent budget limits; does not raise outer limits")
         if action == "retry": _queued(p)
@@ -226,6 +241,25 @@ def read_object(path) -> dict:
     if not isinstance(result, dict):
         raise CliError(f"Expected an object in {path}", code="INVALID_INPUT", exit_code=2)
     return result
+
+
+def repository_spec(value) -> dict:
+    # The shared validator uses the standard library only. Client-only installs
+    # never load the API, database or worker to check repository input.
+    from research.execution.repository import normalize_repository, RepositoryError
+    try:
+        return normalize_repository(value)
+    except RepositoryError as exc:
+        raise CliError(str(exc), code=exc.code, exit_code=2) from exc
+
+
+def run_configuration(path) -> dict:
+    config = read_object(path) if path else {}
+    if '_repository_source' in config:
+        raise CliError('Source provenance is managed by the runner.', code='INVALID_CONFIGURATION', exit_code=2)
+    if 'repository' in config:
+        config['repository'] = repository_spec(config['repository'])
+    return config
 
 
 def identifier(value) -> str:
@@ -418,6 +452,16 @@ def _logs(client, args):
 
 
 def execute(args, *, client_factory=ForestClient):
+    if args.command == "repo" and args.action == "validate":
+        emit_result({"valid": True, "repository": repository_spec(read_object(args.file))}, args)
+        return 0
+    repository = None
+    if args.command == "repo" and args.action == "clone":
+        spec = {"url": args.url, "ref": args.ref, "directory": args.directory,
+                "transport": args.transport}
+        if args.credential:
+            spec["credential"] = args.credential
+        repository = repository_spec(spec)
     if args.command == "serve":
         if args.json_output:
             raise CliError("serve streams service logs; --json is available on client commands.", code="INVALID_INPUT", exit_code=2)
@@ -443,6 +487,13 @@ def execute(args, *, client_factory=ForestClient):
             value = {"connected": True, "endpoint": endpoint, "health": health, "config_path": str(config)}
         elif args.command == "doctor":
             value = {"health": client.request("GET", "/api/health"), "system": client.request("GET", "/api/system")}
+        elif args.command == "repo":
+            if args.action == "clone":
+                path = f"/api/projects/{identifier(require_project(context))}/repositories/clone"
+                value = client.request("POST", path, json={"repository": repository, "request_id": request_id(args)})
+                value, code = _submitted(client, value, args)
+            elif args.action == "inspect":
+                value = client.request("GET", f"/api/runs/{identifier(args.id)}/repository")
         elif args.command == "init" or (args.command == "project" and args.action == "create"):
             value = client.request("POST", "/api/projects", json=_project_body(args))
             if args.command == "init":
@@ -484,7 +535,7 @@ def execute(args, *, client_factory=ForestClient):
                 if args.action == "show": value = client.request("GET", path)
                 elif args.action == "context": value = client.request("GET", path + "/context")
                 elif args.action == "run":
-                    config = read_object(args.config_file) if args.config_file else {}
+                    config = run_configuration(args.config_file)
                     value = client.request("POST", path + "/run", json={"request_id": request_id(args), "scope": args.scope, "config": config})
                     value, code = _submitted(client, value, args)
         elif args.command == "run":
@@ -493,6 +544,7 @@ def execute(args, *, client_factory=ForestClient):
             else:
                 path = f"/api/runs/{identifier(args.id)}"
                 if args.action == "show": value = client.request("GET", path)
+                elif args.action == "diagnostics": value = client.request("GET", path + "/diagnostics")
                 elif args.action == "logs": return _logs(client, args)
                 elif args.action == "wait": value, code = wait_runs(client, [args.id], interval=args.interval, timeout=args.wait_timeout)
                 elif args.action == "evidence":

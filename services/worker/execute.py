@@ -8,11 +8,31 @@ import subprocess
 import sys
 import time
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from sqlalchemy import select
 from services.api.db import *
 from services.api.common import *
 from services.api.config import ROOT
+
+def local_command(command, workspace, output, config):
+    """Save the actual subprocess phase independently of the whole run receipt."""
+    from research.execution.repository import task_environment
+    from research.execution.repository import _write_manifest
+    started = datetime.now(timezone.utc).isoformat()
+    receipt = {'backend':'local','command':command,'status':'running','started_at':started}
+    _write_manifest(output/'execution.json',receipt)
+    env={**task_environment(config.get('env',{})),'FOREST_RUN_DIR':str(output),'PYTHONPATH':str(ROOT)}
+    try:
+        proc=subprocess.run(command,cwd=workspace,env=env,text=True)
+    except Exception:
+        receipt.update(status='failed',finished_at=datetime.now(timezone.utc).isoformat())
+        _write_manifest(output/'execution.json',receipt)
+        raise
+    receipt.update(status='completed' if proc.returncode==0 else 'failed',exit_code=proc.returncode,
+                   finished_at=datetime.now(timezone.utc).isoformat())
+    _write_manifest(output/'execution.json',receipt)
+    return proc
 
 def relative_paths(value,root):
     if isinstance(value,dict): return {k:relative_paths(v,root) for k,v in value.items()}
@@ -112,13 +132,30 @@ def execute(run_id):
                 target=workspace/f.relative_to(source_workspace); target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(f,target)
     for binding in (config.get('resolved_inputs',[]) if config.get('execution_attempt',{}).get('number',1)==1 else []):
         origin=safe_path(root,binding['source_path'],True); destination=safe_path(workspace,binding['destination']); destination.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(origin,destination)
+    config={k:v for k,v in config.items() if k!='_repository_source'}
+    repository_source=None
+    if config.get('repository') is not None or kind=='repository_clone':
+        from research.execution.repository import normalize_repository,prepare_repository
+        if kind not in ('repository_clone','agent','command','experiment'):
+            raise ValueError('Repository sources are supported for agent, command, experiment, and repository_clone tasks')
+        config={**config,'repository':normalize_repository(config.get('repository'))}
+        repository_source=prepare_repository(config['repository'],workspace,output)
+    # Entry points run inside this interpreter. Scrub inherited host Git auth
+    # references here too, after the host-only repository preparation phase.
+    from research.execution.repository import task_environment
+    task_environment(config.get('env',{}))  # Reject forbidden explicit overlays.
+    for variable in set(os.environ)-set(task_environment()): os.environ.pop(variable,None)
     (output/'task_config.json').write_text(json.dumps({k:v for k,v in config.items() if k!='provider_snapshot'},ensure_ascii=False,indent=2))
     config={**config,'_context_workspace':str(output/'model_context')}
+    if repository_source is not None: config={**config,'_repository_source':repository_source}
+    def with_repository(result):
+        return {**result,'repository_source':repository_source} if repository_source is not None else result
+    if kind=='repository_clone': return repository_source
     if kind=='agent':
         from research.agents.runtime import run_agent
         result=run_agent(run_id,workspace,config)
         # Completed agent files are a proposed output; explicit branch copy keeps active edits safe.
-        return result
+        return with_repository(result)
     if kind=='research_plan':
         from research.planning.loop import planning_context,compact_planning_context,apply_plan,PLANNER_INSTRUCTIONS
         context=planning_context(pid)
@@ -149,10 +186,10 @@ def execute(run_id):
     if kind in ('command','experiment') and config.get('execution_backend')=='container':
         if config.get('remote'): raise ValueError('Choose container execution or remote SSH, not both')
         from runners.container import execute_container
-        return execute_container(config,workspace,output,require_metrics=(kind=='experiment'))
+        return with_repository(execute_container(config,workspace,output,require_metrics=(kind=='experiment')))
     if kind in ('command','experiment') and config.get('remote'):
         from runners.remote import execute_remote
-        return execute_remote(config,workspace,output,require_metrics=(kind=='experiment'))
+        return with_repository(execute_remote(config,workspace,output,require_metrics=(kind=='experiment')))
     if kind=='command':
         command=(config.get('recovery',{}).get('resume_command') if config.get('execution_attempt',{}).get('mode')=='checkpoint' else None) or config.get('command')
         if not command: raise ValueError('Node config requires command argv or string')
@@ -160,22 +197,22 @@ def execute(run_id):
         # The worker owns the task deadline and terminates this executor's
         # whole process group. subprocess.run(timeout=...) kills only its
         # direct child and can leave grandchildren after a competing receipt.
-        started=time.monotonic(); proc=subprocess.run(command,cwd=workspace,env={**os.environ,**config.get('env',{}),'FOREST_RUN_DIR':str(output),'PYTHONPATH':str(ROOT)},text=True)
+        started=time.monotonic(); proc=local_command(command,workspace,output,config)
         if proc.returncode: raise RuntimeError(f'Command exited with code {proc.returncode}')
         metrics_path=safe_path(workspace,config.get('metrics_file','metrics.json'))
-        return {'command_exit_code':proc.returncode,'elapsed':time.monotonic()-started,**(json.loads(metrics_path.read_text()) if metrics_path.is_file() else {})}
+        return with_repository({'command_exit_code':proc.returncode,'elapsed':time.monotonic()-started,**(json.loads(metrics_path.read_text()) if metrics_path.is_file() else {})})
     if kind=='experiment':
         if config.get('command'):
             command=(config.get('recovery',{}).get('resume_command') if config.get('execution_attempt',{}).get('mode')=='checkpoint' else None) or config['command']; command=['/bin/sh','-c',command] if isinstance(command,str) else command
             # Use the same worker-owned whole-task deadline as command runs.
-            proc=subprocess.run(command,cwd=workspace,env={**os.environ,**config.get('env',{}),'FOREST_RUN_DIR':str(output),'PYTHONPATH':str(ROOT)})
+            proc=local_command(command,workspace,output,config)
             if proc.returncode: raise RuntimeError(f'Experiment exited {proc.returncode}')
             metrics_path=safe_path(workspace,config.get('metrics_file','metrics.json'))
             if not metrics_path.is_file(): raise ValueError('Experiment completed without required metrics.json')
-            result=json.loads(metrics_path.read_text()); shutil.copy2(metrics_path,output/'metrics.json'); return result
+            result=json.loads(metrics_path.read_text()); shutil.copy2(metrics_path,output/'metrics.json'); return with_repository(result)
         if config.get('entrypoint'):
             import importlib
-            module,function=config['entrypoint'].split(':',1); sys.path.insert(0,str(workspace)); result=getattr(importlib.import_module(module),function)(config.get('parameters',{}),str(output)); return result
+            module,function=config['entrypoint'].split(':',1); sys.path.insert(0,str(workspace)); result=getattr(importlib.import_module(module),function)(config.get('parameters',{}),str(output)); return with_repository(result)
         if config.get('example')!='class_weight_calibration':
             raise ValueError('Experiment requires real command or entrypoint. Implement the research task first; no default case is substituted.')
         snapshots=output/'source'

@@ -571,6 +571,10 @@ app.include_router(research_router)
 
 from .research_runtime import router as runtime_router
 app.include_router(runtime_router)
+from .repositories import router as repositories_router
+app.include_router(repositories_router)
+from .run_diagnostics import router as diagnostics_router
+app.include_router(diagnostics_router)
 web_dist=Path(__file__).resolve().parents[2]/'apps/web/dist'
 if web_dist.exists():
     app.mount('/assets',StaticFiles(directory=web_dist/'assets'),name='assets')

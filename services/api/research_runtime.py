@@ -125,8 +125,14 @@ def configure_run(ident:str,body:dict=Body(...)):
     with Session.begin() as s:
         run=get(s,TaskRun,ident)
         # Execution identities belong to the runner; research parameters remain editable.
-        blocked={'provider_snapshot','execution_attempt','resolved_inputs','project_goal'}
+        blocked={'provider_snapshot','execution_attempt','resolved_inputs','project_goal','_repository_source'}
         if blocked & body.keys(): error('INVALID_CONFIGURATION','Execution identity fields are managed by the runner',422)
+        if 'repository' in body:
+            from research.execution.repository import normalize_repository, RepositoryError
+            if run.kind not in ('agent','command','experiment','repository_clone'):
+                error('INVALID_REPOSITORY','This task kind does not accept repository inputs',422)
+            try: body={**body,'repository':normalize_repository(body['repository'])}
+            except RepositoryError as exc:error(exc.code,str(exc),422)
         run.config={**run.config,**body}
         emit(s,run.project_id,'run_changed',{'run_id':ident,'status':run.status,'configuration_updated':True})
         return {'run_id':ident,'config':{k:v for k,v in run.config.items() if k not in ('provider_snapshot','env')}}

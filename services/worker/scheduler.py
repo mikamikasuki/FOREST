@@ -41,6 +41,16 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
         error('TIME_BUDGET_EXHAUSTED', 'Project compute budget exhausted', 409)
     remaining = max(0, float(budget['seconds']) - used) if budget.get('seconds') is not None else None
     config = {**(node.config if node else {}), **config}
+    if '_repository_source' in config:
+        error('INVALID_CONFIGURATION', 'Source provenance is managed by the runner', 422)
+    if 'repository' in config or kind == 'repository_clone':
+        from research.execution.repository import normalize_repository, RepositoryError
+        if kind not in ('agent', 'command', 'experiment', 'repository_clone'):
+            error('INVALID_REPOSITORY', 'Repository inputs are supported by agent, command and experiment tasks', 422)
+        try:
+            config['repository'] = normalize_repository(config.get('repository'))
+        except RepositoryError as exc:
+            error(exc.code, str(exc), 422)
     from research.execution.recovery import resource_request
     try: resource_request(config)
     except (ValueError,TypeError) as exc: error('INVALID_RESOURCES',str(exc),422)

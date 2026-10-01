@@ -2,7 +2,7 @@
 
 The `forest` command controls the same HTTP API, research graph, workers and evidence used by the Web workspace. Commands submit durable work to the service; closing a client terminal does not cancel that work. The CLI does not keep a separate research database.
 
-Use the CLI for project setup, node execution, run control, logs, evidence inspection, manuscript tasks and exports. Use the Web workspace for graph exploration, Figure Studio and visual manuscript review. This release does not include a terminal graph editor, workflow YAML engine or conversational terminal agent.
+Use the CLI for project setup, repository inputs, node execution, run control, logs, evidence inspection, manuscript tasks and exports. Use the Web workspace for graph exploration, Figure Studio and visual manuscript review. This release does not include a terminal graph editor, workflow YAML engine or conversational terminal agent.
 
 ## Install and start
 
@@ -118,6 +118,18 @@ Paid calls remain disabled by the default project budget. Enable and bound them 
 
 ## Nodes and execution
 
+Prepare a public source repository as a durable run, then inspect the recorded commit:
+
+```sh
+forest repo clone https://github.com/OWNER/REPOSITORY.git --ref COMMIT_OR_TAG \
+  --request-id source-checkout-01 --wait --wait-timeout 600
+forest repo inspect RUN_ID
+```
+
+For a private repository, add `--credential PROFILE_NAME` and choose `--transport ssh` or `https`. The profile is configured by the operator on the worker; tokens, SSH keys and host file paths are never CLI repository arguments. Validate a JSON/TOML repository specification without connecting to a service using `forest repo validate --file repository.json`. See [repository inputs and authentication](GITHUB_REPOSITORIES.md) for operator setup and node examples.
+
+`repo clone` prepares source files in its own run workspace and does not start an experiment. To prepare source for an experiment or Agent, put the same `repository` specification in that node's run configuration. Each run gets its own checkout and commit manifest; a previous clone run is not an implicit shared working directory.
+
 ```sh
 forest node list
 forest node show NODE_ID
@@ -162,7 +174,7 @@ Use `branch_id` to select a branch; otherwise the CLI uses the project's Main br
 
 Supply a run configuration with `--config-file run-config.json`. Scheduling, dependency readiness and backend selection continue to follow the server's existing rules. Submission returns run IDs; add `--wait` to observe those runs until completion or a state requiring attention.
 
-Graph commands and queue submissions expose `--request-id` on `node add`, `node edit`, `node run`, `run retry`, `paper generate` and `paper compile`. Reuse the same ID only when retrying the same logical submission after an uncertain response. Server receipts prevent duplicate graph/queue work for that ID. The CLI does not automatically resend HTTP writes; project creation and ordinary control actions should be inspected before repeating after an uncertain transport failure.
+Graph commands and queue submissions expose `--request-id` on `node add`, `node edit`, `node run`, `repo clone`, `run retry`, `paper generate` and `paper compile`. Reuse the same ID only when retrying the same logical submission after an uncertain response. Server receipts prevent duplicate graph/queue work for that ID. Reusing a repository request ID with different source options returns a conflict. The CLI does not automatically resend HTTP writes; project creation and ordinary control actions should be inspected before repeating after an uncertain transport failure.
 
 ## Observe and control runs
 
@@ -171,6 +183,7 @@ forest status
 forest status --watch --interval 3
 forest run list
 forest run show RUN_ID
+forest run diagnostics RUN_ID
 forest run logs RUN_ID --follow
 forest run wait RUN_ID --timeout 600
 forest run evidence RUN_ID
@@ -179,6 +192,8 @@ forest run evidence RUN_ID
 Status summarizes the project, controller, active runs, usage and publication audit. These are separate state dimensions: execution success does not establish scientific validity or submission readiness. Evidence output includes run lineage, node revisions and saved-file comparisons so that older results remain identifiable.
 
 Watch and log-follow modes poll the authoritative HTTP API. They can be restarted after a client disconnect. In JSON mode, repeated watch/log output uses one JSON object per line; single responses use one JSON value.
+
+`run diagnostics` reports the saved execution phase, backend, source provenance, process receipts and log availability without invoking Docker or SSH on the API server. Use it alongside `run logs --follow` to distinguish source preparation, execution and a stopped task. Process/container observations are saved receipts rather than a live host-status query.
 
 ```sh
 forest run pause RUN_ID
@@ -254,6 +269,6 @@ Commands are noninteractive: missing files, invalid objects, missing project sel
 | `6` | Client wait timeout; backend work continues |
 | `130` | Client interrupted with Ctrl+C |
 
-`node run`, `paper generate` and `paper compile` without `--wait` return 0 when submission succeeds. With `--wait`, paused, waiting-input, budget-exhausted, failed, cancelled or interrupted states return 5; completed runs return 0. A local wait timeout returns 6 without cancelling work. HTTP timeout and total observation timeout are separate controls.
+`node run`, `repo clone`, `paper generate` and `paper compile` without `--wait` return 0 when submission succeeds. With `--wait`, paused, waiting-input, budget-exhausted, failed, cancelled or interrupted states return 5; completed runs return 0. A local wait timeout returns 6 without cancelling work. HTTP timeout and total observation timeout are separate controls.
 
 For automation, preserve the returned run ID, inspect `run show` after uncertain responses and use request IDs where supported. An incomplete publication audit or manuscript issues should be handled as work still required, not inferred to be a successful submission from an earlier command's exit code.
