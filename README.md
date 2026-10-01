@@ -54,7 +54,7 @@ python3.11 scripts/install.py
 .venv/bin/forest serve
 ```
 
-Open [localhost:8000](http://127.0.0.1:8000), configure a model provider in **Settings**, and create a project with a research goal and an explicit spending budget.
+Open [localhost:8000](http://127.0.0.1:8000/), configure a model provider in **Settings**, and create a project with a research goal and an explicit spending budget.
 
 ### CLI / Headless
 
@@ -75,7 +75,26 @@ Keep the service running and use another terminal for client commands. Run these
 
 The CLI supports project and node management, experiment execution, logs, run control, evidence inspection, budgets, and manuscript tasks. It shares the same research state as the Web workspace.
 
-See the [CLI guide](docs/CLI.md) or try the [numerical experiment example](examples/cli/README.md) without model calls.
+See the [CLI guide](https://github.com/mikamikasuki/FOREST/blob/main/docs/CLI.md) or try the [numerical experiment example](https://github.com/mikamikasuki/FOREST/blob/main/examples/cli/README.md) without model calls.
+
+### Repository Inputs and Diagnostics
+
+Prepare a public GitHub repository in the selected project:
+
+```bash
+.venv/bin/forest repo clone https://github.com/OWNER/REPOSITORY.git --wait
+```
+
+Use the returned run ID to inspect its source commit and execution diagnostics:
+
+```bash
+.venv/bin/forest repo inspect RUN_ID
+.venv/bin/forest run diagnostics RUN_ID
+```
+
+Git must be installed on the worker; SSH access also requires OpenSSH. Private repositories use worker-side HTTPS or SSH credential profiles.
+
+Agent, command, and experiment tasks can prepare their own source checkout through a `repository` configuration. See [Repository Inputs and Authentication](https://github.com/mikamikasuki/FOREST/blob/main/docs/GITHUB_REPOSITORIES.md) for configuration and examples.
 
 ### Development
 
@@ -102,8 +121,7 @@ Saved runs retain decisions, logs, metrics, artifacts, and execution history for
 
 PDF compilation requires `tectonic` or `pdflatex`. Configure spending and execution limits before unattended runs, and keep credentials outside the repository.
 
-See [Deployment](docs/DEPLOYMENT.md) for Docker, PostgreSQL, background services, backups, and Windows via WSL2 or Docker Desktop. See [Security](SECURITY.md) for execution boundaries.
-
+See [Deployment](https://github.com/mikamikasuki/FOREST/blob/main/docs/DEPLOYMENT.md) for Docker, PostgreSQL, background services, backups, and Windows via WSL2 or Docker Desktop. See [Security](https://github.com/mikamikasuki/FOREST/blob/main/SECURITY.md) for execution boundaries.
 
 ### Runtime Notes
 
@@ -114,7 +132,7 @@ See [Deployment](docs/DEPLOYMENT.md) for Docker, PostgreSQL, background services
 - Record dependency versions, dataset versions, model IDs, seeds, and execution configuration for experiments supporting scientific claims.
 - Keep provider credentials and machine-specific configuration outside the repository.
 
-See [Security](SECURITY.md) and [Deployment](docs/DEPLOYMENT.md) for execution boundaries and configuration.
+See [Security](https://github.com/mikamikasuki/FOREST/blob/main/SECURITY.md) and [Deployment](https://github.com/mikamikasuki/FOREST/blob/main/docs/DEPLOYMENT.md) for execution boundaries and configuration.
 
 ---
 
