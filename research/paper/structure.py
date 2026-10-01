@@ -216,6 +216,7 @@ def validate_structure(draft, evidence):
                 texts.extend(cell for row in rows for cell in row)
                 if 'alignment' in block and (not isinstance(block['alignment'], list) or len(block['alignment']) != len(columns) or any(value not in ('left', 'right', 'center') for value in block['alignment'])):
                     raise ValueError('Table alignment must give left, right or center for each column')
+                texts.extend(validate_table_presentation(block))
             elif kind == 'figure':
                 panels = block.get('panels')
                 if panels is not None:
@@ -241,13 +242,64 @@ def validate_structure(draft, evidence):
     return texts, figures
 
 
+def validate_table_presentation(block):
+    """Validate grouped headers, source-bound notes and readable table panels."""
+    texts = []
+    for field, limit in [('column_groups', len(block['columns'])), ('row_groups', len(block['rows']))]:
+        groups = block.get(field, [])
+        if not isinstance(groups, list):
+            raise ValueError('Table ' + field + ' must be an array')
+        occupied = set()
+        for group in groups:
+            if not isinstance(group, dict) or set(group) != {'label', 'start', 'count'} or not isinstance(group['label'], str) or not group['label'].strip():
+                raise ValueError('Table groups require label, start and count')
+            start, count = group['start'], group['count']
+            if any(isinstance(value, bool) or not isinstance(value, int) for value in (start, count)) or start < 0 or count < 1 or start + count > limit:
+                raise ValueError('Table group indices must cover actual columns or rows')
+            covered = set(range(start, start + count))
+            if covered & occupied:
+                raise ValueError('Table groups cannot overlap')
+            occupied |= covered
+            texts.append(group['label'])
+    notes = block.get('notes', [])
+    if not isinstance(notes, list) or any(not isinstance(note, str) or not note.strip() for note in notes):
+        raise ValueError('Table notes must be nonempty strings')
+    texts.extend(notes)
+    styles = block.get('cell_styles', {})
+    if not isinstance(styles, dict):
+        raise ValueError('Table cell_styles must map row:column to bold')
+    for key, value in styles.items():
+        if not isinstance(key, str) or not re.fullmatch(r'\d+:\d+', key) or value != 'bold':
+            raise ValueError('Table cell_styles supports explicit row:column bold entries')
+        row, column = map(int, key.split(':'))
+        if row >= len(block['rows']) or column >= len(block['columns']):
+            raise ValueError('Table cell styles must identify actual cells')
+    panels = block.get('column_panels', [])
+    if not isinstance(panels, list):
+        raise ValueError('Table column_panels must contain column index arrays')
+    if panels:
+        seen = set()
+        for panel in panels:
+            if not isinstance(panel, list) or len(panel) < 2 or panel[0] != 0 or any(isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(block['columns']) for index in panel) or panel != sorted(set(panel)):
+                raise ValueError('Each table panel must retain its identity column and ordered actual columns')
+            if seen & set(panel[1:]):
+                raise ValueError('Numeric table columns must appear exactly once across panels')
+            seen.update(panel[1:])
+        if seen != set(range(1, len(block['columns']))):
+            raise ValueError('Table panels cannot drop a numeric column')
+    weights = block.get('column_weights')
+    if weights is not None and (not isinstance(weights, list) or len(weights) != len(block['columns']) or any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0 for value in weights)):
+        raise ValueError('Table column_weights must assign a finite positive width to every column')
+    return texts
+
+
 def table_column_spec(block):
     """Wrap text and headers at a fixed readable size; right-align numeric cells."""
     kinds = block.get('alignment')
     if kinds is None:
         kinds = ['right' if all(re.fullmatch(r'(?:\[\[metric:[^]]+\]\]|[\d\s.eE+±%()\-−])+', row[index]) for row in block['rows']) else 'left'
                  for index in range(len(block['columns']))]
-    weights = [1.6 if kind == 'left' else 1 for kind in kinds]
+    weights = block.get('column_weights') or [1.6 if kind == 'left' else 1 for kind in kinds]
     total = sum(weights)
     commands = {'left': 'raggedright', 'right': 'raggedleft', 'center': 'centering'}
     return ''.join('>{\\' + commands[kind] + '\\arraybackslash}p{\\dimexpr ' + f'{weight/total:.6f}' + '\\linewidth-2\\tabcolsep\\relax}'
@@ -302,21 +354,7 @@ def render_section(section, render, render_math, figure_paths, block_plans=None,
         elif kind == 'equation':
             output.append('\\begin{equation}\n' + label + render_math(wrap_equation(block['latex'], columns)) + '\n\\end{equation}')
         elif kind == 'table':
-            font = '\\fontsize{' + str(plan['font_pt']) + '}{' + str(round(plan['font_pt'] * 1.2, 2)) + '}\\selectfont\n'
-            header = '\\toprule\n' + ' & '.join(render(cell) for cell in block['columns']) + ' \\\\\n\\midrule\n'
-            spec = table_column_spec(block)
-            rows = [' & '.join(render(cell) for cell in row) + r' \\' for row in block['rows']]
-            if plan['strategy'] == 'longtable':
-                output.append('{\n' + font + '\\begin{longtable}{' + spec + '}\n\\caption{' + render(block['caption']) + '}' + label + '\\\\\n' +
-                    header + '\\endfirsthead\n\\multicolumn{' + str(len(block['columns'])) + '}{c}{\\tablename\\ \\thetable{} (continued)}\\\\\n' +
-                    header + '\\endhead\n\\bottomrule\n\\endfoot\n' + '\n'.join(rows) + '\n\\end{longtable}\n}')
-            else:
-                chunks = [rows[i:i+plan['max_rows']] for i in range(0, len(rows), plan['max_rows'])] if plan['strategy'] == 'split' else [rows]
-                for part, chunk in enumerate(chunks):
-                    caption = block['caption'] + (f' (part {part+1} of {len(chunks)})' if len(chunks) > 1 else '')
-                    output.append('% FOREST_LAYOUT_BLOCK ' + identifier + '\n\\begin{table' + star + '}[' + placement + ']\n\\centering\n' + font +
-                        '\\caption{' + render(caption) + '}\n' + (label if part == 0 else '') + '\\begin{tabular}{' + spec + '}\n' + header +
-                        '\n'.join(chunk) + '\n\\bottomrule\n\\end{tabular}\n\\end{table' + star + '}\n% FOREST_LAYOUT_END')
+            output.extend(render_table(block, render, plan, identifier, star, placement, label))
         elif kind == 'figure':
             graphics = []
             if block.get('panels'):
@@ -331,3 +369,99 @@ def render_section(section, render, render_math, figure_paths, block_plans=None,
             output.append('% FOREST_LAYOUT_BLOCK ' + identifier + '\n\\begin{figure' + star + '}[' + placement + ']\n\\centering\n' + '\n'.join(graphics) +
                           '\n\\caption{' + render(block['caption']) + '}\n' + label + '\\end{figure' + star + '}\n% FOREST_LAYOUT_END')
     return '\n\n'.join(output)
+
+
+def _table_text(text, render):
+    """Direction marks are mathematical symbols even with pdfLaTeX fonts."""
+    commands = {'↑': r'\ensuremath{\uparrow}', '↓': r'\ensuremath{\downarrow}', '—': r'\textemdash{}'}
+    return ''.join(commands.get(part, render(part)) for part in re.split(r'([↑↓—])', text))
+
+
+def _table_header(block, indices, render):
+    lines = ['\\toprule']
+    groups = block.get('column_groups', [])
+    if groups:
+        grouped, rules, offset = [], [], 0
+        while offset < len(indices):
+            group = next((group for group in groups if group['start'] <= indices[offset] < group['start'] + group['count']), None)
+            if group is None:
+                grouped.append('\\multicolumn{1}{l}{}')
+                offset += 1
+                continue
+            stop = offset + 1
+            while stop < len(indices) and group['start'] <= indices[stop] < group['start'] + group['count']:
+                stop += 1
+            grouped.append('\\multicolumn{' + str(stop-offset) + '}{c}{' + _table_text(group['label'], render) + '}')
+            rules.append('\\cmidrule(lr){' + str(offset+1) + '-' + str(stop) + '}')
+            offset = stop
+        lines.extend([' & '.join(grouped) + r' \\', ''.join(rules)])
+    lines.extend([' & '.join(_table_text(block['columns'][index], render) for index in indices) + r' \\', '\\midrule'])
+    return '\n'.join(lines) + '\n'
+
+
+def _table_rows(block, indices, start, stop, render):
+    rows = []
+    groups = block.get('row_groups', [])
+    for row_index in range(start, stop):
+        group = next((group for group in groups if group['start'] <= row_index < group['start'] + group['count']), None)
+        if group and (row_index == group['start'] or row_index == start):
+            label = group['label'] + (' (continued)' if row_index > group['start'] else '')
+            rows.append('\\addlinespace\n\\multicolumn{' + str(len(indices)) + '}{l}{\\textbf{' + _table_text(label, render) + '}}' + r' \\')
+        values = []
+        for column in indices:
+            value = _table_text(block['rows'][row_index][column], render)
+            if block.get('statistics_binding') and column and value:
+                value = '\\mbox{' + value + '}'
+            if block.get('cell_styles', {}).get(f'{row_index}:{column}') == 'bold':
+                value = '\\textbf{\\boldmath ' + value + '}'
+            values.append(value)
+        rows.append(' & '.join(values) + r' \\')
+    return '\n'.join(rows)
+
+
+def _table_notes(block, render):
+    if not block.get('notes'):
+        return ''
+    return ('\\par\\smallskip\n\\begin{minipage}{\\linewidth}\n\\raggedright\n\\textbf{Notes.} ' +
+            '\\par\n'.join(_table_text(note, render) for note in block['notes']) + '\n\\end{minipage}')
+
+
+def render_table(block, render, plan, identifier, star, placement, label):
+    """Repeat real headers and notes across row or column continuations."""
+    font = '\\fontsize{' + str(plan['font_pt']) + '}{' + str(round(plan['font_pt'] * 1.2, 2)) + '}\\selectfont\n'
+    panels = block.get('column_panels') or [list(range(len(block['columns'])))]
+    notes = _table_notes(block, render)
+    output = []
+    total_chunks = len(panels) * (math.ceil(len(block['rows']) / plan['max_rows']) if plan['strategy'] == 'split' else 1)
+    part = 0
+    for indices in panels:
+        panel_block = {**block, 'columns': [block['columns'][index] for index in indices],
+                       'rows': [[row[index] for index in indices] for row in block['rows']]}
+        if 'alignment' in block:
+            panel_block['alignment'] = [block['alignment'][index] for index in indices]
+        if 'column_weights' in block:
+            panel_block['column_weights'] = [block['column_weights'][index] for index in indices]
+        spec = table_column_spec(panel_block)
+        header = _table_header(block, indices, render)
+        if plan['strategy'] == 'longtable':
+            footnote = ('\\multicolumn{' + str(len(indices)) + '}{p{\\dimexpr\\linewidth-2\\tabcolsep\\relax}}{' +
+                        notes.removeprefix('\\par\\smallskip\n') + '}' + r' \\' + '\n') if notes else ''
+            continuation = '\\addtocounter{table}{-1}\n' if part else ''
+            caption = block['caption'] + (f' (panel {part+1} of {len(panels)})' if len(panels) > 1 else '')
+            output.append('{\n' + font + continuation + '\\begin{longtable}{' + spec + '}\n\\caption{' + render(caption) + '}' +
+                          (label if part == 0 else '') + '\\\\\n' + header + '\\endfirsthead\n' +
+                          '\\multicolumn{' + str(len(indices)) + '}{c}{\\tablename\\ \\thetable{} (continued)}\\\\\n' +
+                          header + '\\endhead\n\\bottomrule\n' + footnote + '\\endfoot\n' +
+                          _table_rows(block, indices, 0, len(block['rows']), render) + '\n\\end{longtable}\n}')
+            part += 1
+            continue
+        ranges = [(start, min(start + plan['max_rows'], len(block['rows']))) for start in range(0, len(block['rows']), plan['max_rows'])] if plan['strategy'] == 'split' else [(0, len(block['rows']))]
+        for start, stop in ranges:
+            caption = block['caption'] + (f' (part {part+1} of {total_chunks})' if total_chunks > 1 else '')
+            continuation = '\\addtocounter{table}{-1}\n' if part and block.get('statistics_binding') else ''
+            output.append('% FOREST_LAYOUT_BLOCK ' + identifier + '\n\\begin{table' + star + '}[' + placement + ']\n\\centering\n' + font +
+                          continuation + '\\caption{' + render(caption) + '}\n' + (label if part == 0 else '') +
+                          '\\begin{tabular}{' + spec + '}\n' + header + _table_rows(block, indices, start, stop, render) +
+                          '\n\\bottomrule\n\\end{tabular}\n' + notes + '\n\\end{table' + star + '}\n% FOREST_LAYOUT_END')
+            part += 1
+    return output

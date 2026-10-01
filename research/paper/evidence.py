@@ -241,7 +241,8 @@ def collect_evidence(runs, sources=None, claims=None, *, required_run_ids=None, 
             item[field] = resolved
         resolved_claims.append(item)
     bundle['claims'] = validate_claims(resolved_claims, available)
-    return bundle
+    from research.analysis.presentation import attach_statistical_evidence
+    return attach_statistical_evidence(bundle)
 
 
 def metric_layout(value, tokens, pointer=''):
@@ -263,9 +264,12 @@ def manuscript_prompt(evidence, goal, title=None, expected_type=None, layout=Non
     # Duplicate raw metric trees are omitted from the prompt, not from provenance.
     context = deepcopy(evidence)
     context['runs'] = [{**{k: v for k, v in run.items() if k not in ('directory', 'metrics')},
-                        'metric_layout': metric_layout(run['metrics'], {item['pointer']: item['id'] for item in context['metrics'] if item['run_id'] == run['id']}),
+                        'metric_layout': metric_layout(run['metrics'], {item['pointer']: item['id'] for item in context['metrics'] if item['run_id'] == run['id'] and not item.get('artifact')}),
                         'metric_layout_trust': 'untrusted_run_artifact'} for run in context['runs']]
     context['figures'] = [{k: v for k, v in figure.items() if k != 'directory'} for figure in context.get('figures', [])]
+    if context.get('statistics', {}).get('recognized'):
+        from research.paper.tables import default_statistical_tables
+        context.setdefault('statistical_presentation', {})['tables'] = default_statistical_tables(evidence)
     instructions = '''Write an English scientific manuscript grounded solely in supplied evidence.
 Return JSON with title (string), abstract (string), sections (array of {title, paragraphs: [strings]}), conclusion (string), claim_ids (array of supplied claim IDs).
 For a requested complete paper, set manuscript_type="full_paper" and assign section roles introduction, related_work, method, experimental_setup, results, discussion (each required). Include the actual protocol, baselines, ablations, uncertainty and scope in the appropriate sections. For a bounded result note with insufficient material, use manuscript_type="research_note" and do not claim a complete-paper validation.
@@ -278,6 +282,8 @@ Use plain text in prose and table cells, and LaTeX only in equation blocks. For 
 Each run's metric_layout preserves original row identifiers, dataset/method names, flags and nesting, with numeric values replaced by their exact metric tokens. Use those row identities when building tables and claims; a positional pointer alone does not identify a method. Do not swap tokens between rows. requested_manuscript_type, when non-null, is an enforced output contract; do not silently downgrade it to a research note.
 Center the strongest supported contribution: important problem, precise gap, approach, strongest measured evidence. State the condition, practical value and mechanism of each advantage. Include enough methods to explain actual run conditions. Do not turn process chronology into the argument. Keep contrary evidence that affects the central conclusion. Narrow claims when evidence requires it. Do not transform a weaker result into an unsupported win. Do not claim conference acceptance or completed independent validation. A single run does not demonstrate independent reproduction; separate run receipts and an explicit result comparison are required for a reproducibility claim. Preserve each metric's definition and units: log loss is not classification error rate, accuracy stored as a fraction is not already a percentage, and statistical significance is not effect size. Do not call a value relatively good without an actual comparison.
 Include every supplied claim ID in claim_ids. Metric IDs are not claim IDs. If no claims were supplied, claim_ids MUST be []. If a claim has contrary_evidence, discuss the material contradiction in the manuscript and reference those evidence tokens. Give measured uncertainty rather than stock caveats. Preserve the core conclusion in the final paragraph. No placeholders or fabricated filler. Do not output an example or a template: write only what the actual supplied material supports.'''
+    if context.get('statistics', {}).get('recognized'):
+        instructions += '''\nStatistical results are computed evidence, not editable model estimates. Use supplied statistical_presentation.tables as declaration-based table blocks (statistics_spec); keep their labels and complete scientific scope. Add a specific caption, argumentative_duty, local prose reference and paragraph anchor. The renderer fills every value, grouped header, interval and sampling note from its identity binding. Do not manually reconstruct cells, drop inconvenient methods/datasets or count an analysis summary as another repetition. Curves preserve the measured x variable and all checkpoints; seeds are repetition identities. Read figure caption_context and uncertainty scope. Captions and adjacent interpretations state the paper question, strongest supported conditional finding and practical meaning. Put sampling units, counts and interval definitions in table notes. Point-estimate rank is not significance; a non-significant result is not equivalence; an object interval is not seed-level reliability; a favorable slice is not an aggregate finding. Preserve material conditions while narrowing unsupported claims. Keep task history and internal collaboration constraints out of manuscript prose. Every numeric empirical statement uses its exact metric token.\n'''
     return writing_contract() + '\n' + instructions + '\n' + json.dumps({'goal': goal, 'requested_title': title, 'requested_manuscript_type': expected_type, 'requested_layout': layout, 'evidence': context,
                                               'required_claim_ids': [c['id'] for c in context.get('claims', [])],
                                               'literal_metric_tokens': ['[[metric:' + m['id'] + ']]' for m in context['metrics']]}, ensure_ascii=False)
@@ -289,6 +295,9 @@ TOKEN = re.compile(r'\[\[(metric|source|passage|ref):([^\]]+)\]\]')
 def validate_draft(draft, evidence, expected_type=None):
     if not isinstance(draft, dict):
         raise ValueError('A manuscript must be a JSON object')
+    from research.paper.tables import materialize_statistical_tables, validate_statistical_tables
+    draft = materialize_statistical_tables(draft, evidence)
+    validate_statistical_tables(draft, evidence)
     if expected_type not in (None, 'full_paper', 'research_note'):
         raise ValueError('Requested manuscript type must be full_paper or research_note')
     if expected_type is not None and draft.get('manuscript_type') != expected_type:
@@ -299,6 +308,18 @@ def validate_draft(draft, evidence, expected_type=None):
     from research.paper.structure import validate_structure, block_labels, normalize_crossreferences
     block_texts, figures = validate_structure(draft, evidence)
     labels = block_labels(draft)
+    required_tables = evidence.get('statistical_presentation', {}).get('tables', [])
+    if required_tables:
+        bound = {block.get('label'):block for section in draft.get('sections', []) + draft.get('appendices', [])
+                 for block in section.get('blocks', []) if block.get('statistics_binding')}
+        missing = {block['label'] for block in required_tables} - set(bound)
+        if missing:
+            raise ValueError('Include every declared statistical comparison table with its identity binding: ' + ', '.join(sorted(missing)))
+        catalog = materialize_statistical_tables({'sections':[{'blocks':required_tables}]}, evidence)['sections'][0]['blocks']
+        for required in catalog:
+            actual = bound[required['label']]
+            if {key:value for key,value in actual['statistics_binding'].items() if key != 'authored_notes'} != {key:value for key,value in required['statistics_binding'].items() if key != 'authored_notes'}:
+                raise ValueError('A required statistical comparison table cannot omit or change its declared scientific scope: ' + required['label'])
     texts = [normalize_crossreferences(text, labels) for text in [draft['title'], draft['abstract'], draft['conclusion'], *block_texts]]
     metrics = {m['id']: m for m in evidence['metrics']}
     sources = {s['id']: s for s in evidence['sources']}
@@ -350,6 +371,8 @@ def write_manuscript(output_dir, evidence, draft, title=None, template='article'
     from research.paper.manuscript import tex, _macro_key, apply_template
     from research.paper.structure import render_section, validate_structure, block_labels, normalize_crossreferences
     from research.paper.layout import plan_layout, numeric_display, _column_source, float_barriers
+    from research.paper.tables import materialize_statistical_tables
+    draft = materialize_statistical_tables(draft, evidence)
     report = validate_draft(draft, evidence)
     from research.paper.style import writing_profile
     report['writing_profile'] = writing_profile()
@@ -369,6 +392,15 @@ def write_manuscript(output_dir, evidence, draft, title=None, template='article'
             raise ValueError(f"Metrics for run {run['id']} changed during drafting; reload evidence and regenerate")
         shutil.copyfile(source, path)
         run_files[run['id']] = str(path.relative_to(output))
+    statistical_file = None
+    if evidence.get('statistics', {}).get('recognized'):
+        from research.analysis.presentation import attach_statistical_evidence
+        rebound = attach_statistical_evidence({**evidence, 'metrics': [item for item in evidence['metrics'] if not item.get('artifact')]})
+        if rebound['statistics'] != evidence['statistics']:
+            raise ValueError('Statistical evidence changed during drafting; reload and regenerate')
+        path = output / 'evidence' / 'statistical_results.json'
+        path.write_text(json.dumps(evidence['statistics'], ensure_ascii=False, indent=2, allow_nan=False))
+        statistical_file = str(path.relative_to(output))
     metrics = {m['id']: m for m in evidence['metrics']}
     sources = {s['id']: s for s in evidence['sources']}
     passages = {p['id']: p for source in evidence['sources'] for p in source.get('passages', [])}
@@ -404,10 +436,17 @@ def write_manuscript(output_dir, evidence, draft, title=None, template='article'
         metric = metrics[key]
         name = _macro_key(key)
         value = metric['value']
-        display = numeric_display(value, plan['config'])
+        if metric.get('artifact') == 'statistical_results':
+            if statistical_file is None or resolve_pointer(evidence['statistics'], metric['pointer']) != value:
+                raise ValueError('Derived numeric binding disagrees with its computed statistical source')
+            precision = metric.get('precision', 3)
+            display = format(value, '.0f') if metric.get('format') == '.0f' else numeric_display(value, {**plan['config'], 'significant_digits': max(1, precision)})
+        else:
+            display = numeric_display(value, plan['config'])
         macros.append('\\newcommand{\\' + name + '}{' + display + '}')
-        bindings.append({'macro': name, 'file': run_files[metric['run_id']], 'pointer': metric['pointer'],
-                         'value': value, 'display': display, 'run_id': metric['run_id'], 'evidence_id': key})
+        bindings.append({'macro': name, 'file': statistical_file if metric.get('artifact') == 'statistical_results' else run_files[metric['run_id']], 'pointer': metric['pointer'],
+                         'value': value, 'display': display, 'run_id': metric['run_id'], 'evidence_id': key,
+                         **{field: metric[field] for field in ('artifact', 'source_refs', 'statistical_identity') if field in metric}})
 
     def render(text, mathematical=False):
         text = normalize_crossreferences(text, labels)

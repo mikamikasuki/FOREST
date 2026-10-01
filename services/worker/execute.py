@@ -51,6 +51,17 @@ def latest_experiment(s,pid,ids=None):
     return list(s.scalars(select(TaskRun).where(TaskRun.project_id==pid,TaskRun.kind.in_(('experiment','agent','command')),TaskRun.status=='completed').order_by(TaskRun.created_at.desc()).limit(1)))
 
 
+def statistical_run_evidence(root, selected):
+    """Read every explicitly selected scientific artifact with its saved design."""
+    from research.paper.evidence import collect_evidence
+    return collect_evidence([{'id':run.id,'status':run.status,
+        'directory':str(safe_path(root,run.output_path,True)),
+        'metrics_file':('metrics.json' if (safe_path(root,run.output_path,True)/'metrics.json').is_file()
+                        else 'workspace/'+run.config.get('metrics_file','metrics.json')),
+        'config':{key:value for key,value in run.config.items() if key not in ('provider_snapshot','env')}}
+        for run in selected])
+
+
 def manuscript_figures(session, project_id, root, selected, figure_ids=None):
     """Bridge separately rendered studio figures into scientific-run evidence."""
     allowed = {run.id for run in selected}
@@ -256,6 +267,20 @@ def execute(run_id):
         from research.analysis.statistics import analyze
         with Session() as s: selected=latest_experiment(s,pid,config.get('run_ids')); paths=[safe_path(root,r.output_path,True) for r in selected]
         if not paths: raise ValueError('No completed experiment predictions are available')
+        if config.get('analysis_type')=='publication' or any(isinstance(r.metrics.get('statistics'),dict) or isinstance(r.metrics.get('statistical_results'),dict) for r in selected):
+            evidence=statistical_run_evidence(root,selected)
+            statistics=evidence.get('statistics',{})
+            if not statistics.get('recognized'):
+                raise ValueError('Publication analysis requires statistical observations or saved identified results')
+            if not statistics.get('coverage',{}).get('complete'):
+                raise ValueError('Publication analysis has missing declared dataset/method/repetition cells; complete the experiment matrix')
+            result={'analysis_type':'publication','statistical_results':statistics,'source_run_ids':[r.id for r in selected]}
+            (output/'metrics.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False))
+            with Session.begin() as s:
+                a=Analysis(project_id=pid,title=config.get('title','Publication statistical analysis'),
+                    data={**result,'run_ids':[r.id for r in selected],'path':str((output/'metrics.json').relative_to(root))},status='ready_for_review')
+                s.add(a);s.flush();emit(s,pid,'artifact_available',{'kind':'analysis','id':a.id})
+            return result
         results=[]
         for i,path in enumerate(paths):
             value=analyze(path/'predictions.csv',output/f'analysis_{i}',config)
@@ -278,18 +303,29 @@ def execute(run_id):
                 changes,response=model_json(config,json.dumps({'figure':fig,'instruction':config['instruction'],'region':config.get('region')},ensure_ascii=False),'Return JSON {"style":{...},"explanation":"..."}; change only the requested plot styling, not measurements.')
                 fig={**fig,'style':{**fig.get('style',{}),**changes['style']}}
         with Session() as s: selected=latest_experiment(s,pid,fig.get('run_ids') or config.get('run_ids'))
-        style={**fig.get('style',{}),'metric':fig.get('metric',fig.get('style',{}).get('metric','brier'))}
+        style=dict(fig.get('style',{}))
+        if fig.get('metric'): style['metric']=fig['metric']
         if fig.get('kind')=='image': data={**fig.get('data',{}),'mechanism':fig.get('image_prompt') or fig.get('caption')}
         elif fig.get('kind')=='method': data=fig.get('data',{})
         elif fig.get('data'): data=fig['data']
         elif fig.get('kind')=='calibration' and selected:
             import pandas as pd
-            source=safe_path(root,selected[0].output_path,True)
-            predictions=pd.read_csv(source/'predictions.csv')
-            dataset=style.get('dataset',sorted(predictions.dataset.unique())[0])
-            seed=style.get('seed',sorted(predictions.seed.unique())[0])
-            data=predictions[(predictions.dataset==dataset)&(predictions.seed==seed)].to_dict('records')
-        elif selected: data=selected[0].metrics
+            frames=[]
+            for r in selected:
+                source=safe_path(root,r.output_path,True)
+                prediction_file=source/'predictions.csv'
+                if not prediction_file.is_file(): prediction_file=source/'workspace'/'predictions.csv'
+                frame=pd.read_csv(prediction_file)
+                frame['source_run_id']=r.id
+                frames.append(frame)
+            data=pd.concat(frames,ignore_index=True).to_dict('records')
+        elif selected:
+            evidence=statistical_run_evidence(root,selected)
+            if evidence.get('statistics',{}).get('recognized'):
+                data={'statistical_results':evidence['statistics'],'metric_bindings':evidence['metrics'],
+                      'source_run_ids':[r.id for r in selected]}
+            elif len(selected)==1: data=selected[0].metrics
+            else: raise ValueError('Multiple-run statistical plots require identified statistics.observations or per_seed results in their metric artifacts')
         else: raise ValueError('Choose real completed runs or explicitly imported figure data')
         target=output/'figure'; selection=None
         custom_code=fig.get('code') and fig.get('code_origin')!='renderer'
@@ -399,6 +435,21 @@ def execute(run_id):
             if has_saved_response:
                 from research.paper.model_draft import draft_from_saved_response
                 with Session() as s: origin,response_path,original_evidence=saved_paper_response(s,pid,config,run_id)
+                if original_evidence and Path(original_evidence).is_file():
+                    saved=json.loads(Path(original_evidence).read_text())
+                    statistical_figures=[figure for figure in saved.get('figures',[]) if figure.get('origin')=='statistical_presentation']
+                    if statistical_figures:
+                        origin_directory=safe_path(root,origin.output_path,True).resolve()
+                        for figure in statistical_figures:
+                            if not Path(figure['directory']).resolve().is_relative_to(origin_directory):
+                                raise ValueError('Saved statistical figures must belong to the original manuscript run')
+                        if saved.get('statistics')!=evidence.get('statistics'):
+                            raise ValueError('Saved statistical figures use changed experiment evidence; request a fresh manuscript')
+                        evidence=collect_evidence(runs=[{'id':r['id'],'status':'completed','directory':r['directory'],
+                            'metrics_file':r['metrics_file'],'config':r.get('method_context',{})} for r in evidence['runs']],
+                            sources=sources,claims=claims,required_run_ids=config.get('run_ids'),
+                            figures=[*evidence.get('figures',[]),*statistical_figures])
+                        evidence['statistical_presentation']=saved.get('statistical_presentation',{})
                 revision_path=None
                 if 'draft_revision_path' in config:
                     relative=config['draft_revision_path']
@@ -420,7 +471,11 @@ def execute(run_id):
                 # explicitly configured limits and account every request normally.
                 if not any(key in client.config for key in ('max_output_tokens','max_tokens')):
                     client.config={**client.config,'max_output_tokens':32768}
-                draft,response=draft_with_model(client,evidence,config.get('instructions') or config.get('project_goal',''),folder,title=config.get('title'),attempts=int(config.get('paper_draft_attempts',3)),system=RESEARCH_POLICY,expected_type=config.get('manuscript_type','full_paper'),layout=selected_layout,publication=config.get('publication_profile'),required_figure_ids=config.get('figure_ids'))
+                from research.paper.statistical_workflow import prepare_statistical_presentation
+                evidence=prepare_statistical_presentation(evidence,folder/'statistical_presentation',selected_layout,client)
+                required_figures=list(dict.fromkeys([*(config.get('figure_ids') or []),
+                    *evidence.get('statistical_presentation',{}).get('figure_ids',[])]))
+                draft,response=draft_with_model(client,evidence,config.get('instructions') or config.get('project_goal',''),folder,title=config.get('title'),attempts=int(config.get('paper_draft_attempts',3)),system=RESEARCH_POLICY,expected_type=config.get('manuscript_type','full_paper'),layout=selected_layout,publication=config.get('publication_profile'),required_figure_ids=required_figures if required_figures else config.get('figure_ids'))
                 from research.paper.visual_review import review_placements
                 draft,placement_review=review_placements(client,evidence,draft,folder/'visual_placement_reviews')
             generated=generate_paper(None,folder,config.get('title'),config.get('template','article'),evidence=evidence,draft=draft,layout=config.get('layout'))

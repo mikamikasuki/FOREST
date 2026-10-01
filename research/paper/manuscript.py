@@ -212,6 +212,22 @@ def check_paper(directory, source_name="paper.tex"):
                         issues.append({'code': 'stale_macro', 'message': binding['macro']})
             except (KeyError, IndexError, OSError, TypeError, ValueError):
                 issues.append({"code": "missing_metric", "message": binding["macro"]})
+    evidence_path = directory / 'evidence.json'
+    if evidence_path.is_file():
+        try:
+            evidence = json.loads(evidence_path.read_text())
+            if evidence.get('statistics', {}).get('recognized'):
+                from research.analysis.presentation import attach_statistical_evidence
+                from research.paper.tables import validate_statistical_tables
+                for index, run in enumerate(evidence['runs']):
+                    run['metrics'] = json.loads((directory / 'evidence' / f'run{index}' / 'metrics.json').read_text())
+                rebound = attach_statistical_evidence({**evidence, 'metrics': [item for item in evidence['metrics'] if not item.get('artifact')]})
+                saved = json.loads((directory / 'evidence' / 'statistical_results.json').read_text())
+                if rebound['statistics'] != saved:
+                    raise ValueError('Statistical artifact does not match its original measured inputs')
+                validate_statistical_tables(json.loads((directory / 'draft.json').read_text()), rebound)
+        except (KeyError, IndexError, OSError, TypeError, ValueError) as exc:
+            issues.append({'code': 'statistical_identity', 'message': str(exc)})
     return {"issues": issues, "checked": ["placeholders", "citation_keys", "cross_references", "figure_files", "figure_companions", "bound_metrics"], "claim_verification": "numerical binding checks only; not an automated scientific endorsement"}
 
 

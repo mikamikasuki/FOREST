@@ -26,6 +26,8 @@ def validate_manuscript_contract(draft, evidence, expected_type=None, *, require
     manuscript still includes every selected asset and omits AI boilerplate.
     """
     required = _required_figures(required_figure_ids, evidence)
+    from research.paper.tables import materialize_statistical_tables
+    draft = materialize_statistical_tables(draft, evidence)
     validation = validate_draft(draft, evidence, expected_type)
     if required is not None:
         missing = set(required) - set(validation['referenced_figures'])
@@ -71,6 +73,8 @@ def draft_from_saved_response(response_path, evidence, output_dir, *, origin_run
     if not isinstance(response, dict) or not isinstance(response.get('text'), str) or not isinstance(response.get('model'), str) or not isinstance(response.get('usage'), dict):
         raise ValueError('Saved response must contain recorded text, model and usage fields')
     draft = json.loads(response['text'])
+    from research.paper.tables import materialize_statistical_tables
+    draft = materialize_statistical_tables(draft, evidence)
     validation = validate_draft(draft, evidence, expected_type)
     original_context_available = original_evidence_path is not None and Path(original_evidence_path).is_file()
     if original_context_available:
@@ -88,7 +92,7 @@ def draft_from_saved_response(response_path, evidence, output_dir, *, origin_run
         if not isinstance(revision, dict) or not isinstance(revision.get('draft'), dict) or any(not isinstance(revision.get(key), str) or not revision[key].strip() for key in ('editor','reason')):
             raise ValueError('Draft revision requires draft, editor and reason fields')
         changes = draft_changes(draft, revision['draft'])
-        draft = revision['draft']
+        draft = materialize_statistical_tables(revision['draft'], evidence)
     validation = validate_manuscript_contract(draft, evidence, expected_type, required_figure_ids=required_figure_ids)
     provenance = {'mode': 'saved_response_revalidation', 'origin_run_id': origin_run_id,
                   'origin_response_path': origin_response_path, 'original_model': response['model'],
@@ -176,7 +180,14 @@ def draft_with_model(client, evidence, goal, output_dir, *, title=None, attempts
             draft = json.loads(response['text'])
             if not isinstance(draft, dict):
                 raise ValueError('The manuscript must be a JSON object with title, abstract, sections, conclusion, and claim_ids')
+            from research.paper.tables import materialize_statistical_tables
+            draft = materialize_statistical_tables(draft, evidence)
             validation = validate_manuscript_contract(draft, evidence, expected_type, required_figure_ids=required_figure_ids)
+            from research.paper.statistical_narrative import review_statistical_explanations
+            draft, statistical_review = review_statistical_explanations(client, evidence, draft)
+            validation = validate_manuscript_contract(draft, evidence, expected_type, required_figure_ids=required_figure_ids)
+            if statistical_review.get('status') != 'not_applicable':
+                validation['statistical_explanation_review'] = statistical_review
         except (ValueError, KeyError, TypeError) as exc:
             record({**entry, 'valid': False, 'validation_error': str(exc)})
             if number == attempts:
