@@ -38,55 +38,72 @@ FOREST carries the surviving evidence into a full manuscript, including related 
 
 ## Quick Start
 
-### macOS / Linux
-
-Requires **Python 3.11+** and **Node.js 22+**.
-
-Clone the repository, install dependencies, and launch:
+Requires **Python 3.11+**. The Web workspace also requires **Node.js 22+**.
 
 ```bash
 git clone https://github.com/mikamikasuki/FOREST.git
 cd FOREST
+```
 
+### Web Workspace — macOS / Linux
+
+Install dependencies and start FOREST:
+
+```bash
 python3.11 scripts/install.py
-.venv/bin/python scripts/start.py
+.venv/bin/forest serve
 ```
 
 Open [localhost:8000](http://127.0.0.1:8000), configure a model provider in **Settings**, and create a project with a research goal and an explicit spending budget.
 
-For development mode, after installation:
+### CLI / Headless
+
+Run the API and worker without Node.js or the Web build:
 
 ```bash
+python3.11 scripts/install.py --headless
+.venv/bin/forest serve --headless --data-dir ./var
+```
+
+Keep the service running and use another terminal for client commands. Run these commands from the repository root:
+
+```bash
+.venv/bin/forest --help
+.venv/bin/forest init --name "My research" --goal "Your research question"
+.venv/bin/forest status
+```
+
+The CLI supports project and node management, experiment execution, logs, run control, evidence inspection, budgets, and manuscript tasks. It shares the same research state as the Web workspace.
+
+See the [CLI guide](docs/CLI.md) or try the [numerical experiment example](examples/cli/README.md) without model calls.
+
+### Development
+
+After installing the Web workspace:
+
+```bash
+# Start development services
 ./scripts/dev.sh
-```
 
-Check the local environment:
-
-```bash
+# Check the local environment
 .venv/bin/python scripts/doctor.py
-```
 
-Run backend tests, frontend compilation, and frontend tests:
-
-```bash
+# Run backend tests, frontend compilation, and frontend tests
 ./scripts/test.sh
 ```
 
-PDF compilation requires `tectonic` or `pdflatex`.
-
-The backend dependencies are defined in [`pyproject.toml`](pyproject.toml) and [`requirements.lock.txt`](requirements.lock.txt). The frontend package and commands are in [`apps/web/package.json`](apps/web/package.json).
-
-See [Deployment](docs/DEPLOYMENT.md) for Docker, PostgreSQL, background services, backups, and Windows setup through WSL2 or Docker Desktop.
-
 ### Research Modes
 
-Project configuration supports `manual`, `assisted`, and `auto` modes.
+- **Manual** — edit the research graph and choose tasks to execute.
+- **Assisted** — use model-assisted planning and tools while directing the research.
+- **Auto** — enable autonomous planning and execution within configured goals, budgets, and delivery requirements.
 
-- **Manual** — author and edit the research graph and choose executable tasks.
-- **Assisted** — use model-assisted planning and research tools while directing the workflow.
-- **Auto** — enable the research controller to alternate planning and execution within the configured goals, budgets, and delivery requirements.
+Saved runs retain decisions, logs, metrics, artifacts, and execution history for inspection.
 
-Saved runs expose decisions, logs, metrics, artifacts, and execution history for inspection.
+PDF compilation requires `tectonic` or `pdflatex`. Configure spending and execution limits before unattended runs, and keep credentials outside the repository.
+
+See [Deployment](docs/DEPLOYMENT.md) for Docker, PostgreSQL, background services, backups, and Windows via WSL2 or Docker Desktop. See [Security](SECURITY.md) for execution boundaries.
+
 
 ### Runtime Notes
 
