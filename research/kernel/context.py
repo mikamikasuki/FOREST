@@ -9,7 +9,8 @@ from .artifacts import ArtifactResolver
 from .errors import GraphError
 from .graph import _closure, _index, PROPAGATION
 
-INDEPENDENT_ROLES = {"reviewer", "independent_reviewer", "reproducer", "verifier"}
+INDEPENDENT_ROLES = {"reviewer", "independent_reviewer", "reproducer", "verifier", "evidence_verifier",
+                     "analyst", "baseline_reproducer", "submission_reviewer", "research_direction_reviewer"}
 
 
 class ContextBuilder:

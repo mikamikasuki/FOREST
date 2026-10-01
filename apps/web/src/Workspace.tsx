@@ -57,7 +57,7 @@ import {
   Download,
   GitCompare,
 } from "lucide-react";
-import { api, uid, hasCycle, parseJson, formatDate } from "./api";
+import { api, uid, hasCycle, parseJson, formatDate, executionLinks } from "./api";
 import type { Graph, ResearchNode, Run, Json } from "./api";
 import {
   useUI,
@@ -86,6 +86,7 @@ const nodeKinds = [
   ["experiment", "实验", "Experiment"],
   ["evaluation", "评价", "Evaluation"],
   ["analysis", "统计分析", "Analysis"],
+  ["verification", "证据验证", "Evidence verification"],
   ["figure", "学术图表", "Figure"],
   ["paper", "论文", "Paper"],
   ["review", "审核", "Review"],
@@ -312,23 +313,24 @@ function WorkspaceInner() {
   useEffect(() => {
     if (!selected && graph.nodes.length) setSelected(graph.nodes[0].id);
   }, [graph.nodes, selected]);
+  const linkedEdges = useMemo(() => executionLinks(graph), [graph.nodes, graph.edges]);
   const hidden = useMemo(() => {
     const out = new Set<string>();
     for (const root of collapsed) {
-      const todo = graph.edges
+      const todo = linkedEdges
         .filter((e) => e.source === root)
         .map((e) => e.target);
       while (todo.length) {
         const target = todo.pop()!;
         if (out.has(target)) continue;
         out.add(target);
-        graph.edges
+        linkedEdges
           .filter((e) => e.source === target)
           .forEach((e) => todo.push(e.target));
       }
     }
     return out;
-  }, [graph.edges, collapsed]);
+  }, [linkedEdges, collapsed]);
   useEffect(() => {
     setFlowNodes(
       graph.nodes
@@ -377,7 +379,7 @@ function WorkspaceInner() {
     setCollapsed((current) => {
       if (!current.size) return current;
       const parents = new Map<string, string[]>();
-      for (const edge of graph.edges) {
+      for (const edge of linkedEdges) {
         const existing = parents.get(edge.target) || [];
         existing.push(edge.source);
         parents.set(edge.target, existing);
@@ -396,13 +398,13 @@ function WorkspaceInner() {
   };
   const edges = useMemo(
     () =>
-      graph.edges.map((e) => ({
+      linkedEdges.map((e) => ({
         ...e,
         type: "smoothstep",
         animated: runs.some(
           (r) => r.node_id === e.target && r.status === "running",
         ),
-        label: ["depends_on", "consumes"].includes(e.relation)
+        label: e.implicit ? "input binding" : ["depends_on", "consumes"].includes(e.relation)
           ? undefined
           : e.relation,
         style: {
@@ -426,7 +428,7 @@ function WorkspaceInner() {
           color: "#9bad9e",
         },
       })),
-    [graph.edges, runs],
+    [linkedEdges, runs],
   );
   const onSelectionChange = useCallback(
     ({ nodes }: { nodes: FlowNode[] }) =>
@@ -1046,7 +1048,9 @@ function AddNode({
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
-          await action(() => onCreate({ type, title, instructions }));
+          await action(() => onCreate({ type, title, instructions,
+            ...(type === "verification" ? {config: {kind: "verification"}} : {}),
+          }));
           setBusy(false);
         }}
       >
@@ -1499,7 +1503,7 @@ function NodeInspector({
                 onChange={(e) => setInputs(e.target.value)}
               />
             </Field>
-            <JsonView value={graph.edges.filter((e) => e.target === node.id)} />
+            <JsonView value={executionLinks(graph).filter((e) => e.target === node.id)} />
           </>
         )}
         {tab === "results" && (
@@ -1509,6 +1513,7 @@ function NodeInspector({
                 <h4>{t("上次实际运行", "Last execution")}</h4>
                 <Badge status={related[0].status} />
                 <JsonView value={related[0].metrics || {}} />
+                <RunEvidence runId={related[0].id} />
                 <p className="muted">
                   {t("执行所用节点版本", "Executed node revision")}:{" "}
                   {related[0].node_revision}

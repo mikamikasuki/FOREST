@@ -179,7 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
     group = p.add_subparsers(dest="action", required=True)
     p = _command(group, "list", "List project runs")
     p.add_argument("--limit", type=positive_int, default=100)
-    for action in ["show", "evidence", "diagnostics", "pause", "resume", "cancel", "retry"]:
+    for action in ["show", "evidence", "verification", "diagnostics", "pause", "resume", "cancel", "retry"]:
         help_text = "Inspect saved execution diagnostics" if action == "diagnostics" else f"{action.capitalize()} a persisted run"
         p = _command(group, action, help_text)
         p.add_argument("id")
@@ -205,6 +205,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--branch")
     p.add_argument("--max-cycles", type=positive_int)
     for action in ["pause", "stop"]: _command(group, action, f"{action.capitalize()} the controller and report process-control failures")
+    _command(group, "route-health", "Inspect repeated failures and excessive counterexample checking")
+    p = _command(group, "route-review", "Review the complete recorded research route and propose the next direction")
+    _file(p, "--config-file", required=False)
+    _queued(p)
 
     for name in ["budget", "publication"]:
         p = _command(commands, name, f"Inspect project {name}")
@@ -544,6 +548,7 @@ def execute(args, *, client_factory=ForestClient):
             else:
                 path = f"/api/runs/{identifier(args.id)}"
                 if args.action == "show": value = client.request("GET", path)
+                elif args.action == "verification": value = client.request("GET", path + "/verification")
                 elif args.action == "diagnostics": value = client.request("GET", path + "/diagnostics")
                 elif args.action == "logs": return _logs(client, args)
                 elif args.action == "wait": value, code = wait_runs(client, [args.id], interval=args.interval, timeout=args.wait_timeout)
@@ -562,7 +567,12 @@ def execute(args, *, client_factory=ForestClient):
                 if args.autonomous is not None: body["autonomous"] = args.autonomous
                 if args.branch: body["branch_id"] = args.branch
                 if args.max_cycles is not None: body["max_cycles"] = args.max_cycles
-            value = client.request("POST", f"/api/projects/{identifier(require_project(context))}/research/{args.action}", json=body)
+            path = f"/api/projects/{identifier(require_project(context))}/research/{args.action}"
+            if args.action == "route-health": value = client.request("GET", path)
+            elif args.action == "route-review":
+                value = client.request("POST", path, json={**run_configuration(args.config_file), "request_id": request_id(args)})
+                value, code = _submitted(client, value, args)
+            else: value = client.request("POST", path, json=body)
             if value.get("process_control_errors"): code = 5
         elif args.command == "budget":
             value = client.request("GET", f"/api/projects/{identifier(require_project(context))}/usage")
