@@ -40,19 +40,19 @@ export type Graph = {
 };
 export type Run = {
   id: string;
-  node_id: string;
+  node_id: string | null;
   project_id: string;
-  branch_id: string;
+  branch_id: string | null;
   kind: string;
   status: string;
   config: Json;
   node_revision: number;
   created_at: string;
-  started_at: string;
-  finished_at: string;
-  exit_code: number;
-  pid: number;
-  error: string;
+  started_at: string | null;
+  finished_at: string | null;
+  exit_code: number | null;
+  pid: number | null;
+  error: string | null;
   metrics: Json;
   output_path: string;
 };
@@ -151,7 +151,7 @@ export async function download(path: string, body?: any, name?: string) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-export function formatDate(value?: string) {
+export function formatDate(value?: string | null) {
   return value
     ? new Date(value).toLocaleString("en", {
         month: "short",

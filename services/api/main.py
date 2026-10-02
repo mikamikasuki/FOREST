@@ -566,17 +566,35 @@ async def terminal(ws:WebSocket,ident:str):
     from .terminal import attach
     await attach(ws,ident+':'+str(branch.id if branch else 'main'),cwd)
 app.include_router(files_router)
+from .research_runtime import router as runtime_router
+# Specific research endpoints must precede resources' /research/{action}.
+app.include_router(runtime_router)
 from .resources import router as research_router
 app.include_router(research_router)
-
-from .research_runtime import router as runtime_router
-app.include_router(runtime_router)
 from .repositories import router as repositories_router
 app.include_router(repositories_router)
 from .run_diagnostics import router as diagnostics_router
 app.include_router(diagnostics_router)
 from .verification import router as verification_router
 app.include_router(verification_router)
+
+def api_openapi():
+    """Describe the existing API without changing handler validation or output."""
+    if app.openapi_schema is None:
+        from fastapi.openapi.utils import get_openapi
+        from .contracts import enhance_openapi
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            routes=app.routes,
+        )
+        # FastAPI may retain included routers as nested route containers.
+        # Generate with its native traversal before excluding the Web fallback.
+        schema['paths'] = {path: value for path, value in schema['paths'].items() if path.startswith('/api/')}
+        app.openapi_schema = enhance_openapi(schema)
+    return app.openapi_schema
+
+app.openapi = api_openapi
 web_dist=Path(__file__).resolve().parents[2]/'apps/web/dist'
 if web_dist.exists():
     app.mount('/assets',StaticFiles(directory=web_dist/'assets'),name='assets')
