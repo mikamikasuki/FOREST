@@ -27,6 +27,7 @@ jobs:
       - run: python -m pip install -r requirements.lock.txt
       - run: python -m pip install --no-deps -e .
       - run: forest --help
+      - run: python scripts/export_api_contract.py --check
       - run: python -m pytest -q
       - run: npm --prefix apps/web ci
       - run: npm --prefix apps/web run build

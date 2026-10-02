@@ -1,5 +1,11 @@
 # FOREST integration contract
-Backend port 8000; Vite 5173 with /api and /ws proxy. Plain JSON objects (no data wrapper), error {detail:{code,message,retryable,suggestion}}. IDs UUID strings; timestamps ISO. sqlite fallback; PostgreSQL preferred. Root repo path forest/.
+
+Detailed contracts: [API reference](../../docs/API_REFERENCE.md),
+[frontend integration guide](../../docs/FRONTEND_API_GUIDE.md),
+[OpenAPI](openapi.json), and [generated TypeScript](api.generated.ts).
+See [API contract maintenance](../../docs/API_CONTRACTS.md) for export and checks.
+
+Backend port 8000; Vite 5173 with /api and /ws proxy. Plain JSON objects (no data wrapper). Structured application errors use {detail:{code,message,retryable,suggestion?}}; request-validation errors use FastAPI's detail array. IDs UUID strings; timestamps ISO. SQLite fallback; PostgreSQL preferred.
 
 Project: {id,name,description,goal,current_direction,revision:int,archived:bool,mode:auto|assisted|manual,budget:{max_runs,seconds,allow_paid},created_at,updated_at}; list GET /api/projects -> array, POST create, PATCH /api/projects/:id. GET /api/projects/:id returns project.
 Graph GET /api/projects/:id/graph -> {project_id,revision,nodes:[],edges:[],branches:[]}. Node {id,project_id,branch_id,type,title,instructions,revision,config:{},position:{x,y},execution_status,research_status,deliverable_status,archived,inputs:[],outputs:[],context_overrides:{},comments:[]}. Edge {id,source,target,relation} dependency relation is depends_on or consumes; source precedes target. Branch {id,name,root_node_id,status,workspace,is_main,config:{}}.
