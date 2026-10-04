@@ -178,12 +178,19 @@ def download_file(ident:str,path:str):
 @router.post('/api/projects/{ident}/upload')
 async def upload(ident:str,file:UploadFile=File(...),directory:str='uploads'):
     root=validate_project(ident); p=safe_path(root,directory+'/'+Path(file.filename or 'upload').name); p.parent.mkdir(parents=True,exist_ok=True)
-    total=0
-    with p.open('wb') as out:
-        while chunk:=await file.read(1024*1024):
-            total+=len(chunk)
-            if total>settings.max_upload_mb*1024*1024: out.close(); p.unlink(missing_ok=True); error('UPLOAD_TOO_LARGE','Upload exceeds configured limit',413)
-            out.write(chunk)
+    total=0; temporary=p.with_name('.forest-upload-'+uid()+'.tmp')
+    out=temporary.open('xb')
+    try:
+        with out:
+            while chunk:=await file.read(1024*1024):
+                total+=len(chunk)
+                if total>settings.max_upload_mb*1024*1024: error('UPLOAD_TOO_LARGE','Upload exceeds configured limit',413)
+                out.write(chunk)
+        # Publish only complete uploads, keeping existing file permissions.
+        if p.is_file(): temporary.chmod(p.stat().st_mode & 0o7777)
+        temporary.replace(p)
+    finally:
+        temporary.unlink(missing_ok=True)
     with Session.begin() as s: touch_dependents(s,ident,str(p.relative_to(root)))
     return {'path':str(p.relative_to(root)),'size':total,'origin':'user_import'}
 
