@@ -86,8 +86,38 @@ def search(query: str, source="crossref", limit=8) -> list[dict]:
         result = _get("https://api.crossref.org/works", {"query.bibliographic": query, "rows": limit}).json()
         return [_crossref(item) for item in result["message"]["items"]]
     if source == "arxiv":
-        expression = " AND ".join("all:" + word for word in query.split())
-        return _arxiv({"search_query": expression, "start": 0, "max_results": limit, "sortBy": "relevance"})
+        words = " ".join(query.replace('"', " ").split()).split()
+        if not words:
+            raise ValueError("A nonempty literature query is required")
+        keyword_expression = " AND ".join("all:" + word for word in words)
+        params = {"start": 0, "max_results": limit, "sortBy": "relevance"}
+        if len(words) == 1:
+            return _arxiv({**params, "search_query": keyword_expression})
+
+        # arXiv supports quoted phrases in field queries. Search titles for the
+        # complete phrase first so common words are not independently dropped
+        # or over-constrained, then retain the existing all-token search as a
+        # broad fallback. Merge by arXiv ID because the two result sets overlap.
+        phrase = " ".join(words)
+        phrase_expression = f'ti:"{phrase}"'
+        phrase_results = _arxiv({**params, "search_query": phrase_expression})
+        if len(phrase_results) >= limit:
+            return phrase_results[:limit]
+        keyword_results = _arxiv({**params, "search_query": keyword_expression})
+        results = []
+        seen = set()
+        for record in [*phrase_results, *keyword_results]:
+            identifier = record.get("arxiv_id") or record.get("url")
+            if identifier:
+                identifier = re.sub(r"v\d+$", "", identifier)
+            if identifier and identifier in seen:
+                continue
+            if identifier:
+                seen.add(identifier)
+            results.append(record)
+            if len(results) == limit:
+                break
+        return results
     raise ValueError("Supported sources: crossref, arxiv")
 
 
