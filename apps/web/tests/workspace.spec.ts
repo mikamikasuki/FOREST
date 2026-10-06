@@ -17,6 +17,108 @@ test.afterEach(async ({ request }) => {
     projectId = "";
   }
 });
+
+for (const scenario of [
+  {
+    name: "silent success",
+    command: "sleep 2",
+    status: "completed",
+    exitCode: 0,
+  },
+  {
+    name: "failure traceback progress",
+    command: "sleep 2; exit 7",
+    status: "failed",
+    exitCode: 1,
+  },
+  {
+    name: "stdout progress",
+    command: "echo workspace-progress; sleep 2",
+    status: "completed",
+    exitCode: 0,
+  },
+]) {
+  test(`mounted Workspace refreshes after ${scenario.name}`, async ({
+    page,
+    request,
+  }) => {
+    const graph = await (
+      await request.get(`/api/projects/${projectId}/graph`)
+    ).json();
+    const nodeId = crypto.randomUUID();
+    const created = await request.post(
+      `/api/projects/${projectId}/graph/commands`,
+      {
+        data: {
+          request_id: crypto.randomUUID(),
+          expected_revision: graph.revision,
+          operation: "add_node",
+          targets: [],
+          params: {
+            id: nodeId,
+            branch_id: graph.branches[0].id,
+            type: "experiment",
+            title: `Workspace ${scenario.name}`,
+            config: {
+              kind: "command",
+              command: ["/bin/sh", "-c", scenario.command],
+              timeout: 10,
+            },
+          },
+          run: false,
+        },
+      },
+    );
+    expect(created.ok()).toBeTruthy();
+    await page.goto(`/projects/${projectId}/workspace`);
+    await page.locator(`.react-flow__node[data-id="${nodeId}"]`).click();
+    await page.getByRole("button", { name: "Run node", exact: true }).click();
+    const panel = page.locator(".run-panel");
+    await expect(panel.locator(".run-list .badge")).toHaveText("running");
+    await expect(page.locator(".topbar-actions")).toContainText("1 tasks");
+    await expect(
+      panel.getByRole("button", { name: "cancel", exact: true }),
+    ).toBeEnabled();
+    if (scenario.name === "stdout progress") {
+      await expect(panel.locator("pre")).toContainText("workspace-progress");
+    }
+    if (scenario.name === "failure traceback progress") {
+      await expect(panel.locator("pre")).toContainText(
+        "Command exited with code 7",
+      );
+    }
+    await expect
+      .poll(
+        async () => {
+          const runs = await (
+            await request.get(`/api/projects/${projectId}/runs`)
+          ).json();
+          expect(runs).toHaveLength(1);
+          expect(runs[0].node_id).toBe(nodeId);
+          return { status: runs[0].status, exitCode: runs[0].exit_code };
+        },
+        { timeout: 20000 },
+      )
+      .toEqual({ status: scenario.status, exitCode: scenario.exitCode });
+
+    // Keep the same page mounted: reloading would hide the missing terminal listener.
+    await expect(panel.locator(".run-list .badge")).toHaveText(scenario.status);
+    await expect(panel.locator(".run-output-toolbar")).toContainText(
+      `exit ${scenario.exitCode}`,
+    );
+    await expect(panel.locator(".run-list > button")).toHaveCount(1);
+    await expect(page.locator(".topbar-actions")).not.toContainText("1 tasks");
+    for (const control of ["pause", "resume", "cancel"]) {
+      await expect(
+        panel.getByRole("button", { name: control, exact: true }),
+      ).toBeDisabled();
+    }
+    await expect(
+      panel.getByRole("button", { name: "retry", exact: true }),
+    ).toBeEnabled();
+  });
+}
+
 test("graph updates remain stable and persist a node created through the inspector UI", async ({
   page,
   request,

@@ -317,6 +317,8 @@ function ProjectShell() {
       "run_started",
       "run_progress",
       "run_finished",
+      "run_completed",
+      "run_failed",
       "tool_finished",
       "metric_available",
       "artifact_available",
