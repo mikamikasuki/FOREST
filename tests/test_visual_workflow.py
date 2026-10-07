@@ -13,7 +13,8 @@ import numpy as np
 import pytest
 
 from research.figures.render import render_figure
-from research.figures.workflow import render_candidates, register_candidates, review_requests, select_candidate
+from research.figures.model_workflow import review_with_models, reviewed_render
+from research.figures.workflow import REVIEW_ROLES, render_candidates, register_candidates, review_requests, select_candidate
 from research.paper.evidence import collect_evidence, write_manuscript
 from research.paper.manuscript import check_paper, compile_paper
 from research.paper.structure import section_blocks
@@ -203,6 +204,164 @@ def test_dense_comparison_refuses_ambiguous_or_incomplete_matrix(tmp_path):
     assert report['color_mapping']['limits_source'] == 'explicit'
     assert report['color_mapping']['annotated_values']
     assert report['displayed_points'] == 36
+
+
+class FigureReviewResponseClient:
+    """Contract fixture for response-shape behavior; it does not claim live-model validation."""
+    api = 'responses'
+    config = {'max_output_tokens': 2048}
+
+    def __init__(self, mode='accept', repair=None):
+        self.mode = mode
+        self.repair = repair or {'style': {'font_size': 10}}
+        self.calls = 0
+        self.review_calls = 0
+
+    def complete(self, messages):
+        self.calls += 1
+        instruction = messages[0]['content']
+        role = next((name for name in REVIEW_ROLES if 'Act as the independent ' + name in instruction), None)
+        if role:
+            review_batch = self.review_calls // len(REVIEW_ROLES)
+            self.review_calls += 1
+            content = messages[1]['content']
+            text = next(item['text'] for item in content if item.get('type') == 'input_text')
+            payload, _ = json.JSONDecoder().raw_decode(text)
+            verdict = ('revise' if self.mode in ('reject', 'invalid_repair')
+                       or self.mode == 'repair_once' and review_batch == 0 else 'accept')
+            reasons = ['The rendered labels are too small.']
+            if self.mode == 'alias':
+                reasons = 'The rendered chart preserves the supplied observations.'
+            if self.mode == 'malformed_review':
+                reasons = {'detail': 'not a string array'}
+            response_role = 'independent_' + role.lower().replace(' ', '_') if self.mode == 'alias' else role
+            response = {
+                'role': response_role,
+                'placement': None,
+                'reviews': [{
+                    'candidate_id': candidate['id'],
+                    'verdict': verdict,
+                    'scores': {dimension: (3 if verdict == 'revise' else 5)
+                               for dimension in REVIEW_ROLES[role]},
+                    'reasons': reasons,
+                } for candidate in payload['candidates']],
+            }
+            return {'text': json.dumps(response), 'model': 'contract-fixture',
+                    'request_id': 'contract-request', 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+        if 'Repair only presentation.' in instruction:
+            return {'text': json.dumps(self.repair), 'model': 'contract-fixture',
+                    'request_id': 'repair-request', 'usage': {'input_tokens': 1, 'output_tokens': 1}}
+        raise AssertionError('Unexpected figure model request')
+
+
+def test_review_response_normalizes_known_role_alias_and_single_reason(tmp_path):
+    rows = arithmetic_rows()
+    bundle = render_candidates(tmp_path / 'candidates', rows,
+        {'metric': 'score', 'unit': 'integer total', 'height': 4.5}, 'heatmap')
+    client = FigureReviewResponseClient(mode='alias')
+    reviews = review_with_models(client, bundle, tmp_path / 'reviews')
+    assert [review['role'] for review in reviews] == list(REVIEW_ROLES)
+    assert all(isinstance(entry['reasons'], list) and len(entry['reasons']) == 1
+               for review in reviews for entry in review['reviews'])
+    assert all(review['_response_normalizations'] for review in reviews)
+    assert select_candidate(bundle, reviews)['status'] == 'selected'
+    assert client.calls == 3
+
+
+def test_malformed_review_stops_with_schema_error_without_style_repair(tmp_path):
+    rows = arithmetic_rows()
+    client = FigureReviewResponseClient(mode='malformed_review')
+    with pytest.raises(ValueError, match='response-format error.*reasons must be a nonempty array'):
+        reviewed_render(client, tmp_path / 'figure', rows,
+            {'metric': 'score', 'unit': 'integer total', 'height': 4.5},
+            kind='heatmap', attempts=2)
+    first = tmp_path / 'figure' / 'iterations' / '1'
+    assert (first / 'candidate_manifest.json').is_file()
+    assert all((first / 'candidates' / name / 'figure.png').is_file()
+               for name in ('compact', 'spacious', 'print'))
+    assert not (tmp_path / 'figure' / 'iterations' / '2').exists()
+    assert client.calls == 1
+
+
+def test_invalid_repair_labels_are_rejected_before_rerender(tmp_path):
+    rows = arithmetic_rows()
+    client = FigureReviewResponseClient(mode='invalid_repair',
+        repair={'style': {'labels': ['not', 'an', 'identity-map']}})
+    with pytest.raises(ValueError, match='response-format error.*labels must map identity strings'):
+        reviewed_render(client, tmp_path / 'figure', rows,
+            {'metric': 'score', 'unit': 'integer total', 'height': 4.5},
+            kind='heatmap', attempts=2)
+    first = tmp_path / 'figure' / 'iterations' / '1'
+    assert (first / 'repair_response.json').is_file()
+    assert all((first / 'candidates' / name / 'figure.png').is_file()
+               for name in ('compact', 'spacious', 'print'))
+    assert not (tmp_path / 'figure' / 'iterations' / '2').exists()
+    assert client.calls == 4
+
+
+@pytest.mark.parametrize(("repair", "message"), [
+    ({"style": {"paper_layout": {"columns": "invalid"}}}, "Layout columns must be single or double"),
+    ({"style": {"paper_layout": "double"}}, "paper_layout must be an object"),
+    ({"style": {"font_size": 7}}, "fonts of at least 8 pt"),
+    ({"style": {"palette": ["not-a-renderer-color"]}}, "palette must contain colors accepted by the renderer"),
+    ({"style": {"color": "not-a-renderer-color"}}, "color must be a valid renderer color"),
+    ({"style": {"span": "poster"}}, "span must be column or page"),
+    ({"style": {"labels": {"unobserved": "Invented identity"}}}, "keys must match identities in the supplied data"),
+])
+def test_domain_invalid_style_repairs_are_rejected_before_rerender(tmp_path, repair, message):
+    rows = arithmetic_rows()
+    client = FigureReviewResponseClient(mode='invalid_repair', repair=repair)
+    with pytest.raises(ValueError, match='response-format error.*' + message):
+        reviewed_render(client, tmp_path / 'figure', rows,
+            {'metric': 'score', 'unit': 'integer total', 'height': 4.5},
+            kind='heatmap', attempts=2)
+    first = tmp_path / 'figure' / 'iterations' / '1'
+    assert (first / 'repair_response.json').is_file()
+    assert all((first / 'candidates' / name / 'figure.png').is_file()
+               for name in ('compact', 'spacious', 'print'))
+    assert not (tmp_path / 'figure' / 'iterations' / '2').exists()
+    assert client.calls == 4
+
+
+def test_style_repairs_validate_statistical_result_identities():
+    from research.figures.model_workflow import _validate_style_repair
+
+    data = {
+        'statistical_results': {'records': [{'method': 'observed-method', 'dataset': 'observed-set'}]},
+        'metric_bindings': [{'statistical_identity': {
+            'method': 'observed-method', 'dataset': 'observed-set',
+        }}],
+    }
+    with pytest.raises(ValueError, match='response-format error.*keys must match identities'):
+        _validate_style_repair(
+            {'style': {'labels': {'invented-method': 'Invented Method'}}},
+            current_style={}, data=data, kind='bar',
+        )
+
+
+def test_valid_style_repair_rerenders_without_changing_observations(tmp_path):
+    rows = arithmetic_rows()
+    client = FigureReviewResponseClient(mode='repair_once',
+        repair={'style': {'labels': {'sum': 'Summation'}}})
+    outputs, selection = reviewed_render(client, tmp_path / 'figure', rows,
+        {'metric': 'score', 'unit': 'integer total', 'height': 4.5},
+        kind='heatmap', attempts=2)
+    assert selection['status'] == 'selected'
+    assert Path(outputs['pdf']).is_file() and Path(outputs['png']).is_file()
+    assert json.loads(Path(outputs['data']).read_text()) == rows
+    assert client.calls == 7
+
+
+def test_valid_reviews_still_publish_a_figure_and_preserve_observations(tmp_path):
+    rows = arithmetic_rows()
+    client = FigureReviewResponseClient(mode='accept')
+    outputs, selection = reviewed_render(client, tmp_path / 'figure', rows,
+        {'metric': 'score', 'unit': 'integer total', 'height': 4.5},
+        kind='heatmap', attempts=1)
+    assert selection['status'] == 'selected'
+    assert Path(outputs['pdf']).is_file() and Path(outputs['png']).is_file()
+    assert json.loads(Path(outputs['data']).read_text()) == rows
+    assert client.calls == 3
 
 
 def test_observed_runtime_intervals_and_scatter_export_exact_measurements(tmp_path):
