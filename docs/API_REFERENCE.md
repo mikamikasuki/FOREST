@@ -672,7 +672,7 @@ Known domain failures: `400` INVALID_PATH; `403` PATH_ESCAPE; `404` NOT_FOUND or
 
 #### `GET /api/projects/{ident}/file`
 
-Return text, file revision and origin. Binary files need download/preview. The file revision is distinct from project, node and resource revisions. The default revision/origin for executor/import files is 0/executor_or_import.
+Return text, file revision and origin from one snapshot serialized with owner uploads, edits, moves and deletes. Paths are normalized relative to the project root. Binary files need download/preview. The file revision is distinct from project, node and resource revisions. The default revision/origin for executor/import files is 0/executor_or_import.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -695,7 +695,7 @@ Body: `application/json`: `FileWrite`; required.
 
 Success `200`: `application/json`: `FileWritten`.
 
-Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `409` REVISION_CONFLICT.
+Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `409` REVISION_CONFLICT or WORKSPACE_PENDING.
 
 #### `GET /api/projects/{ident}/file/preview`
 
@@ -714,7 +714,7 @@ Known domain failures: `400` NOT_FILE; `403` PATH_ESCAPE; `404` NOT_FOUND or MIS
 
 #### `POST /api/projects/{ident}/file/rename`
 
-Use path and new_path, both within the project root. Create destination parents, reject an existing destination and mark consumers of the old path stale. No revision field is migrated by this handler.
+Use path and new_path, both within the project root. Create destination parents, reject an existing destination and mark consumers of the old path stale. Move file revision rows to the new paths and increment their revisions.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -740,7 +740,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/projects/{ident}/upload`
 
-multipart/form-data field file; directory is a QUERY parameter, default uploads. Only the uploaded filename basename is used. Write the file, mark consumers stale and return path/size/origin. Exceeding configured max_upload_mb removes the partial file.
+multipart/form-data field file; directory is a QUERY parameter, default uploads. Only the uploaded filename basename is used. Publish the file, increment its file revision (including identical-byte replacements), set user_import origin, mark consumers stale and return path/size/origin. Older editor expected_revision values then return REVISION_CONFLICT. Exceeding configured max_upload_mb preserves an existing destination and removes only the temporary file.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -751,7 +751,7 @@ Body: `multipart/form-data`: `Body_upload_api_projects__ident__upload_post`; req
 
 Success `200`: `application/json`: `FileUpload`.
 
-Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `413` UPLOAD_TOO_LARGE.
+Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `409` WORKSPACE_PENDING; `413` UPLOAD_TOO_LARGE.
 
 ### Graph
 

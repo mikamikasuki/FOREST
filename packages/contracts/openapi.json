@@ -17062,7 +17062,7 @@
         }
       },
       "get": {
-        "description": "Return text, file revision and origin. Binary files need download/preview. The file revision is distinct from project, node and resource revisions. The default revision/origin for executor/import files is 0/executor_or_import.",
+        "description": "Return text, file revision and origin from one snapshot serialized with owner uploads, edits, moves and deletes. Paths are normalized relative to the project root. Binary files need download/preview. The file revision is distinct from project, node and resource revisions. The default revision/origin for executor/import files is 0/executor_or_import.",
         "operationId": "read_file_api_projects__ident__file_get",
         "parameters": [
           {
@@ -17277,7 +17277,7 @@
                 }
               }
             },
-            "description": "REVISION_CONFLICT"
+            "description": "REVISION_CONFLICT or WORKSPACE_PENDING"
           },
           "422": {
             "content": {
@@ -17520,7 +17520,7 @@
     },
     "/api/projects/{ident}/file/rename": {
       "post": {
-        "description": "Use path and new_path, both within the project root. Create destination parents, reject an existing destination and mark consumers of the old path stale. No revision field is migrated by this handler.",
+        "description": "Use path and new_path, both within the project root. Create destination parents, reject an existing destination and mark consumers of the old path stale. Move file revision rows to the new paths and increment their revisions.",
         "operationId": "rename_file_api_projects__ident__file_rename_post",
         "parameters": [
           {
@@ -21678,7 +21678,7 @@
     },
     "/api/projects/{ident}/upload": {
       "post": {
-        "description": "multipart/form-data field file; directory is a QUERY parameter, default uploads. Only the uploaded filename basename is used. Write the file, mark consumers stale and return path/size/origin. Exceeding configured max_upload_mb removes the partial file.",
+        "description": "multipart/form-data field file; directory is a QUERY parameter, default uploads. Only the uploaded filename basename is used. Publish the file, increment its file revision (including identical-byte replacements), set user_import origin, mark consumers stale and return path/size/origin. Older editor expected_revision values then return REVISION_CONFLICT. Exceeding configured max_upload_mb preserves an existing destination and removes only the temporary file.",
         "operationId": "upload_api_projects__ident__upload_post",
         "parameters": [
           {
@@ -21751,6 +21751,16 @@
               }
             },
             "description": "NOT_FOUND"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "WORKSPACE_PENDING"
           },
           "413": {
             "content": {
