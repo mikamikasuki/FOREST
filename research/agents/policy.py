@@ -53,3 +53,18 @@ ROLES.update({
     'Research Direction Reviewer': 'Inspect every recorded route node, its original instructions, inputs, actual outputs, method and configuration, and the complete goal, evidence, failures and prior decisions. Detect goal drift, error accumulation, repeated failures and tunnel vision. Recommend one specific improvement to the research question, hypothesis, data or method, its supported scientific purpose and cheapest real discriminating next step. Challenge only decision-relevant assumptions; consecutive declared counterexample checks have an editable allowance, default two, and excess requires immediate replanning rather than more renamed checks. Keep contrary results and actual selection/confirmation provenance. Review coverage and judgments are advice, never independent numerical acceptance. Apply the evidence-calibrated research fields and scientific-integrity Press-Release contract.',
 })
 TOOLS=['read_file','write_file','write_file_chunk','list_files','run_command','python','start_process','inspect_process','read_process_output','wait_for_process','cancel_process','update_memory','read_transcript','read_context_segment','literature_search','literature_import','literature_read','graph_command','experiment_run','results','figure_create','figure_render','paper_generate','paper_compile','context_update','theory_check','verification_run','finish']
+
+
+def effective_agent_tools(role_tools, node_config=None):
+    """Apply a node's configured tools without widening the role's permissions."""
+    role_tools = list(TOOLS if role_tools is None else role_tools)
+    if not isinstance(node_config, dict) or 'tools' not in node_config:
+        return list(dict.fromkeys(role_tools))
+    node_tools = node_config['tools']
+    if not isinstance(node_tools, list) or any(not isinstance(name, str) for name in node_tools):
+        raise ValueError('Node tools must be a list of tool names')
+    unknown = set(node_tools) - set(TOOLS)
+    if unknown:
+        raise ValueError('Node tools are unknown: ' + ', '.join(sorted(unknown)))
+    role_allowed = set(role_tools)
+    return [name for name in dict.fromkeys(node_tools) if name in role_allowed]

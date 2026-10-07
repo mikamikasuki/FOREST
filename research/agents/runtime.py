@@ -10,7 +10,7 @@ from pathlib import Path
 from sqlalchemy import select
 from services.api.db import *
 from services.api.common import get, project_dir, safe_path, read_secret, emit, graph_from_db, save_graph
-from .policy import RESEARCH_POLICY, ROLES, TOOLS
+from .policy import RESEARCH_POLICY, ROLES, TOOLS, effective_agent_tools
 from .provider import ModelClient, ProviderError
 from .schemas import tool_definitions, decode_tool_call
 from .code_writes import write_file_chunk
@@ -23,7 +23,7 @@ from .processes import ManagedProcesses, TERMINAL, atomic_json, read_json
 from research.execution.process_manager import process_manager
 
 
-CONTEXT_POLICY_VERSION = 8
+CONTEXT_POLICY_VERSION = 9
 DEFAULT_CONTEXT_CHAR_BUDGET = 64000
 
 
@@ -573,13 +573,16 @@ def run_agent(run_id, workspace, config):
         agent = s.get(Agent, config.get('agent_id')) if config.get('agent_id') else s.scalar(select(Agent).where(Agent.role == role))
         if agent and not agent.enabled:
             raise ValueError('Selected agent is disabled')
-        allowed = agent.tools if agent else TOOLS
+        node = next((item for item in graph.get('nodes', []) if item['id'] == run.node_id), None) if run.node_id else None
+        node_config = (node.get('config') or {}) if node else None
+        allowed = effective_agent_tools(agent.tools if agent else TOOLS, node_config)
         role_instruction = agent.instructions if agent else ROLES.get(role, '')
         if run.node_id:
             from research.kernel import ContextBuilder
             context_overrides = dict(config.get('context_overrides') or {})
             context_overrides.setdefault('max_chars', context_packet_char_budget(config))
             packet = ContextBuilder(graph, project_dir(p.id)).build(run.node_id, role, context_overrides)
+            packet['controls']['allowed_tools'] = list(allowed)
         else:
             packet = {'goal': p.goal, 'instructions': config.get('instructions', config.get('prompt', ''))}
         project_context = {'project_id': p.id, 'project_revision': p.revision,
@@ -761,6 +764,8 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
             save()  # The public decision and exact intent exist before any effect.
         action = state['pending_action']
         name, args = action['tool'], action['arguments']
+        if name not in tool.allowed:
+            raise ValueError('Tool not enabled for this role: ' + name)
         if name == 'finish':
             state['transcript'][-1]['executed_action'] = deepcopy(action)
             artifacts = args.get('artifacts', [])
