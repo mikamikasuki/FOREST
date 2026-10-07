@@ -21,7 +21,7 @@ def test_node_tools_are_a_ceiling_within_role_tools():
     assert effective_agent_tools(role_tools, {'tools': []}) == []
 
 
-def test_configured_node_tools_reach_provider_and_runtime(tmp_path):
+def test_queued_run_tool_allowlist_stays_on_saved_node_revision(tmp_path):
     requests = []
 
     class Responses(BaseHTTPRequestHandler):
@@ -91,6 +91,16 @@ def test_configured_node_tools_reach_provider_and_runtime(tmp_path):
         })
         node = next(item for item in response['graph']['nodes'] if item['id'] == node_id)
         run = harness.launch(node)
+        assert run['config']['tools'] == ['read_file', 'finish']
+        latest_graph = harness.request('GET', f"/api/projects/{project['id']}/graph")
+        edited = harness.request('POST', f"/api/projects/{project['id']}/graph/commands", json={
+            'request_id': str(uuid.uuid4()), 'expected_revision': latest_graph['revision'],
+            'operation': 'edit_node', 'targets': [node_id],
+            'params': {'config': {'tools': ['write_file', 'read_file', 'finish']}},
+        })
+        current_node = next(item for item in edited['graph']['nodes'] if item['id'] == node_id)
+        assert current_node['config']['tools'] == ['write_file', 'read_file', 'finish']
+        assert harness.run(run)['status'] == 'queued'
         workspace = harness.output(run) / 'workspace'
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / 'allowed.txt').write_text('Configured read-only input')

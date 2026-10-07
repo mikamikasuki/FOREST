@@ -574,7 +574,10 @@ def run_agent(run_id, workspace, config):
         if agent and not agent.enabled:
             raise ValueError('Selected agent is disabled')
         node = next((item for item in graph.get('nodes', []) if item['id'] == run.node_id), None) if run.node_id else None
-        node_config = (node.get('config') or {}) if node else None
+        # A queued run owns the node configuration copied into its run config.
+        # Reading the live graph here could grant permissions added after that
+        # run's revision was captured.
+        node_config = config if run.node_id else None
         allowed = effective_agent_tools(agent.tools if agent else TOOLS, node_config)
         role_instruction = agent.instructions if agent else ROLES.get(role, '')
         if run.node_id:
