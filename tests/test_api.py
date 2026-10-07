@@ -392,6 +392,35 @@ def case_project_copy_preserves_run_mode(client, app):
     assert imported_legacy["mode"] == "assisted"
 
 
+def case_invalid_import_modes_rejected_before_project_creation(client, app):
+    source = create(client)
+    exported = client.post(f"/api/projects/{source['id']}/export", json={})
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        entries = {item.filename: archive.read(item.filename) for item in archive.infolist()}
+
+    projects_root = Path(os.environ["FOREST_DATA_DIR"]) / "projects"
+    existing_projects = {path.name for path in projects_root.iterdir()}
+    for mode in ("operator", None, "x" * 21):
+        manifest = json.loads(entries["forest-project.json"])
+        manifest["project"]["mode"] = mode
+        malformed = dict(entries)
+        malformed["forest-project.json"] = json.dumps(manifest).encode()
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, contents in malformed.items():
+                archive.writestr(name, contents)
+
+        response = client.post(
+            "/api/projects/import",
+            files={"file": ("invalid-mode.zip", payload.getvalue(), "application/zip")},
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"]["code"] == "INVALID_ARCHIVE"
+        assert {path.name for path in projects_root.iterdir()} == existing_projects
+        assert len(ok(client.get("/api/projects"))) == 1
+
+
 def case_actual_terminal(client, app):
     p = create(client)
     with client.websocket_connect(f"/ws/projects/{p['id']}/terminal") as terminal:
