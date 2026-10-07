@@ -329,6 +329,7 @@ function ProjectShell() {
       "controller_changed",
       "run_changed",
       "changed",
+      "cursor_reset",
     ].forEach((e) => stream.addEventListener(e, refresh));
     stream.onmessage = refresh;
     stream.onopen = refresh;
