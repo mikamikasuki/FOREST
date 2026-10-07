@@ -106,7 +106,7 @@ def scope_authorized(s, scope):
     if scope.kind=='remote_workspace': return bool(r.config.get('remote'))
     return scope.root==r.output_path+suffix
 
-def sync_scopes(s, project_id, *, cursor=None, recent_only=False):
+def sync_scopes(s, project_id, *, cursor=None, recent_only=False, related_path=None):
     """Register current owners in DB; no paths inferred from file basenames."""
     roots=[('project',project_id,'',None)]
     roots.extend(('branch_workspace',b.id,b.workspace,None) for b in s.scalars(select(Branch).where(Branch.project_id==project_id)))
@@ -118,7 +118,10 @@ def sync_scopes(s, project_id, *, cursor=None, recent_only=False):
     if recent_only or cursor is not None:
         latest=list(s.scalars(query.order_by(TaskRun.created_at.desc()).limit(100)))
         active=list(s.scalars(query.where(TaskRun.status.in_(['queued','running','pausing','paused','waiting','waiting_input'])).limit(100)))
-        runs={r.id:r for r in [*page,*latest,*active]}.values()
+        related=list(s.scalars(query.where(TaskRun.output_path!='',or_(
+            TaskRun.output_path==related_path,
+            func.substr(literal(related_path),1,func.length(TaskRun.output_path)+1)==TaskRun.output_path+'/')).limit(200))) if related_path else []
+        runs={r.id:r for r in [*page,*latest,*active,*related]}.values()
     else: runs=s.scalars(query)
     for r in runs:
         if not r.output_path: continue
@@ -136,9 +139,10 @@ def sync_scopes(s, project_id, *, cursor=None, recent_only=False):
         elif row.root!=root or row.attempt_id!=attempt:
             row.root=root; row.attempt_id=attempt; row.coverage='pending'; row.queue=[['','']]
             # A new attempt at the same path is not the previous attempt's content.
-            for f in s.scalars(select(ObservedFile).where(ObservedFile.scope_id==row.id)):
-                f.generation+=1; f.content=None; f.segments=[]; f.state='unavailable'; f.attempt_id=attempt
-                f.stat={}
+            s.execute(update(ObservedFile).where(ObservedFile.scope_id==row.id).values(
+                generation=ObservedFile.generation+1,content=None,segments=[],state='unavailable',
+                attempt_id=attempt,stat={},parse_state='unavailable'))
+            s.info.pop(('observation_content_bytes',project_id),None)
     if not recent_only and cursor is None:
         for row in existing.values(): s.delete(row)
     return page[-1].id if len(page)==200 else ''
@@ -190,6 +194,10 @@ def managed_change(s, project_id, project_path, attribution, action_id=None):
     """Successful managed publication only; the reconciler repairs missed DB commits."""
     if not allowed(project_path): return
     observation_write_lock(s,project_id)
+    # A first edit/tool write can precede the observer's registration tick.
+    # Register known owners before capturing, so attribution is not lost and
+    # later reconstructed as an anonymous external mutation.
+    sync_scopes(s,project_id,recent_only=True,related_path=project_path)
     candidates=select(ObservationScope).where(ObservationScope.project_id==project_id,ObservationScope.kind!='remote_workspace',
         or_(ObservationScope.root=='',func.substr(literal(project_path),1,func.length(ObservationScope.root)+1)==ObservationScope.root+'/'))
     for scope in s.scalars(candidates):

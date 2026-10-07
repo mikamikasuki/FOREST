@@ -358,6 +358,41 @@ def scenario():
             for connection in connections: connection.close()
             await stream.aclose()
     asyncio.run(pool_contention())
+    first_write=ok(client.post('/api/projects',json={'name':'First managed publication'}))['id']
+    ok(client.put(f'/api/projects/{first_write}/file',json={'path':'first.md','content':'# First\n真实字节\n','expected_revision':0}))
+    with Session() as s:
+        first=s.scalar(select(ObservedFile).where(ObservedFile.project_id==first_write,ObservedFile.path=='first.md'))
+        assert first is not None and first.attribution=='owner_editor' and first.content=='# First\n真实字节\n'.encode()
+        first_generation=first.generation
+    rejected=client.put(f'/api/projects/{first_write}/file',json={'path':'first.md','content':'rejected overwrite','expected_revision':0})
+    assert rejected.status_code==409
+    with Session() as s:
+        saved=s.get(ObservedFile,first.id)
+        assert saved.generation==first_generation and saved.content==first.content
+    # An owner can edit an old workspace before the historical registrar has
+    # reached it. Its actual output_path, rather than recency/basename, owns it.
+    with Session.begin() as s:
+        historical=TaskRun(id=uid(),project_id=first_write,request_id=uid(),status='completed',output_path='runs/old-unregistered')
+        s.add(historical);s.flush();historical_id=historical.id
+        s.add_all([TaskRun(project_id=first_write,request_id=uid(),status='completed',output_path=f'runs/fixture-{i}') for i in range(101)])
+    ok(client.put(f'/api/projects/{first_write}/file',json={'path':'runs/old-unregistered/workspace/edit.md','content':'old workspace edited','expected_revision':0}))
+    with Session() as s:
+        old_scope=s.scalar(select(ObservationScope).where(ObservationScope.project_id==first_write,ObservationScope.object_id==historical_id,ObservationScope.kind=='run_workspace'))
+        edited=s.scalar(select(ObservedFile).where(ObservedFile.scope_id==old_scope.id,ObservedFile.path=='edit.md'))
+        assert edited.attribution=='owner_editor' and edited.content==b'old workspace edited'
+    ok(client.post(f'/api/projects/{first_write}/upload',files={'file':('table.csv',b'column\n1\n','text/csv')}))
+    with Session() as s:
+        uploaded=s.scalar(select(ObservedFile).where(ObservedFile.project_id==first_write,ObservedFile.path=='uploads/table.csv'))
+        assert uploaded.attribution=='upload';upload_generation=uploaded.generation
+    from services.api.config import settings as test_settings
+    original_limit=test_settings.max_upload_mb
+    try:
+        test_settings.max_upload_mb=0  # Inject a restrictive upload limit, not an accepted fake file.
+        assert client.post(f'/api/projects/{first_write}/upload',files={'file':('table.csv',b'rejected','text/csv')}).status_code==413
+    finally:test_settings.max_upload_mb=original_limit
+    with Session() as s:
+        retained=s.get(ObservedFile,uploaded.id)
+        assert retained.generation==upload_generation and retained.content==b'column\n1\n'
     # Actual monitor and verification writers contend on the same mutable
     # resource JSON. Inject only the check computation to pause the finisher;
     # persistence and WorkerLoop.monitor run against the real SQLite/PG DB.
