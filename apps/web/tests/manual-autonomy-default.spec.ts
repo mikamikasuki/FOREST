@@ -182,3 +182,54 @@ test("an explicitly saved Manual autonomy setting remains enabled on Overview lo
     expect(deleted.ok()).toBeTruthy();
   }
 });
+
+test("a failed research-state load keeps autonomy controls disabled", async ({
+  page,
+  request,
+}) => {
+  const created = await request.post("/api/projects", {
+    data: {
+      name: `Manual autonomy load failure ${Date.now()}`,
+      goal: "Verify a failed state read cannot replace a saved autonomy choice.",
+      mode: "manual",
+      budget: { max_runs: 8, seconds: 60, allow_paid: false },
+    },
+  });
+  expect(created.ok()).toBeTruthy();
+  const project = await created.json();
+
+  try {
+    const started = await request.post(
+      `/api/projects/${project.id}/research/start`,
+      { data: { branch_id: null, autonomous: true } },
+    );
+    expect(started.ok()).toBeTruthy();
+
+    await page.route(`**/api/projects/${project.id}/research`, (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Temporary research-state failure" }),
+      }),
+    );
+    await page.goto(`/projects/${project.id}/overview`);
+
+    await expect(page.getByRole("alert")).toContainText(
+      "Unable to load saved controller settings",
+    );
+    await expect(
+      page.getByRole("checkbox", { name: "Autonomous planning" }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Start / continue" }),
+    ).toBeDisabled();
+
+    const persisted = await (
+      await request.get(`/api/projects/${project.id}/research`)
+    ).json();
+    expect(persisted.controller?.autonomous).toBe(true);
+  } finally {
+    const deleted = await request.delete(`/api/projects/${project.id}`);
+    expect(deleted.ok()).toBeTruthy();
+  }
+});

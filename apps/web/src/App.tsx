@@ -888,7 +888,8 @@ function ResearchControls({
   const [autonomous, setAutonomous] = useState(runMode !== "manual");
   const [metric, setMetric] = useState("");
   const [direction, setDirection] = useState("min");
-  const { data: session, loading: sessionLoading, reload: reloadSession } = useLoad<Json>(`/projects/${projectId}/research`, {controller: {}, decisions: [], active_runs: []});
+  const { data: session, loading: sessionLoading, error: sessionError, reload: reloadSession } = useLoad<Json>(`/projects/${projectId}/research`, {controller: {}, decisions: [], active_runs: []});
+  const sessionUnavailable = sessionLoading || !!sessionError;
   useEffect(() => { setMetric(session.objective?.metric || ""); setDirection(session.objective?.direction || "min"); }, [session.objective?.metric, session.objective?.direction]);
   useEffect(() => {
     if (typeof session.controller?.autonomous === "boolean") {
@@ -915,7 +916,8 @@ function ResearchControls({
           </option>
         ))}
       </select>
-      <label className="inline-actions"><input type="checkbox" checked={autonomous} disabled={sessionLoading} onChange={e => setAutonomous(e.target.checked)} />Autonomous planning</label>
+      <label className="inline-actions"><input type="checkbox" checked={autonomous} disabled={sessionUnavailable} onChange={e => setAutonomous(e.target.checked)} />Autonomous planning</label>
+      {sessionError && <p role="alert">Unable to load saved controller settings. Start is disabled while retrying.</p>}
       <Badge status={session.controller?.status || state?.status || "idle"} />
       {session.controller?.phase && <span>{session.controller.phase}</span>}
       {(session.controller?.reason || session.controller?.last_rationale) && <p>{session.controller.reason || session.controller.last_rationale}</p>}
@@ -936,7 +938,7 @@ function ResearchControls({
           <Button
             className={op === "start" ? "primary" : ""}
             key={String(op)}
-            disabled={String(op) === "start" && sessionLoading}
+            disabled={String(op) === "start" && sessionUnavailable}
             onClick={() =>
               action(async () => {
                 const result = await api(`/projects/${projectId}/research/${op}`, "POST", {
