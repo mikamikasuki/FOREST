@@ -114,10 +114,10 @@ def usage_summary(provider_id):
         return {'provider_id':provider_id, 'limit_usd':limit,
                 'estimated_cost_usd':estimated/1000000, 'reserved_usd':reserved/1000000,
                 'remaining_usd':max(0, micro(limit)-estimated-reserved)/1000000 if limit is not None else None,
-                'cost_source':'configured_rates_estimate', 'request_count':len(rows),
+                'cost_source':'unpriced_local_provider' if provider.kind=='codex_cli' else 'configured_rates_estimate', 'request_count':len(rows),
                 'uncertain_requests':sum(r.status == 'uncertain' for r in rows),
                 'requests':[{'id':r.id,'run_id':r.run_id,'project_id':r.project_id,'model':r.model,
-                    'api':r.details.get('api', 'text'),
+                    'api':r.details.get('api', 'text'), 'purpose':r.details.get('purpose','research'), 'report_job_id':r.details.get('report_job_id'),
                     'status':r.status,'estimated_cost_usd':r.estimated_microusd/1000000 if r.estimated_microusd is not None else None,
                     'reserved_usd':r.reserved_microusd/1000000 if r.status in ('reserved','uncertain') else 0,
                     'request_id':r.request_id,'usage':r.details.get('usage'), 'created_at':r.created_at} for r in rows[:100]]}
@@ -134,13 +134,19 @@ def make_request_guard(provider):
         with Session.begin() as s:
             current = lock_provider(s, ident)
             if phase == 'before':
-                if not current.allow_paid:
+                local_reporting = (bool(context.get('report_job_id')) or current.kind == 'codex_cli') and __import__('urllib.parse',fromlist=['urlparse']).urlparse(current.base_url).hostname in ('localhost','127.0.0.1','::1')
+                if not current.allow_paid and not local_reporting:
                     raise BudgetExceeded('Paid API calls are disabled for this provider')
                 limit = current.config.get('budget_usd')
-                if limit is None:
+                if limit is None and not local_reporting:
                     raise BudgetExceeded('Set an explicit provider budget before making paid API requests')
                 api = event.get('api') or 'text'
-                if api == 'images':
+                if local_reporting:
+                    if event.get('model') != current.model:
+                        raise BudgetExceeded('Provider model changed')
+                    reservation = 0
+                    details = {'api': api, 'pricing': {}, 'cost_source': 'unpriced_local_provider', 'max_output_tokens': event.get('max_output_tokens'), 'attempt': event.get('attempt')}
+                elif api == 'images':
                     image_config = current.config.get('image_generation')
                     snapshot = event.get('image_generation') or provider.get('config', {}).get('image_generation')
                     if (not isinstance(image_config, dict) or image_config != snapshot
@@ -171,13 +177,13 @@ def make_request_guard(provider):
                                'max_output_tokens': max_output, 'attempt': event.get('attempt')}
                 rows = list(s.scalars(select(ModelRequest).where(ModelRequest.provider_id == ident)))
                 used, reserved = totals(rows)
-                if used + reserved + reservation > micro(limit):
+                if limit is not None and used + reserved + reservation > micro(limit):
                     raise BudgetExceeded(f'Provider API budget cannot reserve this request (${reservation/1000000:.4f}); remaining ${max(0,micro(limit)-used-reserved)/1000000:.4f}')
                 if context.get('project_id'):
                     project = s.scalar(select(Project).where(Project.id==context['project_id']).with_for_update())
                     if project is None:
                         raise BudgetExceeded('The request project is no longer available')
-                    if not project.budget.get('allow_paid'):
+                    if not project.budget.get('allow_paid') and not local_reporting:
                         raise BudgetExceeded('Paid API calls are disabled for this project')
                     project_limit = project.budget.get('cost_usd') if project else None
                     if project_limit is not None:
@@ -185,6 +191,31 @@ def make_request_guard(provider):
                         pu, pr = totals(project_rows)
                         if pu + pr + reservation > micro(project_limit):
                             raise BudgetExceeded('Project API spending limit reached')
+                if context.get('report_job_id'):
+                    from services.observation.models import ReportJob, ReporterPolicy, ObservationState
+                    from services.observation.contracts import ReporterSettings
+                    import time
+                    report_policy = s.get(ReporterPolicy, context.get('project_id'))
+                    job = s.get(ReportJob, context['report_job_id'])
+                    state = s.get(ObservationState, context.get('project_id'))
+                    if (context.get('report_provider_version') is not None and current.updated_at!=context['report_provider_version']):
+                        raise BudgetExceeded('Reporting provider changed before dispatch')
+                    if (not report_policy or not job or not state or not report_policy.settings.get('enabled')
+                            or report_policy.version != context.get('report_policy_version')
+                            or job.project_id != context.get('project_id') or job.status != 'requesting'
+                            or job.lease_owner != context.get('report_lease_owner') or job.lease_until < time.time()
+                            or job.epoch != state.epoch or state.active_job != job.id
+                            or report_policy.settings.get('provider_id') != ident):
+                        raise BudgetExceeded('Reporting authorization or lease changed')
+                    limits = ReporterSettings.model_validate(report_policy.settings)
+                    report_rows = list(s.scalars(select(ModelRequest).where(ModelRequest.project_id == project.id, ModelRequest.run_id.is_(None))))
+                    report_rows = [r for r in report_rows if r.details.get('purpose') == 'reporter']
+                    ru, rr = totals(report_rows)
+                    if len(report_rows) >= limits.max_requests or ru + rr + reservation > micro(limits.cap_usd):
+                        raise BudgetExceeded('Reporting sub-budget reached')
+                    details = {**details, 'purpose': 'reporter', 'report_job_id': job.id, 'report_policy_version': report_policy.version}
+                    report_policy.last_dispatch = time.time()
+                    report_policy.last_cursor = job.snapshot.get('cursor', 0)
                 if context.get('run_id'):
                     run = s.scalar(select(TaskRun).where(TaskRun.id == context['run_id']).with_for_update())
                     if (run is None or run.project_id != context.get('project_id')
@@ -214,7 +245,7 @@ def make_request_guard(provider):
                 # compatible API has no verified USD-charge field in its standard
                 # response, so keep the saved upper bound until billing is reconciled.
                 # Use the reservation's API, never an event-supplied settlement mode.
-                measured = None if record.details.get('api') == 'images' else usage_micro(usage, record.details['pricing'])
+                measured = None if record.details.get('api') == 'images' or record.details.get('cost_source') == 'unpriced_local_provider' else usage_micro(usage, record.details['pricing'])
                 record.estimated_microusd = measured
                 record.status = 'settled' if measured is not None else 'uncertain'
                 record.details = {**record.details,'usage':usage,'outcome':event.get('outcome') or event.get('status'),

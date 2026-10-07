@@ -2,7 +2,7 @@
 import json
 import filecmp
 from fastapi import APIRouter, Body
-from sqlalchemy import select
+from sqlalchemy import select,func
 from .db import *
 from .common import get,project_dir,safe_path,emit,error
 router=APIRouter()
@@ -66,9 +66,21 @@ def configure_publication(ident:str,body:dict=Body(...)):
         return {'profile':profile,'revision':p.revision}
 
 @router.get('/api/projects/{ident}/research')
-def research_state(ident:str):
+def research_state(ident:str,overview:bool=False):
     with Session() as s:
         p=get(s,Project,ident)
+        if overview:
+            # Overview controls need recorded lifecycle, not a replay of every
+            # historical verifier. Explicit comparison reads keep the checker.
+            active=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident,
+                TaskRun.status.in_(['queued','running','waiting','waiting_input','paused','pausing','budget_exhausted'])).order_by(TaskRun.created_at.desc()).limit(100)))
+            decisions=list(s.scalars(select(Hypothesis).where(Hypothesis.project_id==ident).order_by(Hypothesis.created_at.desc()).limit(20)))
+            counts=dict(s.execute(select(TaskRun.status,func.count()).where(TaskRun.project_id==ident).group_by(TaskRun.status)).all())
+            return {'objective':p.config.get('objective',{}),'trials':[],'controller':p.config.get('controller',{}),
+                    'active_runs':[{'id':r.id,'kind':r.kind,'status':r.status,'node_id':r.node_id,'resource':r.resource} for r in active],
+                    'decisions':[asdict(x) for x in decisions if x.data.get('origin')=='research_controller'],
+                    'counts':{'runs':sum(counts.values()),'completed':counts.get('completed',0),'failed':counts.get('failed',0)+counts.get('interrupted',0)},
+                    'coverage':'Recorded lifecycle only; at most 100 active runs and 20 recent decisions. Comparisons require explicit inspection.'}
         decisions=list(s.scalars(select(Hypothesis).where(Hypothesis.project_id==ident).order_by(Hypothesis.created_at.desc())))
         runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident).order_by(TaskRun.created_at.desc())))
         active=[{'id':r.id,'kind':r.kind,'status':r.status,'node_id':r.node_id,'resource':r.resource} for r in runs if r.status in ('queued','running','waiting','waiting_input','paused','pausing','budget_exhausted')]

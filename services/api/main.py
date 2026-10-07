@@ -17,7 +17,7 @@ import psutil
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Body
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select, delete, func, text as sql_text
+from sqlalchemy import select, delete, update, func, text as sql_text
 from .common import *
 from .schemas import *
 from .files import router as files_router
@@ -43,7 +43,12 @@ async def lifespan(app):
             for role,instructions in ROLES.items():
                 if role not in roles:
                     s.add(Agent(name=role,role=role,instructions=instructions,tools=list(TOOLS),config=default_config(role)))
-    yield
+    from services.observation.service import ObservationService
+    observer=ObservationService(); observer.start()
+    try:
+        yield
+    finally:
+        observer.close()
     from .terminal import close_all
     close_all()
 app=FastAPI(title='FOREST Research API',version='0.1.0',lifespan=lifespan)
@@ -60,7 +65,8 @@ async def security(request,call_next):
     if route.startswith('/api') and not public:
         if hostname not in TRUSTED_HOSTS and not authorized(request): return JSONResponse({'detail':{'code':'UNAUTHORIZED','message':'Owner authentication required','retryable':False}},401)
         if origin and (urlparse(origin).hostname not in TRUSTED_HOSTS) and urlparse(origin).hostname!=hostname: return JSONResponse({'detail':{'code':'ORIGIN_DENIED','message':'Cross-origin write/read denied','retryable':False}},403)
-        local=request.client and request.client.host in ('127.0.0.1','::1','testclient') and hostname in TRUSTED_HOSTS
+        forwarded=any(request.headers.get(name) for name in ('forwarded','x-forwarded-for','x-forwarded-host','x-forwarded-proto'))
+        local=request.client and request.client.host in ('127.0.0.1','::1','testclient') and hostname in TRUSTED_HOSTS and not forwarded
         if not authorized(request) and not local: return JSONResponse({'detail':{'code':'UNAUTHORIZED','message':'Owner authentication required','retryable':False}},401)
         response=await call_next(request)
         if local and not authorized(request): response.set_cookie('forest_owner',owner_token(),httponly=True,samesite='strict',max_age=86400*14)
@@ -136,6 +142,7 @@ def delete_project(ident:str):
                 cancel_remote(run.config,safe_path(project_dir(run.project_id),run.output_path))
             if run.pid: stop_group(run.pid,run.process_created)
             interrupt_run_reservations(run.id,session=s)
+        s.execute(update(ModelRequest).where(ModelRequest.project_id==ident,ModelRequest.status=='reserved').values(status='uncertain'))
         s.delete(p)
     shutil.rmtree(project_dir(ident),ignore_errors=True); return {'deleted':ident}
 @app.post('/api/projects/{ident}/duplicate')
@@ -449,7 +456,26 @@ def output(ident:str,offset:int=0,limit:int=100000,search:str=''):
     return {'text':text,'offset':end,'status':status}
 @app.get('/api/projects/{ident}/events')
 async def events(ident:str,request:Request):
-    with Session() as s: get(s,Project,ident)
+    def check_project():
+        with Session() as s: get(s,Project,ident)
+    await asyncio.to_thread(check_project)
+    def read_batch(last,first_poll):
+        with Session() as s:
+            if first_poll:
+                oldest,latest=s.execute(select(func.min(Event.sequence),func.max(Event.sequence)).where(Event.project_id==ident)).one()
+                latest=latest or 0
+                if last>latest:
+                    return [],{'requested_after_sequence':last,'oldest_available_sequence':oldest or 0,
+                               'latest_available_sequence':latest,'resume_after_sequence':latest}
+            rows=list(s.scalars(select(Event).where(Event.project_id==ident,Event.sequence>last).order_by(Event.sequence).limit(100)))
+            gap=None
+            if rows and rows[0].sequence>last+1:
+                first=rows[0].sequence
+                latest=s.scalar(select(func.max(Event.sequence)).where(Event.project_id==ident)) or rows[-1].sequence
+                latest=max(latest,rows[-1].sequence)
+                gap={'requested_after_sequence':last,'oldest_available_sequence':first,
+                     'latest_available_sequence':latest,'resume_after_sequence':latest}
+            return [(e.sequence,e.type,e.data) for e in rows],gap
     async def stream():
         cursor=request.headers.get('last-event-id',''); last=0
         if cursor:
@@ -458,29 +484,15 @@ async def events(ident:str,request:Request):
         yield 'event: connected\ndata: {}\n\n'
         first_poll=True
         while not await request.is_disconnected():
-            with Session() as s:
-                gap=None
-                if first_poll:
-                    first_poll=False
-                    oldest,latest=s.execute(select(func.min(Event.sequence),func.max(Event.sequence)).where(Event.project_id==ident)).one()
-                    latest=latest or 0
-                    if last>latest:
-                        oldest=oldest or 0
-                        gap={'requested_after_sequence':last,'oldest_available_sequence':oldest,
-                             'latest_available_sequence':latest,'resume_after_sequence':latest}
-                        last=latest
-                rows=list(s.scalars(select(Event).where(Event.project_id==ident,Event.sequence>last).order_by(Event.sequence).limit(100)))
-                if rows and rows[0].sequence>last+1:
-                    first=rows[0].sequence
-                    latest=s.scalar(select(func.max(Event.sequence)).where(Event.project_id==ident)) or rows[-1].sequence
-                    latest=max(latest,rows[-1].sequence)
-                    gap={'requested_after_sequence':last,'oldest_available_sequence':first,
-                         'latest_available_sequence':latest,'resume_after_sequence':latest}
-                    last=latest
+            # Pool waits and database I/O must never block the ASGI event loop.
+            rows,gap=await asyncio.to_thread(read_batch,last,first_poll)
+            first_poll=False
             if gap:
+                last=gap['resume_after_sequence']
                 yield f'id: {last}\nevent: cursor_reset\ndata: {json.dumps(gap)}\n\n'
                 continue
-            for e in rows: last=e.sequence; yield f'id: {last}\nevent: {e.type}\ndata: {json.dumps(e.data)}\n\n'
+            for sequence,event_type,data in rows:
+                last=sequence; yield f'id: {last}\nevent: {event_type}\ndata: {json.dumps(data)}\n\n'
             yield ': heartbeat\n\n'; await asyncio.sleep(1)
     return StreamingResponse(stream(),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
 _provider_health_cache={}
@@ -491,7 +503,13 @@ def provider_health(provider):
     if cached and time.monotonic()-cached[0]<15: return cached[1]
     result={'id':provider.id,'available':False,'checked_at':dt.datetime.now(dt.timezone.utc).isoformat(),'last_chat_test':provider.status}
     local=urlparse(provider.base_url).hostname in TRUSTED_HOSTS
-    if local or provider.allow_paid:
+    if provider.kind=='codex_cli':
+        executable=shutil.which(os.environ.get('FOREST_CODEX_EXECUTABLE','codex'))
+        try:
+            result['available']=bool(executable and subprocess.run([executable,'login','status'],capture_output=True,timeout=3).returncode==0)
+            result['reason']='Local CLI login check only; model inference is not probed' if result['available'] else 'Install and sign in to Codex CLI'
+        except (OSError,subprocess.TimeoutExpired): result['reason']='Local CLI login check unavailable'
+    elif local or provider.allow_paid:
         try:
             endpoint=provider.base_url.rstrip('/')+('/api/tags' if provider.kind=='ollama' else '/models')
             credential=read_secret(provider.credential_ref)
@@ -542,8 +560,10 @@ def providers():
     with Session() as s: return [asdict(p) for p in s.scalars(select(Provider))]
 @app.post('/api/providers')
 def provider_create(body:dict=Body(...)):
-    if body.get('kind','openai') not in ('ollama','openai'): error('INVALID_PROVIDER','Use ollama or openai-compatible')
+    if body.get('kind','openai') not in ('ollama','openai','codex_cli'): error('INVALID_PROVIDER','Use ollama, openai-compatible or codex_cli')
     if urlparse(body.get('base_url','')).scheme not in ('http','https'): error('INVALID_URL','An HTTP(S) base URL is required')
+    if body.get('kind')=='codex_cli' and urlparse(body.get('base_url','')).hostname not in TRUSTED_HOSTS:
+        error('INVALID_URL','Codex CLI uses the local login; configure a localhost placeholder URL')
     with Session.begin() as s:
         key=body.pop('api_key',None); p=Provider(**{k:body[k] for k in ('name','kind','base_url','model','allow_paid','config') if k in body}); s.add(p)
         if key: p.credential_ref=put_secret(key)
@@ -651,6 +671,8 @@ async def terminal(ws:WebSocket,ident:str):
         branch=s.scalar(select(Branch).where(Branch.project_id==ident,Branch.is_main==True)); cwd=safe_path(project_dir(ident),branch.workspace if branch else '.')
     from .terminal import attach
     await attach(ws,ident+':'+str(branch.id if branch else 'main'),cwd)
+from .progress import router as progress_router
+app.include_router(progress_router)
 app.include_router(files_router)
 from .research_runtime import router as runtime_router
 # Specific research endpoints must precede resources' /research/{action}.

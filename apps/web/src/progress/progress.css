@@ -1,0 +1,16 @@
+.live-progress, .source-explorer { margin-bottom: 20px; }
+.progress-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 28px; }
+.progress-sections ul, .live-progress ul, .source-explorer ul { list-style: none; margin: 0; padding: 0; }
+.progress-fact { border-bottom: 1px solid var(--border, #ddd); padding: 9px 0; display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
+.progress-fact strong { margin-right: 8px; }
+.progress-fact small { color: var(--muted, #65716c); }
+.progress-fact a, .source-explorer a { text-decoration: underline; }
+.progress-counts { display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 0; }
+.live-progress form { max-width: 560px; display: flex; flex-direction: column; gap: 10px; padding: 12px 0; }
+.source-explorer select { max-width: 100%; }
+.source-explorer li { padding: 6px 0; overflow-wrap: anywhere; }
+.source-view { margin-top: 18px; }
+.source-view pre { max-height: 480px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; border: 1px solid var(--border, #ddd); }
+.source-segments { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+@media (max-width: 700px) { .progress-sections { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .live-progress *, .source-explorer * { animation: none !important; transition: none !important; } }

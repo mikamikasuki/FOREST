@@ -987,6 +987,104 @@
         ],
         "type": "object"
       },
+      "FileObservation": {
+        "additionalProperties": false,
+        "properties": {
+          "attribution": {
+            "title": "Attribution",
+            "type": "string"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "parse_state": {
+            "title": "Parse State",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "scope_id": {
+            "title": "Scope Id",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceRef"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "scope_id",
+          "path",
+          "generation",
+          "state",
+          "size",
+          "parse_state",
+          "attribution",
+          "observed_at",
+          "source"
+        ],
+        "title": "FileObservation",
+        "type": "object"
+      },
+      "FilePage": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage": {
+            "$ref": "#/components/schemas/ScopeCoverage"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FileObservation"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "coverage"
+        ],
+        "title": "FilePage",
+        "type": "object"
+      },
       "FilePath": {
         "additionalProperties": true,
         "properties": {
@@ -1943,6 +2041,68 @@
         },
         "type": "object"
       },
+      "ObserverHealth": {
+        "additionalProperties": false,
+        "properties": {
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Seconds"
+          },
+          "database_coverage": {
+            "title": "Database Coverage",
+            "type": "string"
+          },
+          "file_coverage": {
+            "title": "File Coverage",
+            "type": "string"
+          },
+          "history_gap": {
+            "default": false,
+            "title": "History Gap",
+            "type": "boolean"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "state": {
+            "enum": [
+              "healthy",
+              "rebuilding",
+              "stale",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "database_coverage",
+          "file_coverage",
+          "note"
+        ],
+        "title": "ObserverHealth",
+        "type": "object"
+      },
       "OutputPage": {
         "additionalProperties": true,
         "properties": {
@@ -2458,6 +2618,75 @@
         ],
         "type": "object"
       },
+      "ProgressFact": {
+        "additionalProperties": false,
+        "properties": {
+          "applicability": {
+            "default": "current",
+            "enum": [
+              "current",
+              "historical",
+              "not_checked"
+            ],
+            "title": "Applicability",
+            "type": "string"
+          },
+          "classification": {
+            "default": "OPERATIONAL",
+            "enum": [
+              "OPERATIONAL",
+              "REPORTED"
+            ],
+            "title": "Classification",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "string"
+          },
+          "section": {
+            "enum": [
+              "now",
+              "attention",
+              "blocked",
+              "recent",
+              "next",
+              "evidence"
+            ],
+            "title": "Section",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceRef"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "section",
+          "label",
+          "value",
+          "observed_at",
+          "sources"
+        ],
+        "title": "ProgressFact",
+        "type": "object"
+      },
       "Project": {
         "additionalProperties": true,
         "properties": {
@@ -2608,6 +2837,90 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "ProjectProgressSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "controller_status": {
+            "title": "Controller Status",
+            "type": "string"
+          },
+          "cursor": {
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "dependencies": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Dependencies",
+            "type": "object"
+          },
+          "epoch": {
+            "title": "Epoch",
+            "type": "string"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/ProgressFact"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "health": {
+            "$ref": "#/components/schemas/ObserverHealth"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "project_revision": {
+            "title": "Project Revision",
+            "type": "integer"
+          },
+          "run_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Run Counts",
+            "type": "object"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "epoch",
+          "generation",
+          "snapshot_id",
+          "cursor",
+          "project_revision",
+          "observed_at",
+          "controller_status",
+          "facts",
+          "run_counts",
+          "health",
+          "dependencies"
+        ],
+        "title": "ProjectProgressSnapshot",
         "type": "object"
       },
       "ProjectUsage": {
@@ -2930,7 +3243,8 @@
             "default": "openai",
             "enum": [
               "ollama",
-              "openai"
+              "openai",
+              "codex_cli"
             ],
             "type": "string"
           },
@@ -3025,6 +3339,15 @@
                   "type": "string"
                 },
                 "project_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "purpose": {
+                  "type": "string"
+                },
+                "report_job_id": {
                   "type": [
                     "string",
                     "null"
@@ -3358,6 +3681,284 @@
         ],
         "type": "object"
       },
+      "ReportPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReporterJob"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ReportPage",
+        "type": "object"
+      },
+      "ReporterJob": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "current": {
+            "title": "Current",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/ProgressFact"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReporterReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "created_at",
+          "updated_at",
+          "error",
+          "report",
+          "facts",
+          "current",
+          "snapshot_id"
+        ],
+        "title": "ReporterJob",
+        "type": "object"
+      },
+      "ReporterRefresh": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "title": "ReporterRefresh",
+        "type": "object"
+      },
+      "ReporterReport": {
+        "additionalProperties": false,
+        "properties": {
+          "fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Fact Ids",
+            "type": "array"
+          },
+          "focus": {
+            "enum": [
+              "activity",
+              "attention",
+              "evidence",
+              "no_material_change"
+            ],
+            "title": "Focus",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "focus",
+          "fact_ids"
+        ],
+        "title": "ReporterReport",
+        "type": "object"
+      },
+      "ReporterSettings": {
+        "additionalProperties": false,
+        "properties": {
+          "automatic": {
+            "default": false,
+            "title": "Automatic",
+            "type": "boolean"
+          },
+          "cap_usd": {
+            "default": 0,
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Cap Usd",
+            "type": "number"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "language": {
+            "default": "en",
+            "enum": [
+              "en",
+              "zh"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "default": 1024,
+            "maximum": 4096.0,
+            "minimum": 128.0,
+            "title": "Max Output Tokens",
+            "type": "integer"
+          },
+          "max_requests": {
+            "default": 20,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Max Requests",
+            "type": "integer"
+          },
+          "maximum_wait_seconds": {
+            "default": 180,
+            "maximum": 3600.0,
+            "minimum": 60.0,
+            "title": "Maximum Wait Seconds",
+            "type": "integer"
+          },
+          "minimum_seconds": {
+            "default": 60,
+            "maximum": 3600.0,
+            "minimum": 30.0,
+            "title": "Minimum Seconds",
+            "type": "integer"
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Id"
+          }
+        },
+        "title": "ReporterSettings",
+        "type": "object"
+      },
+      "ReporterSettingsView": {
+        "additionalProperties": false,
+        "properties": {
+          "estimated_usd": {
+            "title": "Estimated Usd",
+            "type": "number"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "reserved_usd": {
+            "title": "Reserved Usd",
+            "type": "number"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ReporterSettings"
+          },
+          "unpriced_requests": {
+            "title": "Unpriced Requests",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "settings",
+          "version",
+          "estimated_usd",
+          "reserved_usd",
+          "requests",
+          "unpriced_requests"
+        ],
+        "title": "ReporterSettingsView",
+        "type": "object"
+      },
+      "ReporterSettingsWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_version": {
+            "minimum": 0.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ReporterSettings"
+          }
+        },
+        "required": [
+          "settings",
+          "expected_version"
+        ],
+        "title": "ReporterSettingsWrite",
+        "type": "object"
+      },
       "RepositoryCloneRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3676,6 +4277,9 @@
               }
             },
             "type": "object"
+          },
+          "coverage": {
+            "type": "string"
           },
           "decisions": {
             "items": {
@@ -4393,6 +4997,110 @@
         ],
         "type": "object"
       },
+      "ScopeCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "scan_generation": {
+            "title": "Scan Generation",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "object_id",
+          "attempt_id",
+          "scan_generation",
+          "coverage",
+          "observed_at",
+          "error",
+          "total"
+        ],
+        "title": "ScopeCoverage",
+        "type": "object"
+      },
+      "ScopePage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScopeCoverage"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ScopePage",
+        "type": "object"
+      },
       "SelectedRunCollection": {
         "additionalProperties": true,
         "properties": {
@@ -4529,6 +5237,274 @@
           "nodes",
           "read_only"
         ],
+        "type": "object"
+      },
+      "SourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Id"
+          },
+          "epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Epoch"
+          },
+          "file_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Generation"
+          },
+          "kind": {
+            "enum": [
+              "project",
+              "node",
+              "run",
+              "paper",
+              "figure",
+              "file"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "record_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Updated At"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "segment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segment Id"
+          }
+        },
+        "required": [
+          "project_id",
+          "kind",
+          "object_id"
+        ],
+        "title": "SourceRef",
+        "type": "object"
+      },
+      "SourceSegment": {
+        "additionalProperties": false,
+        "properties": {
+          "certainty": {
+            "default": "structural",
+            "enum": [
+              "structural",
+              "raw"
+            ],
+            "title": "Certainty",
+            "type": "string"
+          },
+          "end_byte": {
+            "title": "End Byte",
+            "type": "integer"
+          },
+          "end_line": {
+            "title": "End Line",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parser": {
+            "title": "Parser",
+            "type": "string"
+          },
+          "start_byte": {
+            "title": "Start Byte",
+            "type": "integer"
+          },
+          "start_line": {
+            "title": "Start Line",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "start_byte",
+          "end_byte",
+          "start_line",
+          "end_line",
+          "parser"
+        ],
+        "title": "SourceSegment",
+        "type": "object"
+      },
+      "SourceView": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Url"
+          },
+          "availability": {
+            "enum": [
+              "available",
+              "changed",
+              "deleted",
+              "unavailable"
+            ],
+            "title": "Availability",
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "parse_state": {
+            "title": "Parse State",
+            "type": "string"
+          },
+          "project_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Path"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/SourceSegment"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceRef"
+          }
+        },
+        "required": [
+          "source",
+          "availability",
+          "parse_state",
+          "note"
+        ],
+        "title": "SourceView",
         "type": "object"
       },
       "SymbolicCheckRequest": {
@@ -16500,6 +17476,718 @@
         }
       }
     },
+    "/api/projects/{ident}/progress": {
+      "get": {
+        "description": "Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.",
+        "operationId": "progress_api_projects__ident__progress_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectProgressSnapshot"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Project/source unavailable"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Revision conflict, rebuilding or narration disabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Read a coherent deterministic progress projection",
+        "tags": [
+          "Progress"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/projects/{ident}/progress/artifacts/{file_id}": {
+      "get": {
+        "description": "Owner-only bounded artifact. Epoch, generation, scope ownership and current bytes must match. Changed/deleted sources return an error. Does not read unbounded binary content.",
+        "operationId": "artifact_api_projects__ident__progress_artifacts__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "epoch",
+            "required": true,
+            "schema": {
+              "title": "Epoch",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "generation",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Generation",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Source unavailable"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Source changed or not retained"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Open retained generation-bound artifact bytes",
+        "tags": [
+          "Progress"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/projects/{ident}/progress/scopes": {
+      "get": {
+        "description": "Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.",
+        "operationId": "scopes_api_projects__ident__progress_scopes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "project",
+                    "branch_workspace",
+                    "run_output",
+                    "run_workspace",
+                    "remote_workspace"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "object_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Object Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScopePage"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Project/source unavailable"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Revision conflict, rebuilding or narration disabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "List source scopes and coverage",
+        "tags": [
+          "Progress"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/projects/{ident}/progress/source": {
+      "post": {
+        "description": "Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.",
+        "operationId": "source_api_projects__ident__progress_source_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceRef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceView"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Project/source unavailable"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Revision conflict, rebuilding or narration disabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Resolve a generation-bound source without scientific side effects",
+        "tags": [
+          "Progress"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/projects/{ident}/progress/sources": {
+      "get": {
+        "description": "Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.",
+        "operationId": "sources_api_projects__ident__progress_sources_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_id",
+            "required": true,
+            "schema": {
+              "title": "Scope Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilePage"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Project/source unavailable"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Revision conflict, rebuilding or narration disabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Page observed files in one authorized scope",
+        "tags": [
+          "Progress"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
     "/api/projects/{ident}/protocol/validate": {
       "post": {
         "description": "Require the base protocol judgment/unit/selection/threshold fields. Confirmatory phase requires test_used_for_selection:false. A full_submission project additionally requires complete dataset/baseline/ablation/seed/study/accepted-source design and rationale fields. Return structurally_checked protocol/profile/scope; no experiment executes.",
@@ -16849,6 +18537,633 @@
         }
       }
     },
+    "/api/projects/{ident}/reporter-settings": {
+      "get": {
+        "description": "Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.",
+        "operationId": "reporter_settings_api_projects__ident__reporter_settings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReporterSettingsView"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Project/source unavailable"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Revision conflict, rebuilding or narration disabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Read opt-in narration settings and reporting usage",
+        "tags": [
+          "Progress"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      },
+      "patch": {
+        "description": "Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.",
+        "operationId": "update_reporter_settings_api_projects__ident__reporter_settings_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReporterSettingsWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReporterSettingsView"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Project/source unavailable"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Revision conflict, rebuilding or narration disabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Save version-checked narration settings",
+        "tags": [
+          "Progress"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/projects/{ident}/reports": {
+      "get": {
+        "description": "Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.",
+        "operationId": "reports_api_projects__ident__reports_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportPage"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Project/source unavailable"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Revision conflict, rebuilding or narration disabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Page persistent reporting jobs",
+        "tags": [
+          "Progress"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/projects/{ident}/reports/latest": {
+      "get": {
+        "description": "Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.",
+        "operationId": "latest_report_api_projects__ident__reports_latest_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ReporterJob"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Project/source unavailable"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Revision conflict, rebuilding or narration disabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Read the latest report job",
+        "tags": [
+          "Progress"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/projects/{ident}/reports/refresh": {
+      "post": {
+        "description": "Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.",
+        "operationId": "refresh_report_api_projects__ident__reports_refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReporterRefresh"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReporterJob"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Project/source unavailable"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Revision conflict, rebuilding or narration disabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Explicitly enqueue or coalesce optional narration",
+        "tags": [
+          "Progress"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
     "/api/projects/{ident}/repositories/clone": {
       "post": {
         "description": "Only repository/request_id top-level fields are accepted. Normalize the input; all Git/network work runs in a worker. A reused request_id must identify the identical normalized repository submission or return 409. Return queued Run.",
@@ -16977,7 +19292,7 @@
     },
     "/api/projects/{ident}/research": {
       "get": {
-        "description": "Return objective, declared comparable trial groups, current controller configuration, active runs, controller-origin decisions and run counts. Optional/required verification policies control comparison eligibility. Trial fields are absent until applicable; null value is unmeasured, not zero.",
+        "description": "Default returns objective, declared comparable trial groups, current controller configuration, active runs, controller-origin decisions and run counts. Optional/required verification policies control comparison eligibility. Trial fields are absent until applicable; null value is unmeasured, not zero. overview=true returns bounded recorded lifecycle and counts with empty trials and explicit coverage, without filesystem/verification replay; comparisons require the default explicit inspection.",
         "operationId": "research_state_api_projects__ident__research_get",
         "parameters": [
           {
@@ -16987,6 +19302,16 @@
             "schema": {
               "title": "Ident",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "overview",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Overview",
+              "type": "boolean"
             }
           }
         ],
@@ -18468,7 +20793,7 @@
         }
       },
       "post": {
-        "description": "Accept ollama or openai-compatible kind and an HTTP(S) base_url. Store a supplied api_key outside the returned provider; return has_key. Name/base_url/model are needed to create a usable record.",
+        "description": "Accept ollama, openai-compatible or codex_cli kind and an HTTP(S) base_url. Codex CLI requires a localhost placeholder and the host's existing CLI login. Store a supplied api_key outside the returned provider; return has_key. Name/base_url/model are needed to create a usable record.",
         "operationId": "provider_create_api_providers_post",
         "requestBody": {
           "content": {
@@ -22758,6 +25083,9 @@
     },
     {
       "name": "Manuscripts"
+    },
+    {
+      "name": "Progress"
     },
     {
       "name": "Projects"

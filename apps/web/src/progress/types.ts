@@ -1,0 +1,10 @@
+import type { components } from "../../../../packages/contracts/api.generated";
+export type Snapshot = components["schemas"]["ProjectProgressSnapshot"];
+export type Fact = components["schemas"]["ProgressFact"];
+export type Source = components["schemas"]["SourceRef"];
+export type SourceView = components["schemas"]["SourceView"];
+export type Scope = components["schemas"]["ScopeCoverage"];
+export type ScopePage = components["schemas"]["ScopePage"];
+export type FilePage = components["schemas"]["FilePage"];
+export type Job = components["schemas"]["ReporterJob"];
+export type SettingsView = components["schemas"]["ReporterSettingsView"];

@@ -394,7 +394,7 @@ Success `200`: `application/json`: `Provider[]`.
 
 #### `POST /api/providers`
 
-Accept ollama or openai-compatible kind and an HTTP(S) base_url. Store a supplied api_key outside the returned provider; return has_key. Name/base_url/model are needed to create a usable record.
+Accept ollama, openai-compatible or codex_cli kind and an HTTP(S) base_url. Codex CLI requires a localhost placeholder and the host's existing CLI login. Store a supplied api_key outside the returned provider; return has_key. Name/base_url/model are needed to create a usable record.
 
 Body: `application/json`: `ProviderCreate`; required.
 
@@ -1124,6 +1124,146 @@ Return extensible writing profile plus manuscript_contract and revision_contract
 
 Success `200`: `application/json`: `object`.
 
+### Progress
+
+#### `GET /api/projects/{ident}/progress`
+
+Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `ProjectProgressSnapshot`.
+
+Known domain failures: `404` Project/source unavailable; `409` Revision conflict, rebuilding or narration disabled.
+
+#### `GET /api/projects/{ident}/progress/artifacts/{file_id}`
+
+Owner-only bounded artifact. Epoch, generation, scope ownership and current bytes must match. Changed/deleted sources return an error. Does not read unbounded binary content.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+| `file_id` | path | string | yes |  |
+| `epoch` | query | string | yes |  |
+| `generation` | query | integer | yes |  minimum=1. |
+
+Success `200`: `application/json`: `string`.
+
+Known domain failures: `404` Source unavailable; `409` Source changed or not retained.
+
+#### `GET /api/projects/{ident}/progress/scopes`
+
+Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+| `cursor` | query | string | no | Default ``.  |
+| `limit` | query | integer | no | Default `50`.  minimum=1, maximum=200. |
+| `kind` | query | string or null | no |  |
+| `object_id` | query | string or null | no |  |
+
+Success `200`: `application/json`: `ScopePage`.
+
+Known domain failures: `404` Project/source unavailable; `409` Revision conflict, rebuilding or narration disabled.
+
+#### `POST /api/projects/{ident}/progress/source`
+
+Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Body: `application/json`: `SourceRef`; required.
+
+Success `200`: `application/json`: `SourceView`.
+
+Known domain failures: `404` Project/source unavailable; `409` Revision conflict, rebuilding or narration disabled.
+
+#### `GET /api/projects/{ident}/progress/sources`
+
+Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+| `scope_id` | query | string | yes |  |
+| `cursor` | query | string | no | Default ``.  |
+| `limit` | query | integer | no | Default `50`.  minimum=1, maximum=200. |
+
+Success `200`: `application/json`: `FilePage`.
+
+Known domain failures: `404` Project/source unavailable; `409` Revision conflict, rebuilding or narration disabled.
+
+#### `GET /api/projects/{ident}/reporter-settings`
+
+Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `ReporterSettingsView`.
+
+Known domain failures: `404` Project/source unavailable; `409` Revision conflict, rebuilding or narration disabled.
+
+#### `PATCH /api/projects/{ident}/reporter-settings`
+
+Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Body: `application/json`: `ReporterSettingsWrite`; required.
+
+Success `200`: `application/json`: `ReporterSettingsView`.
+
+Known domain failures: `404` Project/source unavailable; `409` Revision conflict, rebuilding or narration disabled.
+
+#### `GET /api/projects/{ident}/reports`
+
+Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+| `cursor` | query | string | no | Default ``.  |
+| `limit` | query | integer | no | Default `20`.  minimum=1, maximum=50. |
+
+Success `200`: `application/json`: `ReportPage`.
+
+Known domain failures: `404` Project/source unavailable; `409` Revision conflict, rebuilding or narration disabled.
+
+#### `GET /api/projects/{ident}/reports/latest`
+
+Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `ReporterJob or null`.
+
+Known domain failures: `404` Project/source unavailable; `409` Revision conflict, rebuilding or narration disabled.
+
+#### `POST /api/projects/{ident}/reports/refresh`
+
+Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Body: `application/json`: `ReporterRefresh`; required.
+
+Success `200`: `application/json`: `ReporterJob`.
+
+Known domain failures: `404` Project/source unavailable; `409` Revision conflict, rebuilding or narration disabled.
+
 ### Projects
 
 #### `GET /api/projects`
@@ -1292,11 +1432,12 @@ Known domain failures: `404` NOT_FOUND; `422` INVALID_PUBLICATION_PROFILE.
 
 #### `GET /api/projects/{ident}/research`
 
-Return objective, declared comparable trial groups, current controller configuration, active runs, controller-origin decisions and run counts. Optional/required verification policies control comparison eligibility. Trial fields are absent until applicable; null value is unmeasured, not zero.
+Default returns objective, declared comparable trial groups, current controller configuration, active runs, controller-origin decisions and run counts. Optional/required verification policies control comparison eligibility. Trial fields are absent until applicable; null value is unmeasured, not zero. overview=true returns bounded recorded lifecycle and counts with empty trials and explicit coverage, without filesystem/verification replay; comparisons require the default explicit inspection.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
 | `ident` | path | string | yes |  |
+| `overview` | query | boolean | no | Default `False`.  |
 
 Success `200`: `application/json`: `ResearchState`.
 
@@ -2605,6 +2746,33 @@ Additional properties: extensible JSON.
 
 Additional properties: extensible JSON.
 
+### `FileObservation`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `scope_id` | string | yes |  |
+| `path` | string | yes |  |
+| `generation` | integer | yes |  |
+| `state` | string | yes |  |
+| `size` | integer | yes |  |
+| `parse_state` | string | yes |  |
+| `attribution` | string | yes |  |
+| `observed_at` | string or null | yes |  |
+| `source` | SourceRef | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `FilePage`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `items` | FileObservation[] | yes |  |
+| `next_cursor` | string or null | yes |  |
+| `coverage` | ScopeCoverage | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
 ### `FilePath`
 
 | Field | Type | Required | Details |
@@ -2996,6 +3164,20 @@ Additional properties: extensible JSON.
 
 Additional properties: extensible JSON.
 
+### `ObserverHealth`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `state` | string | yes |  Values: `healthy`, `rebuilding`, `stale`, `unavailable`. |
+| `observed_at` | string or null | no |  |
+| `age_seconds` | number or null | no |  |
+| `database_coverage` | string | yes |  |
+| `file_coverage` | string | yes |  |
+| `history_gap` | boolean | no |  Default: `False`. |
+| `note` | string | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
 ### `OutputPage`
 
 | Field | Type | Required | Details |
@@ -3186,6 +3368,21 @@ Optional receipt fields are returned only when present and scalar in the saved s
 
 Additional properties: extensible JSON.
 
+### `ProgressFact`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `section` | string | yes |  Values: `now`, `attention`, `blocked`, `recent`, `next`, `evidence`. |
+| `label` | string | yes |  |
+| `value` | string | yes |  |
+| `classification` | string | no |  Default: `OPERATIONAL`. Values: `OPERATIONAL`, `REPORTED`. |
+| `applicability` | string | no |  Default: `current`. Values: `current`, `historical`, `not_checked`. |
+| `observed_at` | string | yes |  |
+| `sources` | SourceRef[] | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
 ### `Project`
 
 | Field | Type | Required | Details |
@@ -3242,6 +3439,25 @@ Additional properties: extensible JSON.
 | `expected_revision` | integer | no | Optional project/graph revision; omission uses the current revision. |
 
 Additional properties: extensible JSON.
+
+### `ProjectProgressSnapshot`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `project_id` | string | yes |  |
+| `epoch` | string | yes |  |
+| `generation` | integer | yes |  |
+| `snapshot_id` | string | yes |  |
+| `cursor` | integer | yes |  |
+| `project_revision` | integer | yes |  |
+| `observed_at` | string | yes |  |
+| `controller_status` | string | yes |  |
+| `facts` | ProgressFact[] | yes |  |
+| `run_counts` | object | yes |  |
+| `health` | ObserverHealth | yes |  |
+| `dependencies` | object | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
 
 ### `ProjectUsage`
 
@@ -3339,7 +3555,7 @@ Additional properties: extensible JSON.
 | Field | Type | Required | Details |
 | --- | --- | --- | --- |
 | `name` | string | yes |  |
-| `kind` | string | no |  Default: `openai`. Values: `ollama`, `openai`. |
+| `kind` | string | no |  Default: `openai`. Values: `ollama`, `openai`, `codex_cli`. |
 | `base_url` | string | yes | HTTP(S) base URL. |
 | `model` | string | yes |  |
 | `allow_paid` | boolean | no |  |
@@ -3487,6 +3703,87 @@ Additional properties: extensible JSON.
 
 Additional properties: extensible JSON.
 
+### `ReportPage`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `items` | ReporterJob[] | yes |  |
+| `next_cursor` | string or null | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `ReporterJob`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `status` | string | yes |  |
+| `created_at` | string | yes |  |
+| `updated_at` | string | yes |  |
+| `error` | string or null | yes |  |
+| `report` | ReporterReport or null | yes |  |
+| `facts` | ProgressFact[] | yes |  |
+| `current` | boolean | yes |  |
+| `snapshot_id` | string | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `ReporterRefresh`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `request_id` | string | yes |  minLength=1, maxLength=160. |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `ReporterReport`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `snapshot_id` | string | yes |  |
+| `focus` | string | yes |  Values: `activity`, `attention`, `evidence`, `no_material_change`. |
+| `fact_ids` | string[] | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `ReporterSettings`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `enabled` | boolean | no |  Default: `False`. |
+| `automatic` | boolean | no |  Default: `False`. |
+| `provider_id` | string or null | no |  |
+| `cap_usd` | number | no |  Default: `0`. minimum=0.0, maximum=10000.0. |
+| `max_requests` | integer | no |  Default: `20`. minimum=1.0, maximum=1000.0. |
+| `max_output_tokens` | integer | no |  Default: `1024`. minimum=128.0, maximum=4096.0. |
+| `language` | string | no |  Default: `en`. Values: `en`, `zh`. |
+| `minimum_seconds` | integer | no |  Default: `60`. minimum=30.0, maximum=3600.0. |
+| `maximum_wait_seconds` | integer | no |  Default: `180`. minimum=60.0, maximum=3600.0. |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `ReporterSettingsView`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `settings` | ReporterSettings | yes |  |
+| `version` | integer | yes |  |
+| `estimated_usd` | number | yes |  |
+| `reserved_usd` | number | yes |  |
+| `requests` | integer | yes |  |
+| `unpriced_requests` | integer | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `ReporterSettingsWrite`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `settings` | ReporterSettings | yes |  |
+| `expected_version` | integer | yes |  minimum=0.0. |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
 ### `RepositoryCloneRequest`
 
 | Field | Type | Required | Details |
@@ -3586,6 +3883,7 @@ Additional properties: extensible JSON.
 | `active_runs` | object[] | yes |  |
 | `decisions` | RecordItem[] | yes |  |
 | `counts` | object | yes |  |
+| `coverage` | string | no |  |
 
 Additional properties: extensible JSON.
 
@@ -3822,6 +4120,31 @@ Additional properties: extensible JSON.
 
 Additional properties: extensible JSON.
 
+### `ScopeCoverage`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `kind` | string | yes |  |
+| `object_id` | string | yes |  |
+| `attempt_id` | string or null | yes |  |
+| `scan_generation` | integer | yes |  |
+| `coverage` | string | yes |  |
+| `observed_at` | string or null | yes |  |
+| `error` | string or null | yes |  |
+| `total` | integer | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `ScopePage`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `items` | ScopeCoverage[] | yes |  |
+| `next_cursor` | string or null | yes |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
 ### `SelectedRunCollection`
 
 | Field | Type | Required | Details |
@@ -3869,6 +4192,57 @@ Additional properties: extensible JSON.
 | `read_only` | boolean | yes |  |
 
 Additional properties: extensible JSON.
+
+### `SourceRef`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `project_id` | string | yes |  |
+| `epoch` | string or null | no |  |
+| `kind` | string | yes |  Values: `project`, `node`, `run`, `paper`, `figure`, `file`. |
+| `object_id` | string | yes |  |
+| `revision` | integer or null | no |  |
+| `scope_id` | string or null | no |  |
+| `path` | string or null | no |  |
+| `file_generation` | integer or null | no |  |
+| `segment_id` | string or null | no |  |
+| `attempt_id` | string or null | no |  |
+| `record_updated_at` | string or null | no |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `SourceSegment`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `kind` | string | yes |  |
+| `start_byte` | integer | yes |  |
+| `end_byte` | integer | yes |  |
+| `start_line` | integer | yes |  |
+| `end_line` | integer | yes |  |
+| `parser` | string | yes |  |
+| `certainty` | string | no |  Default: `structural`. Values: `structural`, `raw`. |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `SourceView`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `source` | SourceRef | yes |  |
+| `availability` | string | yes |  Values: `available`, `changed`, `deleted`, `unavailable`. |
+| `content` | string or null | no |  |
+| `segments` | SourceSegment[] | no |  |
+| `parse_state` | string | yes |  |
+| `observed_at` | string or null | no |  |
+| `note` | string | yes |  |
+| `project_path` | string or null | no |  |
+| `metadata` | object | no |  |
+| `artifact_url` | string or null | no |  |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
 
 ### `SymbolicCheckRequest`
 

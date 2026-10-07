@@ -230,15 +230,15 @@ class ModelClient:
             raise ProviderError('External model usage is disabled. Enable provider and project paid/external usage authorization in Settings.', code='authorization')
         self.base = provider['base_url'].rstrip('/')
         self.config = provider.get('config') or {}
-        self.api = ('ollama' if provider['kind'] == 'ollama' else self.config.get('api') or
+        self.api = ('codex_cli' if provider['kind'] == 'codex_cli' else 'ollama' if provider['kind'] == 'ollama' else self.config.get('api') or
                     ('responses' if parsed.hostname == 'api.openai.com' or provider['kind'] == 'openai_responses' else 'chat_completions'))
-        if self.api not in ('responses', 'chat_completions', 'ollama'):
+        if self.api not in ('responses', 'chat_completions', 'ollama', 'codex_cli'):
             raise ProviderError('Unsupported provider API selection', code='configuration')
         self.timeout = float(self.config.get('timeout', 120))
         if not math.isfinite(self.timeout) or self.timeout <= 0:
             raise ProviderError('Provider timeout must be a positive finite number', code='configuration')
         self.request_guard = request_guard
-        if not local and request_guard is None:
+        if (not local or self.api == 'codex_cli') and request_guard is None:
             from .budget import make_request_guard
             self.request_guard = make_request_guard(provider)
 
@@ -288,6 +288,10 @@ class ModelClient:
         return None
 
     def complete(self, messages, json_mode=True, tools=None):
+        if self.api == 'codex_cli':
+            if tools: raise ProviderError('Codex transport uses FOREST JSON actions, not native tool calls',code='configuration')
+            from .codex_transport import complete
+            return complete(self, messages, json_mode)
         endpoint, payload = self.build_request(messages, json_mode, tools)
         cfg, start = self.config, time.monotonic()
         retries = max(0, min(4, int(cfg.get('max_retries', 2))))
@@ -357,6 +361,8 @@ class ModelClient:
                 return result
 
     def models(self):
+        if self.api == 'codex_cli':
+            raise ProviderError('Choose a model advertised by your local Codex installation',code='configuration')
         headers = {'Authorization': f'Bearer {self.key}'} if self.key else {}
         try:
             with httpx.Client(timeout=min(self.timeout, 20), follow_redirects=False) as client:

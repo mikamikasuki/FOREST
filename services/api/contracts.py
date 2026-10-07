@@ -189,7 +189,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "exploratory_group": J}, ("run_id", "status", "metric", "value", "disposition")),
     "ResearchState": obj({"objective": J, "trials": array(ref("Trial")), "controller": J,
         "active_runs": array(obj({"id": S, "kind": S, "status": S, "node_id": field("string", nullable=True), "resource": J})),
-        "decisions": array(ref("RecordItem")), "counts": obj({"runs": I, "completed": I, "failed": I})},
+        "decisions": array(ref("RecordItem")), "counts": obj({"runs": I, "completed": I, "failed": I}), "coverage": S},
         ("objective", "trials", "controller", "active_runs", "decisions", "counts")),
     "RouteSignal": obj({"kind": S, "node_ids": STRINGS, "run_ids": STRINGS, "finding": S}, ("kind", "node_ids", "run_ids", "finding")),
     "RouteReviewSettings": obj({"enabled": B, "window": I, "repeated_failures": I,
@@ -245,7 +245,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "estimated_cost_usd": N, "reserved_usd": N, "remaining_usd": field("number", nullable=True),
         "cost_source": S, "request_count": I, "uncertain_requests": I,
         "requests": array(obj({"id": S, "run_id": field("string", nullable=True), "project_id": field("string", nullable=True),
-            "model": S, "api": S, "status": S, "estimated_cost_usd": field("number", nullable=True),
+            "model": S, "api": S, "purpose": S, "report_job_id": field("string", nullable=True), "status": S, "estimated_cost_usd": field("number", nullable=True),
             "reserved_usd": N, "request_id": field("string", nullable=True), "usage": JSON, "created_at": S}))},
         ("provider_id", "limit_usd", "estimated_cost_usd", "reserved_usd", "remaining_usd", "cost_source", "request_count", "uncertain_requests", "requests")),
     "ProjectUsage": obj({"project_id": S, "allow_paid": B, "limits": J,
@@ -264,7 +264,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         ("cpu_percent", "memory", "disk", "gpu", "workers", "latex", "model_connected", "provider_status", "platform", "isolation")),
     "ProviderWrite": obj({"name": S, "kind": S, "base_url": S, "model": S,
         "allow_paid": B, "config": J, "api_key": field("string", "Write-only credential; nonempty values replace the stored key.")}),
-    "ProviderCreate": obj({"name": S, "kind": field("string", enum=["ollama", "openai"], default="openai"),
+    "ProviderCreate": obj({"name": S, "kind": field("string", enum=["ollama", "openai", "codex_cli"], default="openai"),
         "base_url": field("string", "HTTP(S) base URL."), "model": S, "allow_paid": B, "config": J,
         "api_key": field("string", "Optional write-only credential.")}, ("name", "base_url", "model")),
     "HostWrite": obj({"name": S, "kind": S, "config": J}),
@@ -518,7 +518,7 @@ for collection, name, response, create_body, patch_body in (
         ("agents", "Agent definition", "Agent", "AgentCreate", "AgentWrite")):
     operation("get", f"/api/{collection}", "Configuration", f"List {collection}",
         f"Return a bare array of persisted {name} records.", array(ref(response)))
-    create_description = {"providers": "Accept ollama or openai-compatible kind and an HTTP(S) base_url. Store a supplied api_key outside the returned provider; return has_key. Name/base_url/model are needed to create a usable record.",
+    create_description = {"providers": "Accept ollama, openai-compatible or codex_cli kind and an HTTP(S) base_url. Codex CLI requires a localhost placeholder and the host's existing CLI login. Store a supplied api_key outside the returned provider; return has_key. Name/base_url/model are needed to create a usable record.",
         "hosts": "Store name, kind and extensible execution configuration. This does not connect to the host; test it separately.",
         "agents": "Store name, role, instructions, optional provider, tools, config and enabled. Explicit Agent configuration records customized tools so default upgrades do not overwrite them."}[collection]
     operation("post", f"/api/{collection}", "Configuration", f"Create an {name}", create_description,
@@ -658,7 +658,7 @@ operation("get", "/api/projects/{ident}/publication", "Research", "Audit current
 operation("patch", "/api/projects/{ident}/publication", "Research", "Merge the editable publication profile",
     "Merge body into the saved profile, normalize full_submission/operational requirements, increment PROJECT revision and emit project_changed. No expected_revision guard. Return normalized profile/revision.", obj({"profile": ref("PublicationProfile"), "revision": I}, ("profile", "revision")), body="PublicationProfilePatch", errors={404: "NOT_FOUND", 422: "INVALID_PUBLICATION_PROFILE"})
 operation("get", "/api/projects/{ident}/research", "Research", "Read controller state and measured trial comparisons",
-    "Return objective, declared comparable trial groups, current controller configuration, active runs, controller-origin decisions and run counts. Optional/required verification policies control comparison eligibility. Trial fields are absent until applicable; null value is unmeasured, not zero.", ref("ResearchState"), errors={404: "NOT_FOUND"})
+    "Default returns objective, declared comparable trial groups, current controller configuration, active runs, controller-origin decisions and run counts. Optional/required verification policies control comparison eligibility. Trial fields are absent until applicable; null value is unmeasured, not zero. overview=true returns bounded recorded lifecycle and counts with empty trials and explicit coverage, without filesystem/verification replay; comparisons require the default explicit inspection.", ref("ResearchState"), errors={404: "NOT_FOUND"})
 operation("get", "/api/projects/{ident}/usage", "Research", "Read project spending and separate provider limits",
     "Return project configured-rate costs/reservations/time and active Agent limits. Provider rows explicitly describe all_projects scope; do not subtract them from the project allowance a second time. Missing spending limits return null remaining_usd.", ref("ProjectUsage"), errors={404: "NOT_FOUND"})
 operation("get", "/api/runs/{ident}/lineage", "Runs", "Inspect run dependencies and current file freshness",
@@ -692,6 +692,27 @@ operation("get", "/api/runs/{ident}/verification", "Verification", "Read current
     "For a verification run, return its current checks/verdict; for a producer run, return current linked verifier verdicts, accepted check paths and numerical scope. Configuration/artifact/node changes can invalidate prior acceptance. Status is independent of execution completion.", ref("Verification"), errors={404: "NOT_FOUND"})
 operation("post", "/api/verification/run", "Verification", "Enqueue a declared independent verification",
     "Require string project_id. Optional node_id must be a verification-kind node in that project. Exclude project_id/node_id/request_id from task config and reject reserved service-owned identity/verdict fields. Reused request_id must have the same verifier/node/contract. Return Run with provider_snapshot/env/remote config entries omitted.", ref("Run"), body="VerificationRequest", errors={404: "NOT_FOUND", 409: "REQUEST_ID_CONFLICT", 422: "INVALID_VERIFICATION or INVALID_CONFIGURATION"})
+
+
+# Reporting DTOs are generated directly from the validated Pydantic models.
+operation('get','/api/projects/{ident}/progress/artifacts/{file_id}','Progress','Open retained generation-bound artifact bytes',
+    'Owner-only bounded artifact. Epoch, generation, scope ownership and current bytes must match. Changed/deleted sources return an error. Does not read unbounded binary content.',
+    {'type':'string','format':'binary'},errors={404:'Source unavailable',409:'Source changed or not retained'})
+for method, suffix, summary, response in [
+    ('get','progress','Read a coherent deterministic progress projection','ProjectProgressSnapshot'),
+    ('get','progress/scopes','List source scopes and coverage','ScopePage'),
+    ('get','progress/sources','Page observed files in one authorized scope','FilePage'),
+    ('post','progress/source','Resolve a generation-bound source without scientific side effects','SourceView'),
+    ('get','reporter-settings','Read opt-in narration settings and reporting usage','ReporterSettingsView'),
+    ('patch','reporter-settings','Save version-checked narration settings','ReporterSettingsView'),
+    ('post','reports/refresh','Explicitly enqueue or coalesce optional narration','ReporterJob'),
+    ('get','reports','Page persistent reporting jobs','ReportPage'),
+    ('get','reports/latest','Read the latest report job','ReporterJob'),
+]:
+    schema = {'anyOf':[ref(response),{'type':'null'}]} if suffix=='reports/latest' else ref(response)
+    operation(method,'/api/projects/{ident}/'+suffix,'Progress',summary,
+        'Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.',
+        schema, errors={404:'Project/source unavailable',409:'Revision conflict, rebuilding or narration disabled'})
 
 
 WEBSOCKETS = [{

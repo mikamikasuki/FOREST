@@ -113,6 +113,24 @@ def build_parser() -> argparse.ArgumentParser:
     p = _command(commands, "status", "Show execution, research, delivery and evidence state")
     p.add_argument("--watch", action="store_true")
     p.add_argument("--interval", type=positive, default=2.0)
+    p = _command(commands, "progress", "Read deterministic progress without model calls")
+    group = p.add_subparsers(dest="action", required=True)
+    _command(group, "show", "Read current progress and observation health")
+    p = _command(group, "scopes", "List observed source scopes")
+    p.add_argument("--cursor", default="")
+    p = _command(group, "sources", "List observed files in one scope")
+    p.add_argument("--scope", required=True)
+    p.add_argument("--cursor", default="")
+    p = _command(group, "source", "Resolve a generation-bound source reference")
+    _file(p)
+    p = _command(commands, "report", "Inspect or explicitly refresh optional narration")
+    group = p.add_subparsers(dest="action", required=True)
+    _command(group, "show", "Read the latest report job")
+    _command(group, "settings", "Read narration settings and usage")
+    p = _command(group, "configure", "Save narration settings with a version guard")
+    _file(p)
+    p = _command(group, "refresh", "Explicitly request narration; may consume provider quota")
+    p.add_argument("--request-id")
     p = _command(commands, "watch", "Observe project state; Ctrl+C does not cancel research")
     p.add_argument("--interval", type=positive, default=2.0)
     p = _command(commands, "serve", "Start the local API and worker in the foreground")
@@ -520,6 +538,18 @@ def execute(args, *, client_factory=ForestClient):
                     patch.setdefault("expected_revision", current["revision"])
                     value = client.request("PATCH", path, json=patch)
                 elif args.action == "export": value = client.download("POST", path + "/export", args.output, json={})
+        elif args.command == "progress":
+            path = f"/api/projects/{identifier(require_project(context))}/progress"
+            if args.action == "show": value = client.request("GET", path)
+            elif args.action == "scopes": value = client.request("GET", path + "/scopes", params={"cursor": args.cursor})
+            elif args.action == "sources": value = client.request("GET", path + "/sources", params={"scope_id": args.scope, "cursor": args.cursor})
+            else: value = client.request("POST", path + "/source", json=read_object(args.file))
+        elif args.command == "report":
+            path = f"/api/projects/{identifier(require_project(context))}"
+            if args.action == "show": value = client.request("GET", path + "/reports/latest")
+            elif args.action == "settings": value = client.request("GET", path + "/reporter-settings")
+            elif args.action == "configure": value = client.request("PATCH", path + "/reporter-settings", json=read_object(args.file))
+            else: value = client.request("POST", path + "/reports/refresh", json={"request_id": request_id(args)})
         elif args.command in {"status", "watch"}:
             pid = require_project(context)
             while True:
