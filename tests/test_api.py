@@ -421,6 +421,27 @@ def case_invalid_import_modes_rejected_before_project_creation(client, app):
         assert len(ok(client.get("/api/projects"))) == 1
 
 
+def case_project_updates_validate_run_modes(client, app):
+    project = create(client)
+    for mode in ("auto", "assisted", "manual"):
+        updated = ok(client.patch(f"/api/projects/{project['id']}", json={"mode": mode}))
+        assert updated["mode"] == mode
+        project = ok(client.get(f"/api/projects/{project['id']}"))
+        assert project["mode"] == mode
+
+    for mode in ("operator", None, 123, "x" * 21):
+        before = ok(client.get(f"/api/projects/{project['id']}"))
+        response = client.patch(
+            f"/api/projects/{project['id']}",
+            json={"mode": mode, "expected_revision": before["revision"]},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "INVALID_MODE"
+        after = ok(client.get(f"/api/projects/{project['id']}"))
+        assert after["mode"] == before["mode"]
+        assert after["revision"] == before["revision"]
+
+
 def case_actual_terminal(client, app):
     p = create(client)
     with client.websocket_connect(f"/ws/projects/{p['id']}/terminal") as terminal:

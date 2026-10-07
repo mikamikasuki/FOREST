@@ -104,6 +104,8 @@ def project(ident:str):
         p=asdict(get(s,Project,ident)); p.pop('graph_meta',None); return p
 @app.patch('/api/projects/{ident}')
 def edit_project(ident:str,body:dict=Body(...)):
+    if 'mode' in body and body['mode'] not in ('auto','assisted','manual'):
+        error('INVALID_MODE','Project mode must be auto, assisted, or manual',422)
     with Session.begin() as s:
         p=s.scalar(select(Project).where(Project.id==ident).with_for_update())
         if not p: error('NOT_FOUND','Project missing',404)
