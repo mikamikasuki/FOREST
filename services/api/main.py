@@ -449,10 +449,20 @@ async def events(ident:str,request:Request):
             try: last=max(int(cursor),0)
             except ValueError: pass
         yield 'event: connected\ndata: {}\n\n'
+        first_poll=True
         while not await request.is_disconnected():
             with Session() as s:
-                rows=list(s.scalars(select(Event).where(Event.project_id==ident,Event.sequence>last).order_by(Event.sequence).limit(100)))
                 gap=None
+                if first_poll:
+                    first_poll=False
+                    oldest,latest=s.execute(select(func.min(Event.sequence),func.max(Event.sequence)).where(Event.project_id==ident)).one()
+                    latest=latest or 0
+                    if last>latest:
+                        oldest=oldest or 0
+                        gap={'requested_after_sequence':last,'oldest_available_sequence':oldest,
+                             'latest_available_sequence':latest,'resume_after_sequence':latest}
+                        last=latest
+                rows=list(s.scalars(select(Event).where(Event.project_id==ident,Event.sequence>last).order_by(Event.sequence).limit(100)))
                 if rows and rows[0].sequence>last+1:
                     first=rows[0].sequence
                     latest=s.scalar(select(func.max(Event.sequence)).where(Event.project_id==ident)) or rows[-1].sequence
