@@ -672,7 +672,7 @@ Known domain failures: `400` INVALID_PATH; `403` PATH_ESCAPE; `404` NOT_FOUND or
 
 #### `GET /api/projects/{ident}/file`
 
-Return text, file revision and origin. Binary files need download/preview. The file revision is distinct from project, node and resource revisions. The default revision/origin for executor/import files is 0/executor_or_import.
+Return text, file revision and origin from one coherent snapshot relative to supported upload and PUT publications. The file revision is distinct from project, node and resource revisions. A file without a FileRevision row has logical revision 0 and the default origin executor_or_import. Binary files need download/preview.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -685,7 +685,7 @@ Known domain failures: `400` NOT_FILE; `403` PATH_ESCAPE; `404` NOT_FOUND or MIS
 
 #### `PUT /api/projects/{ident}/file`
 
-FileWrite contains path/content and optional FILE expected_revision. Atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. Return normalized relative path/revision/origin. Omitting expected_revision accepts the current revision.
+FileWrite contains path/content and optional FILE expected_revision. Publish under the project/path serialization guard, increment the normalized path revision, synchronize working manuscript files and mark consuming records stale. A stale expected_revision returns 409 without replacing bytes. Omitting expected_revision intentionally accepts the current revision. Return normalized relative path/revision/origin.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -740,7 +740,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/projects/{ident}/upload`
 
-multipart/form-data field file; directory is a QUERY parameter, default uploads. Only the uploaded filename basename is used. Write the file, mark consumers stale and return path/size/origin. Exceeding configured max_upload_mb removes the partial file.
+multipart/form-data field file; directory is a QUERY parameter, default uploads. Only the uploaded filename basename is used. Stream to a unique temporary file before serialized publication. Every successful new or replacement upload advances the normalized project/path FileRevision exactly once and records origin=user_import, including same-byte replacements; logical revision 0 becomes 1. Preserve replacement permissions and the compatible {path,size,origin} response. A rejected/failed stream does not publish partial bytes. Definite database aborts after publication restore prior bytes/permissions or remove a new destination while holding the shared publication guard. This does not promise recovery from process/power loss or ambiguous commit acknowledgement.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
