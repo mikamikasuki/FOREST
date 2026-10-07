@@ -52,8 +52,11 @@ if __name__=='__main__':
     spec={'url':'https://github.com/example/research.git'}
 
     with TestClient(app) as client, patch.object(repository,'_git',local_transport):
+        # This integration test invokes execute() directly rather than the
+        # worker lifecycle, so project-time reservation/finalization is covered
+        # by the scheduler tests instead of this fixture.
         project=client.post('/api/projects',json={'name':'Actual repository computation','mode':'manual',
-            'config':{'publication_profile':{'id':'operational'}},'budget':{'max_runs':20,'seconds':120,'allow_paid':False}}).json()
+            'config':{'publication_profile':{'id':'operational'}},'budget':{'max_runs':20,'allow_paid':False}}).json()
         pid=project['id']
         def queue(kind,config,request_id):
             with Session.begin() as session:
