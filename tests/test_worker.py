@@ -1247,6 +1247,7 @@ def test_latest_same_revision_failure_rearms_rerun_for_affected_scope(actual_wor
 
     root = add_command_node("Root", [sys.executable, "-c", "print('root')"])
     child = add_command_node("Child", [sys.executable, "-c", "print('child')"])
+    grandchild = add_command_node("Grandchild", [sys.executable, "-c", "print('grandchild')"])
     current = h.request("GET", f"/api/projects/{project['id']}/graph")
     h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
         "request_id": str(uuid.uuid4()),
@@ -1254,10 +1255,19 @@ def test_latest_same_revision_failure_rearms_rerun_for_affected_scope(actual_wor
         "operation": "add_dependency",
         "params": {"source": root["id"], "target": child["id"]},
     })
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": current["revision"],
+        "operation": "add_dependency",
+        "params": {"source": child["id"], "target": grandchild["id"]},
+    })
 
     assert h.terminal(h.launch(root))["status"] == "completed"
     first_success = h.launch(child)
     assert h.terminal(first_success)["status"] == "completed"
+    first_grandchild_success = h.launch(grandchild)
+    assert h.terminal(first_grandchild_success)["status"] == "completed"
     after_success = h.request("GET", f"/api/projects/{project['id']}/graph")
     successful_child = next(node for node in after_success["nodes"] if node["id"] == child["id"])
     assert successful_child["results_current"] is True
@@ -1282,12 +1292,25 @@ def test_latest_same_revision_failure_rearms_rerun_for_affected_scope(actual_wor
     assert failed_child["latest_run_id"] == failed["id"]
     assert failed_child["results_current"] is False
     assert failed_child.get("needs_rerun") is True, failed_child
+    stale_grandchild = next(node for node in after_failure["nodes"] if node["id"] == grandchild["id"])
+    assert stale_grandchild["results_current"] is False, stale_grandchild
+    assert stale_grandchild["deliverable_status"] == "needs_update", stale_grandchild
+    assert stale_grandchild.get("needs_rerun") is True, stale_grandchild
 
     affected = h.request("POST", f"/api/nodes/{root['id']}/run", json={
         "request_id": str(uuid.uuid4()), "scope": "affected",
     })
     affected_runs = affected.get("runs", [affected])
-    assert child["id"] in [run["node_id"] for run in affected_runs]
+    run_by_node = {run["node_id"]: run for run in affected_runs}
+    assert child["id"] in run_by_node
+    assert grandchild["id"] in run_by_node
+    assert run_by_node[grandchild["id"]]["dependencies"] == [run_by_node[child["id"]]["id"]]
+    for run in affected_runs:
+        assert h.terminal(run)["status"] == "completed"
+    after_recovery = h.request("GET", f"/api/projects/{project['id']}/graph")
+    current_grandchild = next(node for node in after_recovery["nodes"] if node["id"] == grandchild["id"])
+    assert current_grandchild["results_current"] is True, current_grandchild
+    assert current_grandchild["latest_run_id"] == run_by_node[grandchild["id"]]["id"]
 
 
 def test_stale_run_does_not_consume_rerun_marker_or_promote_results(actual_worker):
