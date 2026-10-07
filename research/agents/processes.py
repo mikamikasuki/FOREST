@@ -52,6 +52,17 @@ def is_alive(pid, created):
         return False
 
 
+def signal_process_group(process_group_id, signum):
+    """Signal an owned command group, even after its original command exits."""
+    if not process_group_id:
+        return False
+    try:
+        os.killpg(int(process_group_id), signum)
+        return True
+    except ProcessLookupError:
+        return False
+
+
 class ManagedProcesses:
     def __init__(self, workspace):
         self.workspace = Path(workspace).resolve()
@@ -142,12 +153,10 @@ class ManagedProcesses:
     def cancel(self, process_id):
         state = self.inspect(process_id)
         atomic_json(self.folder(process_id) / 'cancel.json', {'requested_at': time.time()})
-        if is_alive(state.get('pid'), state.get('process_created')):
-            try:
-                os.killpg(state['pid'], signal.SIGCONT)
-                os.killpg(state['pid'], signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+        if state['status'] not in TERMINAL:
+            group_id = state.get('process_group_id') or state.get('pid')
+            signal_process_group(group_id, signal.SIGCONT)
+            signal_process_group(group_id, signal.SIGTERM)
         return self.inspect(process_id)
 
     def all(self):
@@ -158,8 +167,6 @@ class ManagedProcesses:
 
     def signal_all(self, signum):
         for state in self.all():
-            if state['status'] not in TERMINAL and is_alive(state.get('pid'), state.get('process_created')):
-                try:
-                    os.killpg(state['pid'], signum)
-                except ProcessLookupError:
-                    pass
+            if state['status'] not in TERMINAL:
+                group_id = state.get('process_group_id') or state.get('pid')
+                signal_process_group(group_id, signum)

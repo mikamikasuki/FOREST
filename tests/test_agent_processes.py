@@ -1,15 +1,18 @@
 """Actual OS-process validation; no substitute model or execution transport."""
 import json
 import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
+import uuid
 
 import pytest
 
-from research.agents.processes import ManagedProcesses, TERMINAL
+from research.agents.processes import ManagedProcesses, TERMINAL, is_alive
 from research.agents.runtime import budget_reason, session_messages
 
 
@@ -22,6 +25,18 @@ def completed(manager, process_id, timeout=12):
         time.sleep(.03)
     manager.cancel(process_id)
     pytest.fail('Actual process did not terminate within test observation window')
+
+
+def parent_starting_same_group_child(child_code):
+    parent = "import subprocess,sys\nsubprocess.Popen([sys.executable,'-c'," + repr(child_code) + "])\n"
+    return [sys.executable, '-c', parent]
+
+
+def wait_for_file(path, timeout=4):
+    deadline = time.monotonic() + timeout
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(.01)
+    return path.exists()
 
 
 def test_real_general_command_and_incremental_log(tmp_path):
@@ -60,6 +75,223 @@ def test_process_survives_launching_interpreter_exit(tmp_path):
     assert completed(manager, 'continued')['status'] == 'completed'
     observed = json.loads((tmp_path / 'integral.json').read_text())
     assert abs(observed['value'] - 3.141592653589793) < 1e-10
+
+
+def test_parent_exit_does_not_complete_while_child_can_write(tmp_path):
+    manager = ManagedProcesses(tmp_path)
+    child = """from pathlib import Path
+import os
+import time
+Path('child.started').write_text(str(os.getpid()))
+time.sleep(.6)
+Path('late-marker.txt').write_text('child finished')
+"""
+    state = manager.start(parent_starting_same_group_child(child))
+    process_id = state['process_id']
+    assert wait_for_file(tmp_path / 'child.started')
+    assert manager.inspect(process_id)['status'] not in TERMINAL
+    result = completed(manager, process_id)
+    assert result['status'] == 'completed' and result['exit_code'] == 0
+    assert (tmp_path / 'late-marker.txt').read_text() == 'child finished'
+
+
+def test_signal_all_reaches_child_after_parent_exit(tmp_path):
+    manager = ManagedProcesses(tmp_path)
+    child = """from pathlib import Path
+import os
+import time
+Path('child.started').write_text(str(os.getpid()))
+ticks = Path('ticks')
+while not Path('release').exists():
+    ticks.write_text(ticks.read_text() + 'x' if ticks.exists() else 'x')
+    time.sleep(.03)
+Path('child.finished').write_text('done')
+"""
+    state = manager.start(parent_starting_same_group_child(child))
+    process_id = state['process_id']
+    assert wait_for_file(tmp_path / 'child.started')
+    state = manager.inspect(process_id)
+    deadline = time.monotonic() + 4
+    while is_alive(state.get('pid'), state.get('process_created')) and time.monotonic() < deadline:
+        time.sleep(.01)
+        state = manager.inspect(process_id)
+    assert not is_alive(state.get('pid'), state.get('process_created'))
+
+    manager.signal_all(signal.SIGSTOP)
+    ticks_while_stopped = (tmp_path / 'ticks').read_text()
+    time.sleep(.12)
+    assert (tmp_path / 'ticks').read_text() == ticks_while_stopped
+
+    manager.signal_all(signal.SIGCONT)
+    (tmp_path / 'release').write_text('release')
+    result = completed(manager, process_id)
+    assert result['status'] == 'completed'
+    assert (tmp_path / 'child.finished').read_text() == 'done'
+
+
+def test_cancel_stops_child_after_parent_exit(tmp_path):
+    manager = ManagedProcesses(tmp_path)
+    child = """from pathlib import Path
+import os
+import time
+Path('child.started').write_text(str(os.getpid()))
+ticks = Path('ticks')
+while True:
+    ticks.write_text(ticks.read_text() + 'x' if ticks.exists() else 'x')
+    time.sleep(.03)
+"""
+    state = manager.start(parent_starting_same_group_child(child))
+    process_id = state['process_id']
+    assert wait_for_file(tmp_path / 'child.started')
+    manager.cancel(process_id)
+    result = completed(manager, process_id)
+    assert result['status'] == 'cancelled'
+    ticks_at_terminal = (tmp_path / 'ticks').read_text()
+    time.sleep(.1)
+    assert (tmp_path / 'ticks').read_text() == ticks_at_terminal
+
+
+def test_timeout_stops_child_after_parent_exit(tmp_path):
+    manager = ManagedProcesses(tmp_path)
+    child = """from pathlib import Path
+import os
+import time
+Path('child.started').write_text(str(os.getpid()))
+ticks = Path('ticks')
+while True:
+    ticks.write_text(ticks.read_text() + 'x' if ticks.exists() else 'x')
+    time.sleep(.03)
+"""
+    state = manager.start(parent_starting_same_group_child(child), timeout=.5)
+    process_id = state['process_id']
+    assert wait_for_file(tmp_path / 'child.started')
+    result = completed(manager, process_id)
+    assert result['status'] == 'failed' and 'timeout' in result['error']
+    ticks_at_terminal = (tmp_path / 'ticks').read_text()
+    time.sleep(.1)
+    assert (tmp_path / 'ticks').read_text() == ticks_at_terminal
+
+
+def test_agent_finish_waits_for_child_through_real_worker(tmp_path):
+    from tests.test_worker import Harness
+
+    captures = []
+    shared = {'workspace': None, 'process_id': None, 'finish_rejected_while_child_active': False}
+
+    class Transport(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            captures.append(payload)
+            stage = len(captures)
+            workspace = shared['workspace']
+            if stage == 1:
+                child = """from pathlib import Path
+import os
+import time
+Path('child.started').write_text(str(os.getpid()))
+while not Path('finish_attempted').exists():
+    time.sleep(.01)
+Path('late-marker.txt').write_text('descendant wrote after parent exit')
+while not Path('finish_done').exists():
+    time.sleep(.01)
+"""
+                action = {'tool': 'start_process', 'arguments': {'command': parent_starting_same_group_child(child)}}
+            elif stage == 2:
+                manager = ManagedProcesses(workspace)
+                processes = manager.all()
+                if not processes:
+                    raise AssertionError('The process launch receipt was absent from the next model request')
+                process_id = processes[-1]['process_id']
+                shared['process_id'] = process_id
+                deadline = time.monotonic() + 8
+                state = manager.inspect(process_id)
+                while (not (workspace / 'child.started').exists()
+                       or is_alive(state.get('pid'), state.get('process_created'))):
+                    if time.monotonic() >= deadline:
+                        raise AssertionError('The parent command did not exit while its child remained')
+                    time.sleep(.01)
+                    state = manager.inspect(process_id)
+                (workspace / 'finish_attempted').write_text('attempt')
+                action = {'tool': 'finish', 'arguments': {'summary': 'Finished after process completion.', 'artifacts': []}}
+            else:
+                process_id = shared['process_id']
+                manager = ManagedProcesses(workspace)
+                state = manager.inspect(process_id)
+                shared['finish_rejected_while_child_active'] = state['status'] not in TERMINAL
+                if not shared['finish_rejected_while_child_active']:
+                    raise AssertionError(f"The run advanced without a live child: process={state!r}")
+                (workspace / 'finish_done').write_text('release')
+                deadline = time.monotonic() + 8
+                while manager.inspect(process_id)['status'] not in TERMINAL:
+                    if time.monotonic() >= deadline:
+                        raise AssertionError('The descendant did not reach a terminal process state')
+                    time.sleep(.02)
+                action = {'tool': 'finish', 'arguments': {'summary': 'Finished after process completion.', 'artifacts': []}}
+
+            response = json.dumps({'model': 'local-process-lifecycle-fixture',
+                                   'message': {'role': 'assistant', 'content': json.dumps(action)},
+                                   'done': True, 'prompt_eval_count': 1, 'eval_count': 1}).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Transport)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    harness = Harness(tmp_path)
+    run = None
+    try:
+        harness.start_api()
+        provider = harness.request('POST', '/api/providers', json={
+            'name': 'Local process lifecycle fixture', 'kind': 'ollama',
+            'base_url': f'http://127.0.0.1:{server.server_port}',
+            'model': 'local-process-lifecycle-fixture', 'allow_paid': False})
+        project = harness.request('POST', '/api/projects', json={
+            'name': 'Managed child completion check',
+            'goal': 'Run the managed command, keep the agent active until its child exits, then finish.',
+            'config': {'provider_id': provider['id']},
+            'budget': {'max_runs': 3, 'seconds': 60, 'allow_paid': False}})
+        graph = harness.request('GET', f"/api/projects/{project['id']}/graph")
+        node_id = str(uuid.uuid4())
+        response = harness.request('POST', f"/api/projects/{project['id']}/graph/commands", json={
+            'request_id': str(uuid.uuid4()), 'expected_revision': graph['revision'],
+            'operation': 'add_node', 'targets': [],
+            'params': {'id': node_id, 'branch_id': graph['branches'][0]['id'],
+                       'type': 'experiment', 'title': 'Wait for managed child before finish',
+                       'instructions': 'Start the managed command and finish only after it is complete.',
+                       'config': {'kind': 'agent', 'required_outputs': [],
+                                  'agent_budget': {'steps': 8, 'active_seconds': 45}}}})
+        node = next(item for item in response['graph']['nodes'] if item['id'] == node_id)
+        run = harness.launch(node)
+        shared['workspace'] = harness.output(run) / 'workspace'
+        harness.start_worker()
+        result = harness.terminal(run, timeout=30)
+        marker_at_terminal = (shared['workspace'] / 'late-marker.txt').exists()
+        assert result['status'] == 'completed', result
+        assert shared['finish_rejected_while_child_active']
+        assert marker_at_terminal
+        assert len(captures) == 3
+        agent_result = json.loads((shared['workspace'] / 'agent_result.json').read_text())
+        executions = agent_result['executions']
+        assert executions and executions[0]['status'] == 'completed'
+    finally:
+        if shared['workspace'] is not None:
+            shared['workspace'].mkdir(parents=True, exist_ok=True)
+            (shared['workspace'] / 'finish_done').write_text('release')
+            if shared['process_id']:
+                manager = ManagedProcesses(shared['workspace'])
+                for process in manager.all():
+                    if process['status'] not in TERMINAL:
+                        manager.cancel(process['process_id'])
+        harness.cleanup()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
 
 
 def test_real_failure_cancel_timeout_and_environment(tmp_path):
