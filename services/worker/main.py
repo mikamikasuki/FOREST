@@ -367,8 +367,10 @@ class WorkerLoop:
                     n.execution_status=r.status
                     if r.status in ('completed','failed','interrupted'):
                         n.deliverable_status='ready_for_review' if r.status=='completed' else 'draft'
-                        n.extra={**n.extra,'results_current':r.status=='completed','last_run_id':r.id,'result_revision':r.node_revision,
+                        current_result={**n.extra,'results_current':r.status=='completed','last_run_id':r.id,'result_revision':r.node_revision,
                             'verification_status':r.resource.get('verification_status','unverified')}
+                        if r.status=='completed': current_result['needs_rerun']=False
+                        n.extra=current_result
                         if r.kind=='experiment' and r.status=='completed':
                             recovery=r.metrics.get('mechanism_recovery',[])
                             n.research_status='supported' if recovery and all(x['supported_descriptively'] for x in recovery) else 'not_supported' if recovery else 'unevaluated'
