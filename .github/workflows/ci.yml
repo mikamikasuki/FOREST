@@ -50,3 +50,62 @@ jobs:
       - run: npm --prefix apps/web run build
       - run: npm --prefix apps/web test
       - run: python scripts/package_source.py --output /tmp/forest-source.zip
+  observation-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: forest_test
+          POSTGRES_PASSWORD: isolated_ci_test
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forest_test -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      FOREST_MODEL: ''
+      FOREST_TEST_POSTGRES: postgresql://forest_test:isolated_ci_test@127.0.0.1:5432/postgres
+      FOREST_BROWSER_CHANNEL: chromium
+      FOREST_WEB_URL: http://127.0.0.1:18340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.lock.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: python -m pip install -r requirements.lock.txt && python -m pip install --no-deps -e .
+      - run: python -m pytest -q tests/test_observation.py tests/test_postgres.py
+      - run: npm --prefix apps/web ci && npm --prefix apps/web run build
+      - run: cd apps/web && npx playwright install --with-deps chromium
+      - name: Production browser with normal supervisor and real worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          export FOREST_DATA_DIR="$RUNNER_TEMP/forest-browser"
+          export FOREST_DATABASE_URL="sqlite:///$FOREST_DATA_DIR/forest.db"
+          mkdir -p "$FOREST_DATA_DIR"
+          forest serve --port 18340 --data-dir "$FOREST_DATA_DIR" > "$RUNNER_TEMP/forest-browser.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18340/api/health >/dev/null; then break; fi
+            sleep 1
+          done
+          npm --prefix apps/web run test:e2e -- progress.spec.ts
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: observation-browser-failure
+          path: |
+            apps/web/test-results
+            ${{ runner.temp }}/forest-browser.log

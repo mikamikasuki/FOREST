@@ -259,6 +259,7 @@ def repair_event_sequences(session):
     session.flush()
 
 def migrate():
+    from services.observation import models  # Register additive reporting tables.
     Base.metadata.create_all(engine)
     with Session.begin() as s:
         if engine.dialect.name=='sqlite':
@@ -266,8 +267,9 @@ def migrate():
         elif engine.dialect.name=='postgresql':
             s.execute(text('SELECT pg_advisory_xact_lock(824721)'))
         if not s.get(Migration,1): s.add(Migration(version=1))
+        if not s.get(Migration,3): s.add(Migration(version=3))
         if not s.get(Migration,2):
             repair_event_sequences(s)
             s.add(Migration(version=2))
         s.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_events_project_sequence ON events (project_id, sequence)'))
-if __name__=='__main__': migrate(); print('FOREST database schema 2 ready')
+if __name__=='__main__': migrate(); print('FOREST database schema 3 ready')

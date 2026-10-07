@@ -1,5 +1,8 @@
 # Self-hosted deployment
 
+For observer startup, source bounds, optional narration and restore behavior, see
+[Live progress and source inspection](LIVE_REPORTING.md).
+
 FOREST supports a local service on macOS and Linux, plus a PostgreSQL deployment with Compose. On Windows, run services in WSL2 or Docker Desktop. Native Windows process groups are not implemented. Source and project ZIPs use portable relative paths; `scripts/release.py --check-only` checks Windows filenames, case collisions and archive integrity.
 
 The existing `local` execution backend runs trusted code as the host user. Select `execution_backend: "container"` for workspace isolation. There is no automatic fallback from a container error to local execution.

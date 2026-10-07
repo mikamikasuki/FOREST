@@ -1,3 +1,4 @@
+import { SourceExplorer } from "./progress/SourceExplorer";
 import { useState, useEffect, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
@@ -2287,6 +2288,7 @@ export function FilesPage() {
           </>
         }
       />
+      <SourceExplorer key={id} projectId={id!} />
       <ErrorBox error={error} retry={reload} />
       <div className="file-workbench">
         <aside className="file-tree">
@@ -2881,7 +2883,7 @@ function ConnectionEditor({
                   model,
                   allow_paid: paid,
                   ...(key ? { api_key: key } : {}),
-                  config: {...parseJson(config), ...(kind !== "ollama" ? {api:apiMode, budget_usd:limitUsd.trim() ? Number(limitUsd) : null,
+                  config: {...parseJson(config), ...(kind !== "ollama" && kind !== "codex_cli" ? {api:apiMode, budget_usd:limitUsd.trim() ? Number(limitUsd) : null,
                     ...(imageModel.trim() ? {image_generation:{...(parseJson(config).image_generation || {}),model:imageModel.trim(),max_request_usd:Number(imageCeiling)}} : {}),
                     pricing: {input_per_million:inputRate.trim() ? Number(inputRate) : null, cached_input_per_million:cachedRate.trim() ? Number(cachedRate) : (inputRate.trim() ? Number(inputRate) : null), output_per_million:outputRate.trim() ? Number(outputRate) : null, currency:"USD"}} : {})},
                 }
@@ -2915,17 +2917,22 @@ function ConnectionEditor({
                 value={kind}
                 onChange={(e) => {
                   setKind(e.target.value);
+                  if (e.target.value === "codex_cli") { setModel("gpt-6-luna"); setConfig(JSON.stringify({reasoning_effort:"xhigh",timeout:120},null,2)); setPaid(false); }
                   setUrl(
-                    e.target.value === "ollama"
+                    e.target.value === "codex_cli"
+                      ? "http://127.0.0.1"
+                      : e.target.value === "ollama"
                       ? "http://127.0.0.1:11434"
                       : "https://api.openai.com/v1",
                   );
                 }}
               >
                 <option value="ollama">Ollama (local)</option>
+                <option value="codex_cli">Codex CLI (local login)</option>
                 <option value="openai">OpenAI-compatible API</option>
               </select>
             </Field>
+            {kind === "codex_cli" && <p>Uses the server account’s existing Codex CLI login. FOREST owns tool execution; the inference subprocess has shell, plugins and browser tools disabled. Subscription USD cost and a hard token ceiling are unavailable; use a reporting request cap.</p>}
             <Field label="Base URL">
               <input
                 required
@@ -2933,7 +2940,7 @@ function ConnectionEditor({
                 onChange={(e) => setUrl(e.target.value)}
               />
             </Field>
-            {kind !== "ollama" && <>
+            {kind !== "ollama" && kind !== "codex_cli" && <>
               <Field label="API format"><select value={apiMode} onChange={e => setApiMode(e.target.value)}><option value="responses">OpenAI Responses</option><option value="chat_completions">Chat Completions compatible</option></select></Field>
               <Field label="Shared API spending limit (USD)"><input type="number" min="0" step="any" required={paid} value={limitUsd} onChange={e => setLimitUsd(e.target.value)} /></Field>
               <div className="form-row">
