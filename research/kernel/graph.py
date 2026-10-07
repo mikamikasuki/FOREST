@@ -584,8 +584,7 @@ class GraphCommandService:
                         node["deliverable_status"] = "needs_update"
                         node["results_current"] = False
                     node["needs_rerun"] = node["id"] in impact["rerun_nodes"]
-                    if node["id"] in impact["rerun_nodes"]:
-                        node["rerun_generation"] = int(node.get("rerun_generation", 0)) + 1
+                    node["rerun_generation"] = int(node.get("rerun_generation", 0)) + 1
         if not dry_run:
             # Every structural and DAG check precedes the first filesystem write.
             workspaces = BranchWorkspace(self.project_dir, self.graph)

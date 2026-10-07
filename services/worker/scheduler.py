@@ -1,12 +1,13 @@
 """Database-backed scheduling with one dependency map per selected research DAG."""
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import select, func
 from services.api.db import *
 from services.api.common import get, error, project_dir, graph_from_db, emit
 
 ACTIVE = ('queued', 'running', 'pausing', 'paused', 'waiting_input', 'waiting', 'budget_exhausted')
 TERMINAL = ('completed', 'failed', 'cancelled', 'interrupted', 'skipped')
+TIME_BUDGET_RESERVED_STATUSES = ('queued', 'running', 'pausing', 'paused', 'waiting', 'budget_exhausted')
 _TIMEOUT_UNSET = object()
 
 
@@ -28,8 +29,7 @@ def _node_config_at_revision(s, run):
     project = s.get(Project, run.project_id)
     history = ((project.graph_meta or {}).get('_history') or {}) if project else {}
     for stack in ('undo', 'redo'):
-        snapshots = history.get(stack) or []
-        for snapshot in reversed(snapshots):
+        for snapshot in reversed(history.get(stack) or []):
             old = next((item for item in snapshot.get('nodes', [])
                         if item.get('id') == run.node_id and
                         item.get('revision', 0) == run.node_revision and
@@ -57,13 +57,9 @@ def requested_task_timeout(s, run):
             value = node_config.get('timeout', (node_config.get('budget') or {}).get('seconds'))
             source = node_source
         else:
-            # Older rows stored the effective project-clipped timeout in config.
-            # Without a node snapshot or separate request cap, it is ambiguous.
             value = None
             source = 'legacy_timeout_not_recoverable'
     else:
-        # Non-node legacy rows have no graph history from which to recover the
-        # caller's original timeout; use the current project allowance instead.
         value = None
         source = 'legacy_timeout_not_recoverable'
     if value is None:
@@ -85,6 +81,165 @@ def _bounded_timeout(requested_timeout, project_limit):
     return min(requested_timeout, project_limit)
 
 
+def finalize_cancelled_run_elapsed(run):
+    """Persist all project time consumed before a run releases its reservation."""
+    resource = dict(run.resource or {})
+    try:
+        elapsed = max(0.0, float(resource.get('elapsed_seconds', 0) or 0))
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    current = datetime.now(timezone.utc)
+    live_attempt = (run.status in ('running', 'pausing', 'paused') or
+                    (run.status == 'queued' and (
+                        resource.get('container_reconnect_pending_dispatch') or
+                        resource.get('live_process_pending_dispatch'))))
+    if live_attempt and run.started_at:
+        try:
+            started = datetime.fromisoformat(run.started_at)
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            before = max(0.0, float(resource.get('elapsed_before_attempt', elapsed) or 0))
+            elapsed = max(elapsed, before + max(0.0, (current - started).total_seconds()))
+        except (TypeError, ValueError):
+            pass
+    elif run.status in ('waiting', 'budget_exhausted') and resource.get('waiting_started_at') is not None:
+        try:
+            before = max(0.0, float(resource.get('elapsed_before_wait', elapsed) or 0))
+            waiting_since = float(resource['waiting_started_at'])
+            elapsed = max(elapsed, before + max(0.0, current.timestamp() - waiting_since))
+        except (TypeError, ValueError):
+            pass
+    run.resource = {**resource, 'elapsed_seconds': elapsed}
+    return elapsed
+
+
+def freeze_budget_exhausted_elapsed(run, current=None):
+    """Stop charging a budget-exhausted run after its awaited child has stopped."""
+    resource = dict(run.resource or {})
+    try:
+        elapsed = max(0.0, float(resource.get('elapsed_seconds', 0) or 0))
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    waiting_started_at = resource.get('waiting_started_at')
+    if waiting_started_at is not None:
+        try:
+            before = max(0.0, float(resource.get('elapsed_before_wait', elapsed) or 0))
+            current = current or datetime.now(timezone.utc)
+            elapsed = max(elapsed, before + max(0.0, current.timestamp() - float(waiting_started_at)))
+        except (TypeError, ValueError):
+            pass
+    resource.pop('waiting_started_at', None)
+    resource.pop('elapsed_before_wait', None)
+    run.resource = {**resource, 'elapsed_seconds': elapsed}
+    return elapsed
+
+
+def _elapsed_seconds_at(run, current=None):
+    """Include elapsed time since the last worker checkpoint for active work."""
+    resource = run.resource or {}
+    try:
+        elapsed = max(0.0, float(resource.get('elapsed_seconds', 0) or 0))
+    except (TypeError, ValueError):
+        elapsed = 0.0
+    current = current or datetime.now(timezone.utc)
+
+    if (run.status in ('running', 'pausing') or
+            (run.status == 'paused' and (run.pid is not None or resource.get('paused_live_attempt'))) or
+            (run.status == 'queued' and (
+                resource.get('container_reconnect_pending_dispatch') or
+                resource.get('live_process_pending_dispatch')))):
+        if run.started_at:
+            try:
+                started = datetime.fromisoformat(run.started_at)
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                before = max(0.0, float(resource.get('elapsed_before_attempt', elapsed) or 0))
+                elapsed = max(elapsed, before + max(0.0, (current - started).total_seconds()))
+            except (TypeError, ValueError):
+                pass
+    elif run.status in ('waiting', 'budget_exhausted') and resource.get('waiting_started_at') is not None:
+        try:
+            before = max(0.0, float(resource.get('elapsed_before_wait', elapsed) or 0))
+            waiting_since = float(resource['waiting_started_at'])
+            elapsed = max(elapsed, before + max(0.0, current.timestamp() - waiting_since))
+        except (TypeError, ValueError):
+            pass
+    return elapsed
+
+
+def _time_budget_reservation_remaining(run, current=None):
+    """Return the unconsumed project-time allowance held by a live run.
+
+    TaskRun.config.timeout is the legacy effective per-run cap. New rows also
+    persist that cap under resource.time_budget so callers that later preserve
+    the original task timeout can distinguish it from the project reservation.
+    """
+    if run.status not in TIME_BUDGET_RESERVED_STATUSES:
+        return 0.0
+    resource = run.resource or {}
+    policy = resource.get('time_budget') or {}
+    if policy.get('reservation_state') == 'deferred':
+        return 0.0
+    effective = policy.get('effective_total_timeout_seconds')
+    if effective is None:
+        effective = (run.config or {}).get('timeout')
+    if effective is None:
+        return 0.0
+    try:
+        effective = float(effective)
+        elapsed = _elapsed_seconds_at(run, current)
+    except (TypeError, ValueError):
+        # Malformed legacy metadata must not make the scheduler unavailable.
+        return 0.0
+    return max(0.0, effective - elapsed)
+
+
+def reserve_project_time(s, project, run):
+    """Recalculate a queued/resumed run's total cap against current reservations."""
+    budget = project.budget or {}
+    cap = budget.get('seconds')
+    current = datetime.now(timezone.utc)
+    if cap is None:
+        resource = {**(run.resource or {}), 'elapsed_seconds': _elapsed_seconds_at(run, current)}
+        policy = dict(resource.get('time_budget') or {})
+        if 'requested_task_timeout_seconds' in policy:
+            requested = policy['requested_task_timeout_seconds']
+            run.config = {**(run.config or {}), 'timeout': requested}
+            policy.update(effective_total_timeout_seconds=requested,
+                          reservation_state='held' if requested is not None else 'unrestricted')
+            resource['time_budget'] = policy
+        run.resource = resource
+        return True, 0.0
+    cap = float(cap)
+    runs = list(s.scalars(select(TaskRun).where(TaskRun.project_id == project.id)))
+    used = sum(_elapsed_seconds_at(item, current) for item in runs)
+    reserved = sum(_time_budget_reservation_remaining(item, current) for item in runs if item.id != run.id)
+    remaining = max(0.0, cap - used - reserved)
+    resource = {**(run.resource or {}), 'elapsed_seconds': _elapsed_seconds_at(run, current)}
+    policy = dict(resource.get('time_budget') or {})
+    elapsed = resource['elapsed_seconds']
+    if 'requested_task_timeout_seconds' in policy:
+        requested = policy['requested_task_timeout_seconds']
+    else:
+        requested = (run.config or {}).get('timeout')
+        policy['requested_task_timeout_seconds'] = requested
+    requested_remaining = None
+    if requested is not None:
+        requested_remaining = max(0.0, float(requested) - elapsed)
+    allowance = remaining if requested_remaining is None else min(remaining, requested_remaining)
+    if allowance <= 0:
+        policy.update(effective_total_timeout_seconds=elapsed, reservation_state='deferred',
+                      project_budget_seconds_at_enqueue=cap, project_revision_at_enqueue=project.revision)
+        run.resource = {**resource, 'time_budget': policy}
+        return False, reserved
+    effective_total = elapsed + allowance
+    run.config = {**(run.config or {}), 'timeout': effective_total}
+    policy.update(effective_total_timeout_seconds=effective_total, reservation_state='held',
+                  project_budget_seconds_at_enqueue=cap, project_revision_at_enqueue=project.revision)
+    run.resource = {**resource, 'time_budget': policy}
+    return True, reserved
+
+
 def _lock_project(s, project_id):
     if s.bind.dialect.name == 'sqlite':
         connection = s.connection()
@@ -103,7 +258,7 @@ def _lock_project(s, project_id):
 
 
 def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencies=None,
-            requested_timeout_override=_TIMEOUT_UNSET):
+            requested_timeout_override=_TIMEOUT_UNSET, defer_time_budget_reservation=False):
     p = _lock_project(s, project_id)
     request_id = request_id or uid()
     old = s.scalar(select(TaskRun).where(TaskRun.project_id == project_id, TaskRun.request_id == request_id))
@@ -113,14 +268,24 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     total = s.scalar(select(func.count()).select_from(TaskRun).where(TaskRun.project_id == project_id)) or 0
     if budget.get('max_runs') is not None and total >= int(budget['max_runs']):
         error('RUN_BUDGET_EXHAUSTED', 'Project run budget exhausted', 409, 'Increase budget or choose a narrower next experiment.')
-    runs = list(s.scalars(select(TaskRun).where(TaskRun.project_id == project_id)))
-    used = sum(float(r.resource.get('elapsed_seconds', 0)) for r in runs)
-    if budget.get('seconds') is not None and used >= float(budget['seconds']):
-        error('TIME_BUDGET_EXHAUSTED', 'Project compute budget exhausted', 409)
-    remaining = max(0, float(budget['seconds']) - used) if budget.get('seconds') is not None else None
+    dependencies = dependencies or []
     config = {**(node.config if node else {}), **config}
     if '_repository_source' in config:
         error('INVALID_CONFIGURATION', 'Source provenance is managed by the runner', 422)
+    from services.api.verification import prepare_verification_enqueue
+    config, dependencies = prepare_verification_enqueue(s, p, kind, config, node, dependencies)
+    pending_dependency = any((dependency := s.get(TaskRun, ident)) is None or dependency.status != 'completed'
+                             for ident in dependencies)
+    deferred_reservation = bool(defer_time_budget_reservation or pending_dependency)
+    runs = list(s.scalars(select(TaskRun).where(TaskRun.project_id == project_id)))
+    current = datetime.now(timezone.utc)
+    used = sum(_elapsed_seconds_at(r, current) for r in runs)
+    remaining = None
+    if budget.get('seconds') is not None:
+        reserved = sum(_time_budget_reservation_remaining(r, current) for r in runs)
+        remaining = max(0.0, float(budget['seconds']) - used - reserved)
+        if remaining <= 0 and not deferred_reservation:
+            error('TIME_BUDGET_EXHAUSTED', 'Project compute budget exhausted', 409)
     if 'repository' in config or kind == 'repository_clone':
         from research.execution.repository import normalize_repository, RepositoryError
         if kind not in ('agent', 'command', 'experiment', 'repository_clone'):
@@ -137,7 +302,7 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     requested_timeout = float(requested_timeout) if requested_timeout is not None else None
     if requested_timeout is not None and requested_timeout <= 0:
         error('INVALID_TIMEOUT', 'Task timeout must be positive or omitted', 422)
-    timeout = _bounded_timeout(requested_timeout, remaining)
+    timeout = requested_timeout if deferred_reservation else _bounded_timeout(requested_timeout, remaining)
     merged = {**config, 'timeout': timeout, 'project_goal': p.goal, 'allow_paid': bool(budget.get('allow_paid', False))}
     from research.publication.profile import publication_profile
     try:
@@ -152,8 +317,6 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     if node:
         merged.update(instructions=node.instructions, node_type=node.type, node_title=node.title,
                       context_overrides=deepcopy(node.context_overrides), input_references=deepcopy(node.inputs))
-    from services.api.verification import prepare_verification_enqueue
-    merged, dependencies = prepare_verification_enqueue(s, p, kind, merged, node, dependencies)
     provider_id = merged.get('provider_id') or p.config.get('provider_id')
     if not provider_id:
         preference=s.get(Preference,'settings')
@@ -165,16 +328,19 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
         from services.api.paper_state import generation_snapshot
         # Server-owned snapshot: callers cannot opt out of revision protection.
         merged['paper_snapshot'] = generation_snapshot(s, project_id)
+    time_budget = {
+        'requested_task_timeout_seconds': requested_timeout,
+        'effective_total_timeout_seconds': None if deferred_reservation else timeout,
+        'project_budget_seconds_at_enqueue': budget.get('seconds'),
+        'project_revision_at_enqueue': p.revision,
+        'reservation_state': 'deferred' if deferred_reservation else 'held',
+        'resume_history': [],
+    }
     run = TaskRun(project_id=project_id, node_id=node.id if node else None, branch_id=node.branch_id if node else merged.get('branch_id'),
                   request_id=request_id, kind=kind, config=merged, node_revision=node.revision if node else 0,
                   dependencies=dependencies or [], priority=int(config.get('priority', 0)),
-                  resource={'time_budget': {
-                      'requested_task_timeout_seconds': requested_timeout,
-                      'effective_total_timeout_seconds': timeout,
-                      'project_budget_seconds_at_enqueue': budget.get('seconds'),
-                      'project_revision_at_enqueue': p.revision,
-                      'resume_history': [],
-                  }, 'rerun_generation_at_enqueue': int(node.extra.get('rerun_generation', 0)) if node else 0})
+                  resource={'time_budget': time_budget,
+                            'rerun_generation_at_enqueue': int(node.extra.get('rerun_generation', 0)) if node else 0})
     s.add(run)
     s.flush()
     run.resource = {**run.resource, 'verification_status': 'unverified'}
@@ -285,7 +451,8 @@ def enqueue_selected(s, node_ids, request_id=None, overrides=None):
         kind = cfg.get('kind') or n.config.get('kind')
         if not kind:
             kind = 'verification' if n.type == 'verification' else 'command' if n.config.get('command') else 'experiment' if n.type in ('experiment', 'baseline') else 'analysis' if n.type == 'analysis' else 'agent'
-        created[nid] = enqueue(s, p.id, kind, cfg, f'{request_id}:{nid}', n, list(dict.fromkeys(dependencies)))
+        created[nid] = enqueue(s, p.id, kind, cfg, f'{request_id}:{nid}', n,
+                               list(dict.fromkeys(dependencies)), defer_time_budget_reservation=len(ordered) > 1 and bool(created))
     return list(created.values())
 
 

@@ -803,6 +803,12 @@ function Overview() {
               onChange={(e) => setBudget(e.target.value)}
             />
           </Field>
+          <p className="muted">
+            {t(
+              "seconds 是排队与运行中任务共享的累计 wall-time 预算。本地 worker 每 0.4 秒检查一次任务期限，并给进程 0.1 秒优雅退出；实际耗时会计入预算，主机调度或远端取消可能增加延迟。",
+              "The seconds allowance is shared across queued and running tasks. The local worker checks deadlines every 0.4s and allows 0.1s for graceful shutdown; actual elapsed time is charged, and host scheduling or remote cancellation can add delay.",
+            )}
+          </p>
           <Button
             onClick={() =>
               action(
@@ -882,6 +888,11 @@ function ResearchControls({
   const [direction, setDirection] = useState("min");
   const { data: session, reload: reloadSession } = useLoad<Json>(`/projects/${projectId}/research`, {controller: {}, decisions: [], active_runs: []});
   useEffect(() => { setMetric(session.objective?.metric || ""); setDirection(session.objective?.direction || "min"); }, [session.objective?.metric, session.objective?.direction]);
+  useEffect(() => {
+    if (typeof session.controller?.autonomous === "boolean") {
+      setAutonomous(session.controller.autonomous);
+    }
+  }, [session.controller?.autonomous]);
   useEffect(() => { const timer = setInterval(() => void reloadSession(), 5000); return () => clearInterval(timer); }, [reloadSession]);
   return (
     <section className="surface research-controls">
