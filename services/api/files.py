@@ -221,6 +221,15 @@ def project_export(s,p,selection=None):
 def export_project(ident:str,body:dict=Body(default={})):
     with Session() as s: p=get(s,Project,ident); data=project_export(s,p,body.get('paths'))
     return Response(data,media_type='application/zip',headers={'Content-Disposition':'attachment; filename="forest-project.zip"'})
+
+def imported_run_timestamp(value, fallback=None):
+    if value is None or value == '': return fallback
+    if not isinstance(value,str) or len(value)>40:
+        error('INVALID_ARCHIVE','Run timestamps must be ISO 8601 strings')
+    try: datetime.fromisoformat(value.replace('Z','+00:00'))
+    except ValueError: error('INVALID_ARCHIVE','Run timestamps must be ISO 8601 strings')
+    return value
+
 @router.post('/api/projects/import')
 async def import_project(file:UploadFile=File(...)):
     from research.kernel import validate_graph,ArtifactResolver
@@ -233,6 +242,13 @@ async def import_project(file:UploadFile=File(...)):
     for info in z.infolist():
         if info.filename.startswith('/') or '..' in Path(info.filename).parts or (info.external_attr>>16)&0o170000==0o120000: error('UNSAFE_ARCHIVE','Archive contains unsafe paths or symbolic links')
     validate_graph(manifest['graph'])
+    run_timestamps={}
+    for r in manifest.get('runs',[]):
+        run_timestamps[r['id']]={
+            'created_at':imported_run_timestamp(r.get('created_at'),fallback=now()),
+            'started_at':imported_run_timestamp(r.get('started_at')),
+            'finished_at':imported_run_timestamp(r.get('finished_at'))
+        }
     with Session.begin() as s:
         orig=manifest['project']; p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),budget=orig.get('budget',{}),config=orig.get('config',{})); root=project_dir(p.id)
         graph=manifest['graph']; old_id=graph['project_id']; mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
@@ -264,5 +280,20 @@ async def import_project(file:UploadFile=File(...)):
         for r in manifest.get('papers',[]): s.add(PaperDocument(id=mapping[r['id']],project_id=p.id,title=r['title'],data=remap(r['data']),status=r['status']))
         for r in manifest.get('runs',[]):
             # Imported measurements retain their original run identifiers inside source data; execution is not replayed.
-            ident=mapping[r['id']]; s.add(TaskRun(id=ident,project_id=p.id,node_id=remap(r.get('node_id')),branch_id=remap(r.get('branch_id')),request_id='import:'+ident,kind=r['kind'],status=r['status'] if r['status'] in ('completed','failed','cancelled') else 'interrupted',config={**remap(r.get('config',{})),'origin':'imported_run','original_run_id':r['id']},node_revision=r.get('node_revision',0),output_path=remap(r.get('output_path','')),dependencies=remap(r.get('dependencies',[])),metrics=remap(r.get('metrics',{})),resource=r.get('resource',{}),exit_code=r.get('exit_code')))
+            ident=mapping[r['id']]
+            timestamps=run_timestamps[r['id']]
+            s.add(TaskRun(
+                id=ident,project_id=p.id,node_id=remap(r.get('node_id')),
+                branch_id=remap(r.get('branch_id')),request_id='import:'+ident,
+                kind=r['kind'],
+                status=r['status'] if r['status'] in ('completed','failed','cancelled') else 'interrupted',
+                config={**remap(r.get('config',{})),'origin':'imported_run','original_run_id':r['id']},
+                node_revision=r.get('node_revision',0),
+                created_at=timestamps['created_at'],
+                started_at=timestamps['started_at'],
+                finished_at=timestamps['finished_at'],
+                output_path=remap(r.get('output_path','')),
+                dependencies=remap(r.get('dependencies',[])),metrics=remap(r.get('metrics',{})),
+                resource=r.get('resource',{}),exit_code=r.get('exit_code')
+            ))
         emit(s,p.id,'project_imported',{}); s.flush(); return asdict(p)

@@ -153,6 +153,17 @@ def case_export_import_reference_roundtrip(client, app):
     p = create(client)
     n = add_node(client, p, config={"kind": "command", "command": ["python", "-c", "print(1)"]})
     run = ok(client.post(f"/api/nodes/{n['id']}/run", json={"request_id": "original-run"}))
+    source_times = {
+        "created_at": "2024-05-30T09:00:00+00:00",
+        "started_at": "2024-05-30T09:01:12.125000+00:00",
+        "finished_at": "2024-05-30T09:01:17.750000+00:00",
+    }
+    from services.api.db import Session, TaskRun
+    with Session.begin() as session:
+        row = session.get(TaskRun, run["id"])
+        row.created_at = source_times["created_at"]
+        row.started_at = source_times["started_at"]
+        row.finished_at = source_times["finished_at"]
     # An imported queued run must be visibly interrupted, never silently restarted.
     fig = ok(client.post("/api/figures", json={"project_id": p["id"], "title": "Metrics", "data": {"run_ids": [run["id"]], "metric": "accuracy"}}))
     paper = ok(client.get(f"/api/papers/{p['id']}"))
@@ -160,11 +171,25 @@ def case_export_import_reference_roundtrip(client, app):
     ok(client.put(f"/api/projects/{p['id']}/file", json={"path": run["output_path"] + "/stdout.txt", "content": "actual saved output\n"}))
     archive = client.post(f"/api/projects/{p['id']}/export", json={})
     assert archive.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(archive.content)) as zipped:
+        archive_files = {item.filename: zipped.read(item.filename) for item in zipped.infolist()}
+    manifest = json.loads(archive_files["forest-project.json"])
+    manifest["runs"][0]["started_at"] = "not-an-ISO-timestamp"
+    archive_files["forest-project.json"] = json.dumps(manifest).encode()
+    invalid_archive = io.BytesIO()
+    with zipfile.ZipFile(invalid_archive, "w", zipfile.ZIP_DEFLATED) as zipped:
+        for name, content in archive_files.items():
+            zipped.writestr(name, content)
+    invalid = client.post("/api/projects/import", files={"file": ("invalid-time.zip", invalid_archive.getvalue(), "application/zip")})
+    assert invalid.status_code == 400
+    assert invalid.json()["detail"]["code"] == "INVALID_ARCHIVE"
+    assert len(ok(client.get("/api/projects"))) == 1
     restored = ok(client.post("/api/projects/import", files={"file": ("project.zip", archive.content, "application/zip")}))
     new_graph = graph(client, restored)
     assert restored["id"] != p["id"] and new_graph["nodes"][0]["id"] != n["id"]
     new_runs = ok(client.get(f"/api/projects/{restored['id']}/runs"))
     assert new_runs[0]["status"] == "interrupted"
+    assert {key: new_runs[0][key] for key in source_times} == source_times
     assert new_graph["nodes"][0]["execution_status"] == "interrupted"
     new_fig = ok(client.get("/api/figures", params={"project_id": restored["id"]}))[0]
     assert new_fig["data"]["run_ids"] == [new_runs[0]["id"]]
