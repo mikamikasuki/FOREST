@@ -48,7 +48,7 @@ def test_display_window_preserves_real_full_history_comparisons():
     for champion in view['global_best_by_conditions']:
         candidates=[row['value'] for row in trials if row.get('conditions')==champion['conditions'] and row.get('value') is not None]
         assert champion['value']==min(candidates)
-        assert champion['scope']=='entire_project_history'
+        assert champion['scope']=='Declared comparable conditions in entire project history; numerical ranking is not scientific confirmation'
     assert any(row['run_id'] not in {r['id'] for r in rows[-40:]} for row in view['global_best_by_conditions'])
 
 

@@ -264,10 +264,10 @@ def test_real_api_worker_container_pause_cancel_and_recovery():
         job = wait_until(lambda: json.loads(handle_path.read_text()) if handle_path.exists() else None)
         containers.append(job['container_id'])
         wait_until(lambda: 'container-worker-live' in harness.request('GET', '/api/runs/' + run['id'] + '/output')['text'])
-        paused = harness.request('POST', '/api/runs/' + run['id'] + '/pause', json={})
+        paused = harness.control_request('/api/runs/' + run['id'] + '/pause', json={})
         assert paused['status'] == 'paused'
         assert json.loads(subprocess.check_output(['docker', 'inspect', job['container_id']], text=True))[0]['State']['Paused'] is True
-        harness.request('POST', '/api/runs/' + run['id'] + '/resume', json={})
+        harness.control_request('/api/runs/' + run['id'] + '/resume', json={})
         # Neither the worker nor its executor owns the detached container lifetime.
         harness.worker.kill()
         harness.worker.wait(timeout=5)
@@ -284,7 +284,7 @@ def test_real_api_worker_container_pause_cancel_and_recovery():
         next_handle = harness.output(cancelled_run) / 'container_task.json'
         next_job = wait_until(lambda: json.loads(next_handle.read_text()) if next_handle.exists() else None)
         containers.append(next_job['container_id'])
-        cancelled = harness.request('POST', '/api/runs/' + cancelled_run['id'] + '/cancel', json={})
+        cancelled = harness.control_request('/api/runs/' + cancelled_run['id'] + '/cancel', json={})
         assert cancelled['status'] == 'cancelled'
         assert json.loads(subprocess.check_output(['docker', 'inspect', next_job['container_id']], text=True))[0]['State']['Running'] is False
         assert json.loads((harness.output(cancelled_run) / 'container_result.json').read_text())['status'] == 'cancelled'
@@ -389,3 +389,31 @@ Path('metrics.json').write_text(json.dumps({'step':60,'weights':weights.tolist()
         harness.cleanup()
         if containers:
             subprocess.run(['docker', 'rm', '-f', *set(containers)], check=True, capture_output=True)
+
+
+@pytest.mark.skipif(not os.environ.get('FOREST_TEST_DOCKER'), reason='Requires a real Docker engine and built forest-task:local image')
+def test_real_created_container_cancellation_prevents_later_start(monkeypatch):
+    from runners.container import ContainerRunner
+    workspace = Path(__file__).resolve().parents[1] / 'output/validation/deployment' / ('prestart-' + uuid.uuid4().hex)
+    workspace.mkdir(parents=True)
+    handle = workspace / 'container_task.json'
+    runner = ContainerRunner({'memory': '256m', 'cpus': .5})
+    actual_command = runner.command
+    def fail_before_start(argv, **kwargs):
+        if argv[0] == 'start':
+            raise RuntimeError('Injected submitting executor loss before actual Docker start')
+        return actual_command(argv, **kwargs)
+    monkeypatch.setattr(runner, 'command', fail_before_start)
+    with pytest.raises(RuntimeError, match='Injected submitting executor loss'):
+        runner.start(['python', '-c', "import pathlib;pathlib.Path('would-have-run.txt').write_text('executed')"],
+                     workspace, task_id='prestart-' + uuid.uuid4().hex, receipt_path=handle)
+    job = json.loads(handle.read_text())
+    try:
+        assert runner._verified(job)['State']['Status'] == 'created'
+        stopped = runner.stop(job)
+        assert stopped['status'] == 'cancelled' and stopped['stop_confirmed']
+        assert runner._inspect(job['container_id']) is None
+        assert runner.resume(job)['status'] == 'lost'
+        assert not (workspace / 'would-have-run.txt').exists()
+    finally:
+        subprocess.run(['docker', 'rm', '-f', job['container_id']], capture_output=True)

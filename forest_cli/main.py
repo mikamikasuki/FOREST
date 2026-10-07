@@ -14,7 +14,7 @@ import uuid
 import webbrowser
 
 from .client import CliError, ForestClient
-from .config import resolve_context, save_connection, save_project_binding
+from .config import resolve_context, save_connection, save_project_binding, remember_graph_request
 from .output import emit, redact, report_error
 
 
@@ -431,6 +431,8 @@ def emit_result(value, args):
 
 def _graph_change(client, context, args):
     params = read_object(args.file)
+    original_intent = {'action': args.action, 'node_id': args.id if args.action == 'edit' else None,
+                       'params': json.loads(json.dumps(params))}
     if args.action == "edit":
         node = client.request("GET", f"/api/nodes/{identifier(args.id)}")
         pid = node["project_id"]
@@ -451,6 +453,9 @@ def _graph_change(client, context, args):
     body = {"request_id": request_id(args), "expected_revision": expected,
             "operation": "add_node" if args.action == "add" else "edit_node",
             "targets": [] if args.action == "add" else [args.id], "params": params, "run": False}
+    if getattr(args, 'request_id', None) and not args.dry_run:
+        body = remember_graph_request(context, pid, body['request_id'], original_intent, body,
+                                      getattr(args, 'config', None))
     return client.request("POST", path + ("/preview" if args.dry_run else "/commands"), json=body)
 
 

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import object_session
 
 from .common import emit, error, get, project_dir, safe_path
-from .db import FileRevision, PaperDocument, Review, TaskRun
+from .db import FileRevision, PaperDocument, Review, TaskRun, Project
 
 
 def enqueue_workspace_compile(session, agent_run_id, workspace, arguments, request_id):
@@ -231,13 +231,25 @@ def enqueue_layout(session, paper, layout, template, request_id):
 
 def publish_layout(session, project_id, data, config, run_id):
     paper = locked_paper(session, config['paper_id'])
-    if paper.revision == config['paper_revision']:
+    if paper.revision == config['paper_revision'] and publication_goal_current(session, project_id, data, run_id):
         _install_bundle(paper, config['title'], data,
                         preserve_manual=manually_edited(paper), origin='layout')
         emit(session, project_id, 'paper_changed', {'id': paper.id, 'run_id': run_id})
         return {'publication': 'applied', 'paper_id': paper.id, 'paper_revision': paper.revision}
     return publish_generation(session, project_id, config['title'], data,
                               {'paper_id': paper.id, 'revision': config['paper_revision']}, run_id)
+
+
+def publication_goal_current(session, project_id, data, run_id):
+    from services.interventions.applicability import goal_applicability
+    project = get(session, Project, project_id)
+    origin = get(session, TaskRun, run_id)
+    if not goal_applicability(session, origin)['ready']: return False
+    for identifier in data.get('source_run_ids', []):
+        source = session.get(TaskRun, identifier)
+        if source is None or source.project_id != project_id or not goal_applicability(session, source)['ready']:
+            return False
+    return True
 
 
 def publish_generation(session, project_id, title, data, snapshot, run_id):
@@ -252,13 +264,16 @@ def publish_generation(session, project_id, title, data, snapshot, run_id):
                            and snapshot.get('paper_id') == paper.id
                            and snapshot.get('revision') == paper.revision
                            and not manually_edited(paper))
+    goal_current = publication_goal_current(session, project_id, data, run_id)
+    safe_to_replace = safe_to_replace and goal_current
     if safe_to_replace:
         _install_bundle(paper, title, data)
         emit(session, project_id, 'paper_changed', {'id': paper.id, 'run_id': run_id})
         return {'publication': 'applied', 'paper_id': paper.id,
                 'paper_revision': paper.revision}
 
-    reason = ('The current manuscript contains manual edits.' if manually_edited(paper)
+    reason = ('The generation goal or source evidence no longer matches the current research scope.' if not goal_current
+              else 'The current manuscript contains manual edits.' if manually_edited(paper)
               else 'The manuscript changed after this generation was queued.')
     old_source = paper.data.get('source', '')
     new_source = data['source']
@@ -267,6 +282,7 @@ def publish_generation(session, project_id, title, data, snapshot, run_id):
         'summary': reason + ' Review the complete replacement before applying it.',
         'paper_id': paper.id, 'paper_revision': paper.revision,
         'queued_paper_snapshot': deepcopy(snapshot), 'run_id': run_id,
+        'goal_applicability_current': goal_current,
         'proposed_title': title, 'proposed_data': deepcopy(data),
         'diff': ''.join(unified_diff(old_source.splitlines(keepends=True),
                                     new_source.splitlines(keepends=True),
@@ -285,6 +301,8 @@ def apply_generation_review(session, review, paper, indices):
     if indices != [0]:
         error('INVALID_SELECTION', 'Select the complete manuscript replacement to apply this proposal', 422)
     data = review.data
+    if not publication_goal_current(session, paper.project_id, data['proposed_data'], data['run_id']):
+        error('GOAL_APPLICABILITY_REQUIRED', 'Review the generation and its evidence against the current goal before publishing', 409)
     if data['edits'][0]['original'] != paper.data.get('source', ''):
         error('REVISION_CONFLICT', 'The manuscript source changed; regenerate this proposal', 409)
     _install_bundle(paper, data['proposed_title'], data['proposed_data'])

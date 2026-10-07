@@ -19,6 +19,27 @@ from scripts.qualify_release import API, graph, compute, soak, prime_oracle, tas
 from test_worker import Harness
 
 
+def test_paid_qualification_rejects_actual_unpriced_provider_before_inference(tmp_path):
+    from scripts.qualify_release import agents
+    h = Harness(tmp_path); api = None
+    try:
+        h.start_api(); api = API(h.base_url)
+        provider = api('POST', '/api/providers', json={'name': 'Unpriced CLI accounting guard',
+            'kind': 'codex_cli', 'base_url': 'http://127.0.0.1', 'model': 'gpt-6-luna',
+            'allow_paid': False, 'config': {'budget_usd': 1}})
+        usage = api('GET', '/api/providers/' + provider['id'] + '/usage')
+        assert usage['remaining_usd'] is None and usage['request_count'] == 0
+        args = argparse.Namespace(provider_id=provider['id'], task=['01-prime-independence'],
+            allow_paid=True, max_cost_usd=1)
+        with pytest.raises(ValueError, match='remaining USD is unknown'):
+            agents(api, args, {})
+        assert api('GET', '/api/providers/' + provider['id'] + '/usage')['request_count'] == 0
+        assert api('GET', '/api/projects') == []
+    finally:
+        if api: api.client.close()
+        h.cleanup()
+
+
 def test_corpus_has_thirty_distinct_bounded_tasks_and_real_evidence():
     tasks=corpus()
     assert len(tasks)==len({t.id for t in tasks})==30
@@ -79,6 +100,23 @@ def test_source_archive_excludes_runtime_and_credentials(tmp_path):
         assert set(z.namelist())=={'forest/README.md','forest/services/api.py'}
     (tmp_path/'services/leak.py').write_text('key="sk-'+('x'*30)+'"')
     with pytest.raises(ValueError,match='Possible secret'): package(target,tmp_path)
+
+
+@pytest.mark.parametrize('nodes', [200, 201, 1000])
+def test_documented_graph_qualification_scales_through_actual_api(tmp_path, nodes):
+    """Exercise the documented command above the public per-batch limit."""
+    harness = Harness(tmp_path); api = None
+    try:
+        harness.start_api(); api = API(harness.base_url)
+        report = {}
+        graph(api, argparse.Namespace(nodes=nodes, report=tmp_path/'graph.json'), report)
+        assert report['status'] == 'passed' and report['node_count'] == nodes
+        assert report['edge_count'] == nodes - 1
+        assert report['executed_compute_nodes'] == 0
+        assert api('GET', f"/api/projects/{report['project_id']}/runs") == []
+    finally:
+        if api: api.client.close()
+        harness.cleanup()
 
 
 def test_real_graph_api_and_real_compute_qualification(tmp_path):

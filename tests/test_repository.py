@@ -131,7 +131,47 @@ def test_failed_git_output_never_leaks_into_errors(tmp_path, monkeypatch):
     assert options['stdin']==subprocess.DEVNULL and options['stderr']==subprocess.DEVNULL
 
 
-def test_git_timeout_terminates_helpers_without_detaching_from_worker(tmp_path, monkeypatch):
+def _assert_process_terminated(pid, *, timeout=2, process_factory=psutil.Process):
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            status = process_factory(pid).status()
+        except psutil.NoSuchProcess:
+            return
+        if status in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(f'process {pid} remained live with status {status!r}')
+        time.sleep(min(0.01, remaining))
+
+
+@pytest.mark.parametrize('status', [psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD])
+def test_process_termination_check_accepts_terminal_statuses(status):
+    process = SimpleNamespace(status=lambda: status)
+    _assert_process_terminated(123, timeout=0, process_factory=lambda _pid: process)
+
+
+def test_process_termination_check_accepts_missing_process():
+    def missing_process(pid):
+        raise psutil.NoSuchProcess(pid)
+
+    _assert_process_terminated(123, timeout=0, process_factory=missing_process)
+
+
+def test_process_termination_check_rejects_live_process():
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+    try:
+        with pytest.raises(AssertionError, match='remained live'):
+            _assert_process_terminated(child.pid, timeout=0.05)
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=2)
+
+
+@pytest.mark.parametrize('_attempt', range(10))
+def test_git_timeout_terminates_helpers_without_detaching_from_worker(_attempt, tmp_path, monkeypatch):
     executable=tmp_path/'git'
     pidfile=tmp_path/'child.pid'
     executable.write_text('#!'+sys.executable+'\nimport subprocess,sys,time\nfrom pathlib import Path\n'
@@ -146,10 +186,7 @@ def test_git_timeout_terminates_helpers_without_detaching_from_worker(tmp_path, 
             repository._git(['fetch','origin','HEAD'],tmp_path,{'PATH':str(tmp_path)})
         assert time.monotonic()-started<5
         childpid=int(pidfile.read_text())
-        try:
-            assert psutil.Process(childpid).status()==psutil.STATUS_ZOMBIE
-        except psutil.NoSuchProcess:
-            pass
+        _assert_process_terminated(childpid)
     finally:
         if pidfile.exists():
             try: psutil.Process(int(pidfile.read_text())).kill()

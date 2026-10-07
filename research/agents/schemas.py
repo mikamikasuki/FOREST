@@ -64,7 +64,7 @@ SPECS = {
         'title': optional(string('Title used for the compiled workspace manuscript'))}),
     'finish': ('Finish only after required artifacts exist, launched processes are terminal and actual evidence supports the outcome.', {'summary': string('A concise public summary grounded in observed evidence'), 'artifacts': {'type': 'array', 'items': string('Relative artifact path')}}),
     'update_memory': ('Update editable public research notes; this does not execute a computation.', {'arguments_json': string('JSON object with public goal, decisions, evidence, unresolved_questions and next_experiment as needed')}),
-    'graph_command': ('Apply an editable graph command. Preserve optimistic concurrency: use the graph_revision from the current project_context for the first write, then the revision returned by the last successful graph_command. Do not replace a stale revision with the latest revision after a conflict; refresh the graph context before retrying.', {'arguments_json': string('JSON object containing operation, targets, params, and expected_revision')}),
+    'graph_command': ('Apply an editable graph command.', {'arguments_json': string('JSON object containing the graph command and its arguments')}),
     'experiment_run': ('Submit a real experiment task.', {'arguments_json': string('JSON object containing the experiment run configuration')}),
     'verification_run': ('Execute an existing editable verification node. The worker checks actual source artifacts and rerun outputs; an agent verdict cannot grant acceptance. Create the node through graph_command first, and inspect its completed verification state with results.', {'arguments_json': string('JSON object containing node_id and optional request_id; the node must have config.kind=verification')}),
     'context_update': ('Update editable node context metadata.', {'arguments_json': string('JSON object containing node context overrides')}),
@@ -134,3 +134,11 @@ def decode_tool_call(call, allowed):
             raise ValueError('env_json must encode an object of string values')
         args['env'] = env
     return {'tool': name, 'arguments': args, 'call_id': call['call_id']}
+
+
+def json_action_schema(allowed):
+    """Constrain JSON transports to the currently enabled FOREST actions."""
+    definitions = tool_definitions(allowed)
+    return closed({'tool': {'type': 'string', 'enum': [d['name'] for d in definitions]},
+                   'arguments': {'anyOf': [d['parameters'] for d in definitions]},
+                   'summary': string('Short public action rationale')})

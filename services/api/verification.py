@@ -31,6 +31,16 @@ def latest_node_run(session, node):
                           .order_by(TaskRun.created_at.desc(), TaskRun.id.desc()).limit(1))
 
 
+def _lock_verification_run(session, run_id):
+    """Refresh receipt state under the shared project -> run writer order."""
+    from services.worker.scheduler import _lock_project
+    project_id=session.scalar(select(TaskRun.project_id).where(TaskRun.id==run_id))
+    if not project_id:error('NOT_FOUND','Verification run missing',404)
+    _lock_project(session,project_id)
+    return session.scalar(select(TaskRun).where(TaskRun.id==run_id).with_for_update()
+                          .execution_options(populate_existing=True))
+
+
 def _required_ids(config, inputs=()):
     identifiers = config.get('required_verification', [])
     if not isinstance(identifiers, list) or any(not isinstance(v, str) or not v for v in identifiers):
@@ -43,6 +53,9 @@ def _required_ids(config, inputs=()):
 
 
 def required_policy(session, run):
+    from services.interventions.acceptance import acceptance_contract
+    purpose = acceptance_contract(run.config)
+    if purpose is not None and purpose.purpose != 'exploratory': return True
     project = get(session, Project, run.project_id)
     node = session.get(Node, run.node_id) if run.node_id else None
     policy = (node.config.get('verification_policy') if node else None)
@@ -59,6 +72,12 @@ def prepare_verification_enqueue(session, project, kind, config, node, dependenc
     if policy not in ('optional', 'required'):
         error('INVALID_VERIFICATION_POLICY', 'verification_policy must be optional or required', 422)
     config = deepcopy(config)
+    from services.interventions.acceptance import acceptance_contract
+    try: purpose_contract = acceptance_contract(config)
+    except ValueError as exc: error('INVALID_ACCEPTANCE_CONTRACT', str(exc), 422)
+    if purpose_contract is not None:
+        config['acceptance_contract'] = purpose_contract.model_dump()
+        if purpose_contract.purpose != 'exploratory': config['verification_policy'] = policy = 'required'
     dependencies = list(dependencies or [])
     try:
         identifiers = _required_ids(config, config.get('input_references', node.inputs if node else []))
@@ -89,6 +108,10 @@ def prepare_verification_enqueue(session, project, kind, config, node, dependenc
                 raise ValueError('Evidence runs must belong to this project')
             if policy == 'required' or identifiers:
                 dependencies.append(source.id)
+        if purpose_contract:
+            for identifier in purpose_contract.confirmation_run_ids:
+                source = get(session, TaskRun, identifier)
+                if source.project_id != project.id: raise ValueError('Confirmation must belong to this project')
     except (ValueError, TypeError, KeyError) as exc:
         error('INVALID_VERIFICATION', str(exc), 422)
     for identifier in dependencies:
@@ -106,6 +129,8 @@ def _artifacts(contract):
             paths.append((workspace, check['source']))
         if check.get('results'):
             paths.append(('producer', check['results']))
+        if check.get('units_file'):
+            paths.append(('producer', check['units_file']))
         if check.get('repeat'):
             paths.append(('verifier', check['repeat']))
     return list(dict.fromkeys(paths))
@@ -426,6 +451,14 @@ def admitted_paired_input(session, run, *, copied_workspace=None, guarded=False)
     return next(iter(unique.values())) if len(unique) == 1 else None
 
 
+def evidence_sources(session, run):
+    nested = run.config.get('figure') or run.config.get('paper_data') or {}
+    selected_ids = [*(run.config.get('run_ids') or []), *(nested.get('run_ids') or []), *(nested.get('source_run_ids') or [])]
+    sources = [get(session, TaskRun, identifier) for identifier in list(dict.fromkeys([*run.dependencies, *selected_ids]))]
+    if any(source.project_id != run.project_id for source in sources): raise ValueError('Evidence must belong to this project')
+    return [source for source in sources if source.kind != 'verification']
+
+
 def verification_gate(session, run, *, resolved_inputs=None, copied_workspace=None):
     """Gate configured consumers using current source-bound, path-scoped checks."""
     if run.kind == 'verification':
@@ -436,8 +469,20 @@ def verification_gate(session, run, *, resolved_inputs=None, copied_workspace=No
         identifiers = _required_ids(node.config if node else run.config, inputs)
     except ValueError as exc:
         return {'ready': False, 'blocked_reason': 'verification_configuration', 'message': str(exc), 'requirements': []}
-    sources = [get(session, TaskRun, identifier) for identifier in list(dict.fromkeys([*run.dependencies, *(run.config.get('run_ids') or [])]))]
-    sources = [source for source in sources if source.kind != 'verification']
+    sources = evidence_sources(session, run)
+    from services.interventions.applicability import goal_applicability
+    applicability = [goal_applicability(session, source) for source in sources]
+    if any(not item['ready'] for item in applicability):
+        return {'ready': False, 'blocked_reason': 'goal_applicability',
+                'message': 'Review source evidence against the current goal before consuming it',
+                'requirements': [], 'goal_applicability': applicability}
+    from services.interventions.acceptance import acceptance_gate
+    try: admission = acceptance_gate(session, run, sources)
+    except ValueError as exc:
+        return {'ready': False, 'blocked_reason': 'acceptance_configuration', 'message': str(exc), 'requirements': []}
+    if not admission['ready']:
+        return {'ready': False, 'blocked_reason': 'acceptance_contract',
+                'message': admission['failures'][0], 'requirements': [], 'acceptance': admission}
     requirements = []
     explicit = []
     for identifier in identifiers:
@@ -560,8 +605,7 @@ def dispatch_verification(session, run, *, resolved_inputs=None):
 def finish_verification(run_id):
     """Called by the service executor after actual independent computation."""
     with Session.begin() as session:
-        begin_sqlite_write(session)
-        run = get(session, TaskRun, run_id, for_update=True)
+        run = _lock_verification_run(session, run_id)
         verdict = _evaluate(session, run, execution=True)
         observations = verdict.pop('artifact_observations', [])
         run.resource = {**run.resource, 'verification_receipt': {'checked_at': now(), 'artifact_observations': observations},

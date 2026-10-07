@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import deque
 from copy import deepcopy
 from pathlib import Path
-from uuid import uuid4
+from uuid import uuid4, uuid5, NAMESPACE_URL
 
 from .artifacts import BranchWorkspace
 from .errors import GraphError
@@ -107,6 +107,9 @@ def validate_graph(graph):
     if len(nodes) != len(graph.get("nodes", [])):
         raise GraphError("duplicate_node", "Node IDs must be unique.")
     for node in nodes.values():
+        from research.agents.tool_policy import validate_permissions
+        try: validate_permissions(node.get('config', {}))
+        except ValueError as exc: raise GraphError('invalid_tool_policy', str(exc), status_code=422) from exc
         if node.get("project_id") not in (None, graph.get("project_id")):
             raise GraphError("cross_project_reference", "A node belongs to another project.")
         if node.get("branch_id") not in branches:
@@ -194,8 +197,22 @@ class GraphCommandService:
     def preview(self, command):
         return self._execute(command, dry_run=True)["impact"]
 
-    def apply(self, command):
-        return self._execute(command, dry_run=False)
+    def simulate(self, command):
+        """Return a tentative graph for semantic validation without file writes."""
+        return self._execute(command, dry_run=True)
+
+    def apply(self, command, *, defer_files=False):
+        return self._execute(command, dry_run=False, defer_files=defer_files)
+
+    def apply_compound_step(self, command):
+        """Apply to this service's private graph within one external transaction.
+
+        The caller owns the compound undo snapshot and discards the whole service
+        on error. No files are written and no intermediate graph escapes to DB.
+        """
+        if command.get('operation') in {'undo', 'redo'}:
+            raise ValueError('History operations require independent graph snapshots')
+        return self._execute(command, dry_run=False, defer_files=True, compound=True)
 
     def _check(self, command):
         if command.get("project_id") not in (None, self.graph.get("project_id")):
@@ -208,10 +225,17 @@ class GraphCommandService:
         if command.get("operation") not in OPERATIONS:
             raise GraphError("unknown_operation", "Unknown graph command.")
 
-    def _execute(self, command, dry_run):
+    def _execute(self, command, dry_run, defer_files=False, compound=False):
         self._check(command)
-        graph = deepcopy(self.graph)
-        before = self._snapshot(graph)
+        serial = 0
+        def identifier():
+            nonlocal serial
+            serial += 1
+            request = command.get('request_id')
+            return str(uuid5(NAMESPACE_URL, f"forest:{self.graph['project_id']}:{command['expected_revision']}:{request}:{serial}")) if request else _uid()
+        previous_revision = self.graph["revision"]
+        graph = self.graph if compound else deepcopy(self.graph)
+        before = None if compound else self._snapshot(graph)
         operation, params = command["operation"], deepcopy(command.get("params") or {})
         targets = command.get("targets") or ([command["node_id"]] if command.get("node_id") else [])
         changes, files, conflicts, actions, missing = [], [], [], [], []
@@ -238,7 +262,7 @@ class GraphCommandService:
 
         def add(fields=None, branch_id=None):
             fields = deepcopy(fields or {})
-            nid = fields.pop("id", None) or _uid()
+            nid = fields.pop("id", None) or identifier()
             if nid in nodes:
                 raise GraphError("duplicate_node", f"Node {nid} already exists.")
             if branch_id is None:
@@ -248,7 +272,7 @@ class GraphCommandService:
                 if main is None and graph["branches"]:
                     main = graph["branches"][0]
                 if main is None:
-                    main = {"id": _uid(), "name": "Main", "status": "active", "workspace": ".", "is_main": True, "config": {}}
+                    main = {"id": identifier(), "name": "Main", "status": "active", "workspace": ".", "is_main": True, "config": {}}
                     graph["branches"].append(main)
                 branch_id = main["id"]
             node = {"id": nid, "project_id": graph["project_id"], "branch_id": branch_id, "type": "idea", "title": "New step",
@@ -269,7 +293,7 @@ class GraphCommandService:
             require(source)
             require(target)
             if not any(e["source"] == source and e["target"] == target and e.get("relation") == relation for e in graph["edges"]):
-                graph["edges"].append({"id": _uid(), "source": source, "target": target, "relation": relation, **extra})
+                graph["edges"].append({"id": identifier(), "source": source, "target": target, "relation": relation, **extra})
 
         def remap_inputs(value, mapping):
             if isinstance(value, list):
@@ -283,7 +307,7 @@ class GraphCommandService:
         def clone(ids, branch_id, copy_results="reference"):
             if isinstance(copy_results, bool):
                 copy_results = "copy" if copy_results else "exclude"
-            mapping = {nid: _uid() for nid in ids}
+            mapping = {nid: identifier() for nid in sorted(ids)}
             for nid in sorted(ids):
                 source = require(nid)
                 fields = deepcopy(source)
@@ -339,16 +363,17 @@ class GraphCommandService:
                 raise GraphError("invalid_patch", "Use runtime endpoints to change execution state; identifiers and revision are managed by the kernel.")
             for target in targets:
                 node = require(target)
+                patch = {k:v for k,v in patch.items() if k != 'stop_current_run'}
+                if params.get('stop_current_run') and node.get('execution_status') in {"queued", "running", "pausing", "paused", "waiting", "waiting_input", "budget_exhausted"}:
+                    actions.append({'action':'cancel_current_run','node_id':target,'run_id':node.get('last_run_id')})
                 changed_fields = {k for k in patch if patch[k] != node.get(k)}
                 if not changed_fields:
                     continue
                 category = self._category(node, patch, changed_fields)
                 node.update(_deep_merge(node, patch))
                 changed(node, category)
-                if node.get("execution_status") == "running" and category not in {"layout", "display"}:
+                if node.get("execution_status") in {"queued", "running", "pausing", "paused", "waiting", "waiting_input", "budget_exhausted"} and category not in {"layout", "display"}:
                     node["edited_during_run"] = True
-                    if params.get("stop_current_run"):
-                        actions.append({"action": "cancel_current_run", "node_id": target, "run_id": node.get("last_run_id")})
         elif operation == "delete_node":
             for nid in targets:
                 require(nid)
@@ -419,7 +444,7 @@ class GraphCommandService:
                 branch(destination)
                 mapping = clone(ids, destination, params.get("copy_policy", {}).get("results", "reference"))
             else:
-                destination = _uid()
+                destination = identifier()
                 workspace = BranchWorkspace(self.project_dir, self.graph).fork(origin["id"], params.get("copy_policy"), branch_id=destination, dry_run=True)
                 b = {"id": destination, "name": params.get("name", f"Fork of {origin['title']}"), "status": "active", "is_main": False,
                      "config": deepcopy(branch(origin["branch_id"]).get("config", {})), **{k: v for k, v in workspace.items() if k not in {"branch_id", "files"}}}
@@ -475,7 +500,7 @@ class GraphCommandService:
             right = branch(params.get("right") or params.get("right_branch_id"))
             if left["id"] == right["id"]:
                 raise GraphError("invalid_merge", "Choose two different branches.")
-            bid = _uid()
+            bid = identifier()
             merge = BranchWorkspace(self.project_dir, self.graph).merge(left, right, params.get("resolution"), branch_id=bid, dry_run=True)
             conflicts.extend(merge["conflicts"])
             files.extend(merge["files"])
@@ -522,7 +547,7 @@ class GraphCommandService:
         elif operation == "group_nodes":
             if not targets:
                 raise GraphError("empty_selection", "Select at least one node to group.")
-            group_id = params.get("group_id") or _uid()
+            group_id = params.get("group_id") or identifier()
             for nid in targets:
                 node = require(nid)
                 node["group_id"] = group_id
@@ -549,8 +574,17 @@ class GraphCommandService:
             entry = history[source].pop()
             history.setdefault(destination, []).append(before)
             current_nodes = _index(graph)
+            current_branches = {branch['id']: branch for branch in graph['branches']}
             graph = deepcopy(entry)
             graph["_history"] = history
+            for restored in graph['branches']:
+                live = current_branches.get(restored['id'])
+                if live:
+                    for key in ('workspace_intervention', 'workspace_receipt'):
+                        restored.pop(key, None)
+                        if key in live: restored[key] = deepcopy(live[key])
+                    if restored.get('status') == 'materializing' and live.get('status') != 'materializing':
+                        restored['status'] = live.get('status', 'active')
             changes = []
             ignored = RUNTIME_FIELDS | {"revision", "created_at", "updated_at", "edited_during_run", "context_stale", "needs_rerun", "results_current", "deliverable_status"}
             for n in graph["nodes"]:
@@ -576,10 +610,15 @@ class GraphCommandService:
                       undo_scope="Graph structure and editable content only; existing files, runs, and external effects are retained.")
         if conflicts and not dry_run:
             raise GraphError("merge_conflict", "Resolve the listed conflicts before applying this merge.", status_code=409, detail={"impact": impact, "conflicts": conflicts})
+        executable_edits = [c for c in changes if c.get("category") not in {"layout", "display", "goal", "context", "archive"}]
+        execution_impact = ImpactAnalyzer(graph).resolve(executable_edits)
+        computational_nodes = set(execution_impact["rerun_nodes"]) | set(execution_impact["refresh_nodes"])
         for node in graph["nodes"]:
             if node["id"] in impact["affected_nodes"]:
                 node["context_stale"] = True
-                if node["id"] in impact["rerun_nodes"] or node["id"] in impact["refresh_nodes"]:
+                if node["id"] not in computational_nodes:
+                    node["goal_applicability"] = "needs_review"
+                if node["id"] in computational_nodes:
                     if node.get("outputs"):
                         node["deliverable_status"] = "needs_update"
                         node["results_current"] = False
@@ -588,24 +627,23 @@ class GraphCommandService:
         if not dry_run:
             # Every structural and DAG check precedes the first filesystem write.
             workspaces = BranchWorkspace(self.project_dir, self.graph)
-            for action in actions:
+            for action in ([] if defer_files else actions):
                 if action["action"] == "fork":
                     workspaces.fork(action["node_id"], action.get("copy_policy"), branch_id=action["branch_id"])
                 elif action["action"] == "merge":
                     workspaces.merge(action["left"], action["right"], action.get("resolution"), branch_id=action["branch_id"])
-            if operation not in {"undo", "redo"}:
+            if not compound and operation not in {"undo", "redo"}:
                 history = graph.setdefault("_history", {"undo": [], "redo": []})
                 history.setdefault("undo", []).append(before)
                 limit = graph.get("history_limit")
                 if limit is not None:
                     history["undo"] = history["undo"][-int(limit):] if int(limit)>0 else []
                 history["redo"] = []
-        graph["revision"] = self.graph["revision"] + 1
-        executable_edits = [c for c in changes if c.get("category") not in {"layout", "display", "goal", "context", "archive"}]
-        execution_impact = ImpactAnalyzer(graph).resolve(executable_edits)
+        graph["revision"] = previous_revision + 1
         eligible = set(execution_impact["rerun_nodes"]) | set(execution_impact["refresh_nodes"])
         run_nodes = topological_order(graph, eligible) if command.get("run") else []
-        return {"revision": graph["revision"], "graph": graph, "impact": impact, "run_nodes": run_nodes, "run_ids": []}
+        return {"revision": graph["revision"], "graph": graph, "impact": impact, "run_nodes": run_nodes, "run_ids": [],
+                "workspace_actions": [a for a in actions if a["action"] in {"fork", "merge"}]}
 
     @staticmethod
     def _snapshot(graph):

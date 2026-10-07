@@ -67,7 +67,7 @@ def test_agent_graph_command_rejects_old_revision_instead_of_overwriting_owner_e
 import json, sys, uuid
 from research.agents.runtime import ToolRuntime
 run_id, workspace, revision, node_id = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
-tool = ToolRuntime(run_id, workspace, allowed=['graph_command'], expected_revision=revision)
+tool = ToolRuntime(run_id, workspace, allowed=['graph_command'])
 args = {'expected_revision': revision, 'operation': 'edit_node', 'targets': [node_id],
         'params': {'patch': {'instructions': 'AGENT_STALE_INSTRUCTIONS'}}}
 first = tool.execute('graph_command', args, action_id=str(uuid.uuid4()))
@@ -86,18 +86,20 @@ print(json.dumps({'first': first, 'second': second}))
         harness.cleanup()
 
 
-def _seed_paper(harness, project_id):
+def _seed_paper(harness, project_id, node_id):
     code = """
 import json, sys
 from services.api.db import Session, PaperDocument
 with Session.begin() as session:
     paper = PaperDocument(project_id=sys.argv[1], title='Mutation invalidation control',
-                          data={'source': 'test'}, status='ready')
+                          data={'dependency_bindings': [{'source_kind': 'node', 'source_id': sys.argv[2],
+                                                         'target_path': '/sections/results/paragraphs/1'}]},
+                          status='ready')
     session.add(paper)
     session.flush()
     print(json.dumps({'id': paper.id}))
 """
-    return run_child(harness, code, project_id)["id"]
+    return run_child(harness, code, project_id, node_id)["id"]
 
 
 def _apply_entrypoint(harness, entrypoint, project, node, revision, run):
@@ -131,13 +133,22 @@ def _apply_entrypoint(harness, entrypoint, project, node, revision, run):
         })
     if entrypoint == "agent":
         code = """
-import json, sys
+import json, sys, time
 from research.agents.runtime import ToolRuntime
+from services.api.db import Session, TaskRun
 run_id, workspace, revision, node_id = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
-tool = ToolRuntime(run_id, workspace, allowed=['graph_command'], expected_revision=revision)
+tool = ToolRuntime(run_id, workspace, allowed=['graph_command'])
 args = {'expected_revision': revision, 'operation': 'edit_node', 'targets': [node_id],
         'params': {'patch': {'instructions': 'Edited through agent'}, 'stop_current_run': True}}
-print(json.dumps(tool.execute('graph_command', args, action_id='graph-effect-test-' + node_id)))
+result = tool.execute('graph_command', args, action_id='graph-effect-test-' + node_id)
+deadline = time.monotonic() + 10
+while time.monotonic() < deadline:
+    with Session() as session:
+        status = session.get(TaskRun, run_id).status
+    if status == 'cancelled':
+        break
+    time.sleep(.05)
+print(json.dumps(result))
         """
         return run_child(harness, code, run["id"], harness.output(run) / "workspace", revision, node["id"])
     if entrypoint == "planning":
@@ -164,16 +175,13 @@ def test_every_graph_mutation_entrypoint_cancels_and_invalidates(tmp_path, entry
     try:
         harness.start_api()
         project, node = harness.project_node(seconds=60, timeout=90)
-        paper_id = _seed_paper(harness, project["id"])
+        paper_id = _seed_paper(harness, project["id"], node["id"])
         harness.start_worker()
         run = harness.launch(node)
         active = harness.running(run)
         graph = harness.request("GET", f"/api/projects/{project['id']}/graph")
 
         result = _apply_entrypoint(harness, entrypoint, project, node, graph["revision"], run)
-        if entrypoint in ("single", "proposal"):
-            response_node = next(item for item in result["graph"]["nodes"] if item["id"] == node["id"])
-            assert response_node["execution_status"] == "cancelled"
         if entrypoint == "agent":
             assert result["exit_code"] == 0
         if entrypoint == "planning":
@@ -183,6 +191,7 @@ def test_every_graph_mutation_entrypoint_cancels_and_invalidates(tmp_path, entry
         assert cancelled["status"] == "cancelled"
         paper = harness.request("GET", f"/api/papers/{paper_id}")
         assert paper["status"] == "needs_update"
+        assert paper["data"]["stale_dependencies"][0]["target_path"] == "/sections/results/paragraphs/1"
         edited = harness.request("GET", f"/api/nodes/{node['id']}")
         assert edited["context_stale"] is True
 

@@ -54,6 +54,26 @@ def unexpected(call):
     raise AssertionError(f"Unexpected API request: {call}")
 
 
+def test_graph_request_replays_original_revision_after_lost_response(tmp_path):
+    state = {'revision': 3, 'sent': []}
+    def handler(call):
+        if call['method'] == 'GET': return {'revision': state['revision'], 'branches': [{'id':'main', 'is_main':True}]}
+        state['sent'].append(call['body'])
+        state['revision'] = 4
+        if len(state['sent']) == 1: raise httpx.ReadError('Response lost after commit')
+        return {'revision':4, 'node_count':1}
+    arguments = ['--project','p1','node','add','--file',object_file(tmp_path,'retry-node.json',{'title':'Measured task','type':'experiment'}),'--request-id','stable-action']
+    with pytest.raises(CliError): HTTPScenario(handler).execute(arguments)
+    # A new client/process state reads the now-current graph but must replay 3.
+    assert HTTPScenario(handler).execute(arguments) == 0
+    assert state['sent'][0] == state['sent'][1]
+    assert state['sent'][1]['expected_revision'] == 3
+    Path(arguments[5]).write_text(json.dumps({'title':'Different task','type':'experiment'}))
+    with pytest.raises(CliError) as failure: HTTPScenario(handler).execute(arguments)
+    assert failure.value.code == 'REQUEST_ID_CONFLICT'
+    assert len(state['sent']) == 2
+
+
 @pytest.mark.parametrize("arguments", [
     ["--server", "http://selected.test:9000", "--project", "p1", "--json", "--timeout", "4", "node", "list"],
     ["node", "--server", "http://selected.test:9000", "--project", "p1", "--json", "--timeout", "4", "list"],

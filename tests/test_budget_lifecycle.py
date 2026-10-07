@@ -88,11 +88,11 @@ def launch_with_reservation(harness, *, timeout=30, fail=False, child=False, kin
 def test_actual_api_cancel_keeps_unknown_charge_reserved(lifecycle_harness):
     harness = lifecycle_harness
     _, run, _, ledger = launch_with_reservation(harness)
-    cancelled = harness.request('POST', '/api/runs/' + run['id'] + '/cancel', json={})
+    cancelled = harness.control_request('/api/runs/' + run['id'] + '/cancel', json={})
     assert cancelled['status'] == 'cancelled'
     uncertain_without_releasing_cap(harness, ledger)
     # Repeated owner cancellation is idempotent and cannot release the cap.
-    harness.request('POST', '/api/runs/' + run['id'] + '/cancel', json={})
+    harness.control_request('/api/runs/' + run['id'] + '/cancel', json={})
     uncertain_without_releasing_cap(harness, ledger)
 
 
