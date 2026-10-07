@@ -32,6 +32,18 @@ def execute_child(folder):
     os.execvpe(request['command'][0], request['command'], env)
 
 
+def process_group_exists(process_group_id):
+    """Return whether any process remains in the command's owned group."""
+    try:
+        os.killpg(int(process_group_id), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # A process exists in the group even if signaling it is not permitted.
+        return True
+
+
 def supervise(folder):
     with (folder / 'supervisor.lease').open('a') as lease:
         try:
@@ -47,11 +59,14 @@ def supervise(folder):
             process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), str(folder), '--child'],
                                        cwd=request['cwd'], stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
                                        start_new_session=True, close_fds=True)
-            state.update(status='running')
+            state.update(status='running', process_group_id=process.pid)
             atomic_json(folder / 'state.json', state)
             cancelled_at = None
             timed_out = False
-            while process.poll() is None:
+            # The command owns its process group. A shell or script may exit
+            # while a descendant is still writing to the task workspace, so
+            # keep this receipt nonterminal until the complete group is gone.
+            while process.poll() is None or process_group_exists(process.pid):
                 cancel = (folder / 'cancel.json').exists()
                 timed_out = bool(request.get('timeout') and time.time() - state['started_at'] >= float(request['timeout']))
                 if cancel or timed_out:
