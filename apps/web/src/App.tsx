@@ -45,6 +45,7 @@ import {
   Presentation,
 } from "lucide-react";
 import { ProgressPanel } from "./progress/ProgressPanel";
+import { InterventionPanel } from "./interventions/InterventionPanel";
 import { subscribeProject } from "./progress/events";
 import { api, download, formatDate } from "./api";
 import type { Project, Json, Run } from "./api";
@@ -105,10 +106,7 @@ export default function App() {
   const location = useLocation();
   const match = location.pathname.match(/\/projects\/([^/]+)/);
   const projectId = match?.[1];
-  const t = useCallback(
-    (_zh: string, en: string) => en,
-    [lang],
-  );
+  const t = useCallback((_zh: string, en: string) => en, [lang]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.lang = "en";
@@ -302,7 +300,14 @@ function ProjectShell() {
   } = useLoad<Run[]>(`/projects/${id}/runs`, []);
   const { data: system, reload: reloadSystem } = useLoad<Json>("/system", {});
   const active = runs.filter((r) =>
-    ["running", "queued", "paused", "waiting", "pausing", "budget_exhausted"].includes(r.status),
+    [
+      "running",
+      "queued",
+      "paused",
+      "waiting",
+      "pausing",
+      "budget_exhausted",
+    ].includes(r.status),
   );
   const location = useLocation();
   const branch = active[0]?.branch_id;
@@ -336,9 +341,11 @@ function ProjectShell() {
             className={`connection ${system.model_connected ? "online" : ""}`}
           >
             <span />
-            {system.model_connected === undefined ? "Checking model…" : system.model_connected
-              ? t("模型已连接", "Model connected")
-              : t("模型未连接", "Model offline")}
+            {system.model_connected === undefined
+              ? "Checking model…"
+              : system.model_connected
+                ? t("模型已连接", "Model connected")
+                : t("模型未连接", "Model offline")}
           </span>
           <span className="budget-label">
             {project?.budget?.seconds
@@ -416,15 +423,17 @@ function ProjectForm({
   const [goal, setGoal] = useState(initial?.goal || "");
   const [description, setDescription] = useState(initial?.description || "");
   const { data: providers } = useLoad<Json[]>("/providers", []);
-  const [providerId, setProviderId] = useState(initial?.config?.provider_id || "");
-  const [allowPaid, setAllowPaid] = useState(initial?.budget?.allow_paid || false);
+  const [providerId, setProviderId] = useState(
+    initial?.config?.provider_id || "",
+  );
+  const [allowPaid, setAllowPaid] = useState(
+    initial?.budget?.allow_paid || false,
+  );
   const [busy, setBusy] = useState(false);
   return (
     <Modal
       title={
-        initial
-          ? t("编辑项目", "Edit project")
-          : t("新建项目", "New project")
+        initial ? t("编辑项目", "Edit project") : t("新建项目", "New project")
       }
       onClose={onClose}
     >
@@ -440,8 +449,8 @@ function ProjectForm({
                 name,
                 goal,
                 description,
-                config: {...initial?.config,provider_id:providerId || null},
-                budget: {...initial?.budget,allow_paid:allowPaid},
+                config: { ...initial?.config, provider_id: providerId || null },
+                budget: { ...initial?.budget, allow_paid: allowPaid },
                 ...(initial ? { expected_revision: initial.revision } : {}),
               },
             ),
@@ -482,8 +491,27 @@ function ProjectForm({
             onChange={(e) => setDescription(e.target.value)}
           />
         </Field>
-        <Field label="Model connection"><select value={providerId} onChange={e => setProviderId(e.target.value)}><option value="">Workspace default</option>{providers.map(p => <option key={p.id} value={p.id}>{p.name} · {p.model}</option>)}</select></Field>
-        <label className="checkbox-label"><input type="checkbox" checked={allowPaid} onChange={e => setAllowPaid(e.target.checked)} />Allow paid API calls within the configured spending limits</label>
+        <Field label="Model connection">
+          <select
+            value={providerId}
+            onChange={(e) => setProviderId(e.target.value)}
+          >
+            <option value="">Workspace default</option>
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} · {p.model}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={allowPaid}
+            onChange={(e) => setAllowPaid(e.target.checked)}
+          />
+          Allow paid API calls within the configured spending limits
+        </label>
         <div className="modal-actions">
           <Button type="button" onClick={onClose}>
             {t("取消", "Cancel")}
@@ -716,7 +744,10 @@ function Overview() {
   const { id } = useParams();
   const { t, action } = useUI();
   const { data: p, error, reload } = useProject();
-  const { data: runs, reload: reloadRecent } = useLoad<Run[]>(`/projects/${id}/runs`, []);
+  const { data: runs, reload: reloadRecent } = useLoad<Run[]>(
+    `/projects/${id}/runs`,
+    [],
+  );
   useEffect(() => {
     const refresh = () => void reloadRecent();
     window.addEventListener("forest-refresh", refresh);
@@ -761,7 +792,12 @@ function Overview() {
         }
       />
       <ProgressPanel key={id} projectId={id!} />
-      <ResearchControls projectId={id!} onChange={reload} />
+      <InterventionPanel key={`interventions:${id}`} projectId={id!} />
+      <ResearchControls
+        projectId={id!}
+        runMode={p.mode || "assisted"}
+        onChange={reload}
+      />
       <div className="overview-grid">
         <section className="surface goal-surface">
           <div className="eyebrow">
@@ -861,9 +897,11 @@ function Overview() {
 
 function ResearchControls({
   projectId,
+  runMode,
   onChange,
 }: {
   projectId: string;
+  runMode: string;
   onChange: () => Promise<void>;
 }) {
   const { t, action } = useUI();
@@ -872,19 +910,44 @@ function ResearchControls({
   });
   const [branch, setBranch] = useState("");
   const [state, setState] = useState<Json | null>(null);
-  const [autonomous, setAutonomous] = useState(true);
+  const [autonomous, setAutonomous] = useState(runMode !== "manual");
+  const [readyParallelism, setReadyParallelism] = useState(1);
   const [metric, setMetric] = useState("");
   const [direction, setDirection] = useState("min");
-  const { data: session, reload: reloadSession } = useLoad<Json>(`/projects/${projectId}/research?overview=true`, {controller: {}, decisions: [], active_runs: []});
+  const {
+    data: session,
+    loading: sessionLoading,
+    error: sessionError,
+    reload: reloadSession,
+  } = useLoad<Json>(`/projects/${projectId}/research?overview=true`, {
+    controller: {},
+    decisions: [],
+    active_runs: [],
+  });
+  const sessionUnavailable = sessionLoading || !!sessionError;
   const [inspectComparisons, setInspectComparisons] = useState(false);
-  const comparisons = useLoad<Json>(inspectComparisons ? `/projects/${projectId}/research` : null, {trials: []});
-  useEffect(() => { setMetric(session.objective?.metric || ""); setDirection(session.objective?.direction || "min"); }, [session.objective?.metric, session.objective?.direction]);
+  const comparisons = useLoad<Json>(
+    inspectComparisons ? `/projects/${projectId}/research` : null,
+    { trials: [] },
+  );
+  useEffect(() => {
+    setMetric(session.objective?.metric || "");
+    setDirection(session.objective?.direction || "min");
+  }, [session.objective?.metric, session.objective?.direction]);
   useEffect(() => {
     if (typeof session.controller?.autonomous === "boolean") {
       setAutonomous(session.controller.autonomous);
+    } else {
+      setAutonomous(runMode !== "manual");
     }
-  }, [session.controller?.autonomous]);
-  useEffect(() => { const timer = setInterval(() => void reloadSession(), 5000); return () => clearInterval(timer); }, [reloadSession]);
+  }, [session.controller?.autonomous, runMode]);
+  useEffect(() => {
+    setReadyParallelism(session.controller?.ready_parallelism || 1);
+  }, [session.controller?.ready_parallelism]);
+  useEffect(() => {
+    const timer = setInterval(() => void reloadSession(), 5000);
+    return () => clearInterval(timer);
+  }, [reloadSession]);
   return (
     <section className="surface research-controls">
       <div>
@@ -902,21 +965,122 @@ function ResearchControls({
           </option>
         ))}
       </select>
-      <label className="inline-actions"><input type="checkbox" checked={autonomous} onChange={e => setAutonomous(e.target.checked)} />Autonomous planning</label>
+      <label className="inline-actions">
+        <input
+          type="checkbox"
+          checked={autonomous}
+          disabled={sessionUnavailable}
+          onChange={(e) => setAutonomous(e.target.checked)}
+        />
+        Autonomous planning
+      </label>
+      <Field label={t("独立任务并行上限", "Independent task slots")}>
+        <input
+          aria-label="Independent task slots"
+          type="number"
+          min={1}
+          max={32}
+          step={1}
+          disabled={sessionUnavailable}
+          value={readyParallelism}
+          onChange={(e) => setReadyParallelism(Number(e.target.value))}
+        />
+      </Field>
+      {sessionError && (
+        <p role="alert">
+          Unable to load saved controller settings. Start is disabled while
+          retrying.
+        </p>
+      )}
       <Badge status={session.controller?.status || state?.status || "idle"} />
       {session.controller?.phase && <span>{session.controller.phase}</span>}
-      {(session.controller?.reason || session.controller?.last_rationale) && <p>{session.controller.reason || session.controller.last_rationale}</p>}
-      {session.active_runs?.map((r: Json) => <div key={r.id}><code>{r.id.slice(0,8)}</code> {r.kind} · {r.status}</div>)}
-      <details><summary>Comparison objective</summary>
-        <Field label="Metric"><input aria-label="Comparison metric" value={metric} placeholder={session.objective?.metric || "Metric name from metrics.json"} onChange={e => setMetric(e.target.value)} /></Field>
-        <select aria-label="Metric direction" value={direction} onChange={e => setDirection(e.target.value)}><option value="min">Lower is better</option><option value="max">Higher is better</option></select>
-        <Button onClick={() => action(async () => { await api(`/projects/${projectId}/objective`,"PATCH",{metric,direction}); await reloadSession(); })}>Save objective</Button>
-        <Button busy={inspectComparisons && comparisons.loading} onClick={() => { setInspectComparisons(true); if (inspectComparisons) void comparisons.reload(); }}>Inspect checked comparisons</Button>
+      {(session.controller?.reason || session.controller?.last_rationale) && (
+        <p>{session.controller.reason || session.controller.last_rationale}</p>
+      )}
+      {session.active_runs?.map((r: Json) => (
+        <div key={r.id}>
+          <code>{r.id.slice(0, 8)}</code> {r.kind} · {r.status}
+        </div>
+      ))}
+      <details>
+        <summary>Comparison objective</summary>
+        <Field label="Metric">
+          <input
+            aria-label="Comparison metric"
+            value={metric}
+            placeholder={
+              session.objective?.metric || "Metric name from metrics.json"
+            }
+            onChange={(e) => setMetric(e.target.value)}
+          />
+        </Field>
+        <select
+          aria-label="Metric direction"
+          value={direction}
+          onChange={(e) => setDirection(e.target.value)}
+        >
+          <option value="min">Lower is better</option>
+          <option value="max">Higher is better</option>
+        </select>
+        <Button
+          onClick={() =>
+            action(async () => {
+              await api(`/projects/${projectId}/objective`, "PATCH", {
+                metric,
+                direction,
+              });
+              await reloadSession();
+            })
+          }
+        >
+          Save objective
+        </Button>
+        <Button
+          busy={inspectComparisons && comparisons.loading}
+          onClick={() => {
+            setInspectComparisons(true);
+            if (inspectComparisons) void comparisons.reload();
+          }}
+        >
+          Inspect checked comparisons
+        </Button>
         <ErrorBox error={comparisons.error} />
-        {!!comparisons.data.trials?.length && <table><thead><tr><th>Run</th><th>Value</th><th>Comparison</th></tr></thead><tbody>{comparisons.data.trials.map((r:Json) => <tr key={r.run_id}><td><code>{r.run_id.slice(0,8)}</code></td><td>{r.value ?? "—"}</td><td>{r.disposition}</td></tr>)}</tbody></table>}
+        {!!comparisons.data.trials?.length && (
+          <table>
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Value</th>
+                <th>Comparison</th>
+              </tr>
+            </thead>
+            <tbody>
+              {comparisons.data.trials.map((r: Json) => (
+                <tr key={r.run_id}>
+                  <td>
+                    <code>{r.run_id.slice(0, 8)}</code>
+                  </td>
+                  <td>{r.value ?? "—"}</td>
+                  <td>{r.disposition}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </details>
       {session.coverage && <small>{session.coverage}</small>}
-      {!!session.decisions?.length && <details><summary>Research decisions ({session.decisions.length})</summary>{session.decisions.map((d: Json) => <div key={d.id}><strong>{d.data.action}</strong><p>{d.data.rationale}</p><small>{formatDate(d.created_at)}</small></div>)}</details>}
+      {!!session.decisions?.length && (
+        <details>
+          <summary>Research decisions ({session.decisions.length})</summary>
+          {session.decisions.map((d: Json) => (
+            <div key={d.id}>
+              <strong>{d.data.action}</strong>
+              <p>{d.data.rationale}</p>
+              <small>{formatDate(d.created_at)}</small>
+            </div>
+          ))}
+        </details>
+      )}
       <div className="inline-actions">
         {[
           ["start", Play, "开始 / 继续", "Start / continue"],
@@ -926,14 +1090,25 @@ function ResearchControls({
           <Button
             className={op === "start" ? "primary" : ""}
             key={String(op)}
+            disabled={String(op) === "start" && sessionUnavailable}
             onClick={() =>
               action(async () => {
-                const result = await api(`/projects/${projectId}/research/${op}`, "POST", {
+                const result = await api(
+                  `/projects/${projectId}/research/${op}`,
+                  "POST",
+                  {
                     branch_id: branch || null,
                     autonomous,
-                  });
+                    ready_parallelism: readyParallelism,
+                  },
+                );
                 setState(result);
-                if (result.process_control_errors?.length) throw new Error(result.process_control_errors.map((e: Json) => `${e.run_id.slice(0,8)}: ${e.error}`).join("; "));
+                if (result.process_control_errors?.length)
+                  throw new Error(
+                    result.process_control_errors
+                      .map((e: Json) => `${e.run_id.slice(0, 8)}: ${e.error}`)
+                      .join("; "),
+                  );
                 await onChange();
               })
             }

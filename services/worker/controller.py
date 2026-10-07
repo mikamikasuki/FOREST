@@ -2,17 +2,38 @@
 from sqlalchemy import select
 from services.api.db import *
 from services.api.common import get,project_dir,safe_path,emit,graph_from_db
-from services.worker.scheduler import enqueue_nodes,enqueue,ACTIVE
+from services.worker.scheduler import enqueue_nodes,enqueue,ACTIVE,_lock_project
 from research.planning.loop import submission_audit
 from research.planning.route_review import route_health, route_review_transition, CONTROL_KINDS
 from research.kernel import execution_edges
+
+def ready_work(session, project_id, graph, control, active_node_ids=()):
+    nodes=list(session.scalars(select(Node).where(Node.project_id==project_id,Node.archived==False)))
+    branches={b.id for b in session.scalars(select(Branch).where(Branch.project_id==project_id))
+              if b.status=='active' and not b.extra.get('workspace_intervention')}
+    selected=[n for n in nodes if n.branch_id in branches and
+              (not control.get('branch_id') or n.branch_id==control['branch_id'])]
+    completed={n.id for n in nodes if n.execution_status=='completed' and
+               n.deliverable_status!='needs_update' and n.extra.get('results_current',True)}
+    edges=[(e['source'],e['target']) for e in execution_edges(graph)]
+    ready=[n for n in selected if n.id not in completed and n.id not in active_node_ids and
+           (n.execution_status in ('idle','not_started','needs_update','completed') or n.deliverable_status=='needs_update') and
+           all(source in completed for source,target in edges if target==n.id)]
+    return selected,completed,sorted(ready,key=lambda n:(n.created_at,n.id))
+
+
+def queue_ready(session, ready, slots):
+    # One admission transaction preserves project budgets across the whole batch.
+    with session.begin_nested():
+        return [(node,enqueue_nodes(session,node.id,'single','controller:'+uid())[0]) for node in ready[:slots]]
+
 
 def advance_projects():
     with Session() as s:
         ids=[p.id for p in s.scalars(select(Project).where(Project.archived==False)) if p.config.get('controller',{}).get('status')=='running']
     for pid in ids:
         with Session.begin() as s:
-            p=s.scalar(select(Project).where(Project.id==pid).with_for_update()); control=p.config.get('controller',{})
+            p=_lock_project(s,pid); control=p.config.get('controller',{})
             if control.get('status')!='running': continue
             runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==pid)))
             def owns_pending_work(run):
@@ -24,8 +45,25 @@ def advance_projects():
                     'verification_inconclusive','verification_stale','verification_scope_missing','verification_input_changed',
                     'verification_scope','verification_source','verification_source_changed','verification_configuration',
                     'research_route_replan'))
-            if any(owns_pending_work(r) for r in runs): continue
+            pending=[r for r in runs if owns_pending_work(r)]
             graph=graph_from_db(s,p)
+            # Pending decisions keep their slot, but independent roots can use
+            # explicitly enabled spare slots. Planning still waits for all work.
+            parallelism=control.get('ready_parallelism',1)
+            if type(parallelism) is not int or not 1<=parallelism<=32: parallelism=1
+            if pending:
+                if any(r.kind in CONTROL_KINDS for r in pending) or len(pending)>=parallelism or control.get('replan_required'): continue
+                _,_,ready=ready_work(s,pid,graph,control,{r.node_id for r in runs if r.status in ACTIVE})
+                if not ready: continue
+                try:
+                    queued=queue_ready(s,ready,parallelism-len(pending))
+                    control={**control,'phase':'EXECUTE','current_nodes':[n.id for n,r in queued],
+                             'last_run':queued[-1][1].id}
+                    control.pop('admission_error',None)
+                except Exception as exc:
+                    detail=getattr(exc,'detail',{})
+                    control={**control,'admission_error':detail.get('message',str(exc)) if isinstance(detail,dict) else str(exc)}
+                p.config={**p.config,'controller':control};emit(s,pid,'controller_changed',control);continue
             health=route_health(graph,[asdict(r) for r in runs],p.config)
             route_state=control.get('route_review',{})
             review_run=s.get(TaskRun,route_state.get('run_id')) if route_state.get('run_id') else None
@@ -66,17 +104,12 @@ def advance_projects():
                 else:
                     control.update(status='waiting_input',reason='Review the research route and choose a new direction before continuing.')
                 p.config={**p.config,'controller':control};emit(s,pid,'controller_changed',control);continue
-            nodes=list(s.scalars(select(Node).where(Node.project_id==pid,Node.archived==False)))
-            eligible_branches={b.id for b in s.scalars(select(Branch).where(Branch.project_id==pid)) if b.status=='active'}
-            selected_nodes=[n for n in nodes if n.branch_id in eligible_branches and (not control.get('branch_id') or n.branch_id==control['branch_id'])]
-            edges=[(e['source'],e['target']) for e in execution_edges(graph)]
-            completed={n.id for n in nodes if n.execution_status=='completed' and n.deliverable_status!='needs_update' and n.extra.get('results_current',True)}
-            ready=[n for n in selected_nodes if n.id not in completed and (n.execution_status in ('idle','not_started','needs_update','completed') or n.deliverable_status=='needs_update') and all(source in completed for source,target in edges if target==n.id)]
+            selected_nodes,completed,ready=ready_work(s,pid,graph,control,{r.node_id for r in runs if r.status in ACTIVE})
             try:
                 if ready and not control.get('replan_required'):
-                    target=sorted(ready,key=lambda n:n.created_at)[0]
-                    with s.begin_nested(): run=enqueue_nodes(s,target.id,'single','controller:'+uid())[0]
-                    control={**control,'phase':'EXECUTE','current_node':target.id,'last_run':run.id}
+                    queued=queue_ready(s,ready,parallelism)
+                    control={**control,'phase':'EXECUTE','current_node':queued[0][0].id,
+                             'current_nodes':[n.id for n,r in queued],'last_run':queued[-1][1].id}
                 elif control.get('autonomous',p.mode=='auto'):
                     last=s.get(TaskRun,control.get('last_run')) if control.get('last_run') else None
                     if last and last.kind=='research_plan' and last.status in ('failed','interrupted'):

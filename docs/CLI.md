@@ -165,6 +165,8 @@ Use `branch_id` to select a branch; otherwise the CLI uses the project's Main br
 
 `--dry-run` calls the graph impact preview. It does not apply the edit. The CLI uses the current graph revision when applying a command; a supplied `expected_revision` retains the caller's snapshot requirement. Previewing and applying remain separate requests, so another editor can change the graph between them.
 
+Node commands with `--request-id` persist their original request before submission. Repeating the same ID and input replays its first observed revision and implicit branch selection, including after a lost response. Changed input requires a new request ID. The request journal lives alongside the CLI configuration and does not store connection tokens.
+
 | Run scope | Selection |
 |---|---|
 | `single` | The selected node |

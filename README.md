@@ -117,7 +117,7 @@ After installing the Web workspace:
 - **Assisted** — use model-assisted planning and tools while directing the research.
 - **Auto** — enable autonomous planning and execution within configured goals, budgets, and delivery requirements.
 
-Saved runs retain decisions, logs, metrics, artifacts, and execution history for inspection.
+Saved runs retain decisions, logs, metrics, artifacts, and execution history for inspection. See [Workflow interventions](docs/WORKFLOW_INTERVENTIONS.md) for scoped instructions, durable action review, branch controls, and evidence acceptance.
 
 PDF compilation requires `tectonic` or `pdflatex`. Configure spending and execution limits before unattended runs, and keep credentials outside the repository.
 

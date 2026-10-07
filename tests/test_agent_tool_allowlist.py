@@ -1,4 +1,4 @@
-"""Node tool allowlists constrain both provider schemas and runtime dispatch."""
+"""Queued node tool permissions constrain provider schemas and dispatch."""
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -7,21 +7,12 @@ import sys
 import threading
 import uuid
 
-from research.agents.policy import effective_agent_tools
 from tests.test_worker import Harness
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_node_tools_are_a_ceiling_within_role_tools():
-    role_tools = ['read_file', 'write_file', 'finish']
-    assert effective_agent_tools(role_tools, {'tools': ['read_file', 'finish']}) == ['read_file', 'finish']
-    assert effective_agent_tools(role_tools, {'tools': ['write_file', 'read_file', 'finish']}) == ['write_file', 'read_file', 'finish']
-    assert effective_agent_tools(role_tools, {}) == role_tools
-    assert effective_agent_tools(role_tools, {'tools': []}) == []
-
-
-def test_queued_run_tool_allowlist_stays_on_saved_node_revision(tmp_path):
+def test_queued_agent_run_keeps_saved_tool_allowlist_after_live_node_edit(tmp_path):
     requests = []
 
     class Responses(BaseHTTPRequestHandler):
@@ -109,7 +100,8 @@ def test_queued_run_tool_allowlist_stays_on_saved_node_revision(tmp_path):
         assert completed['status'] == 'completed', completed
 
         offered = [tool['name'] for tool in requests[0]['tools']]
-        assert offered == ['read_file', 'finish', 'read_context_segment']
+        assert offered == ['finish', 'read_file']
+        assert 'write_file' not in offered
         assert all([tool['name'] for tool in request['tools']] == offered for request in requests)
         session = json.loads((workspace / 'agent_session.json').read_text())
         assert session['context_history'][-1]['enabled_tools'] == offered

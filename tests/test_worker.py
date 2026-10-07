@@ -181,6 +181,14 @@ class Harness:
         assert response.is_success, f"{method} {path}: {response.status_code} {response.text}"
         return response.json()
 
+    def control_request(self, path, **kwargs):
+        """Await a confirmed lifecycle receipt before inspecting its effects."""
+        accepted = self.request('POST', path, **kwargs)
+        ident = accepted['intervention']['id']
+        receipt = wait_until(lambda: (row if (row := self.request('GET',
+            f"/api/interventions/{ident}"))['status'] == 'applied' else None), timeout=20)
+        return {**self.request('GET', '/api/runs/'+accepted['id']), 'intervention': receipt}
+
     def project_node(self, seconds=3, child=False, budget=None, timeout=30):
         project = self.request("POST", "/api/projects", json={"name": "Worker integration " + str(uuid.uuid4())[:8], "goal": "Exercise actual worker lifecycle", "budget": budget or {"max_runs": 20, "seconds": 120, "allow_paid": False}})
         graph = self.request("GET", f"/api/projects/{project['id']}/graph")
@@ -210,7 +218,22 @@ class Harness:
         return self.directory / "data" / "projects" / run["project_id"] / run["output_path"]
 
     def cleanup(self):
-        for pid, created in self.run_processes:
+        # Keep failed-test processes owned by this isolated database recoverable
+        # during the test, then close them even if the checkpoint was never seen.
+        recorded = list(self.run_processes)
+        database = self.directory / 'integration.db'
+        if database.exists() and self.env['FOREST_DATABASE_URL'].startswith('sqlite:'):
+            import sqlite3
+            with sqlite3.connect(database) as session:
+                try: recorded.extend(session.execute('SELECT pid, process_created FROM task_runs WHERE pid IS NOT NULL AND process_created IS NOT NULL').fetchall())
+                except sqlite3.OperationalError: pass
+        elif self.api and self.api.poll() is None and not self.client.is_closed:
+            try:
+                for project in self.request('GET', '/api/projects?limit=200'):
+                    recorded.extend((run['pid'], run['process_created']) for run in self.request('GET', '/api/projects/'+project['id']+'/runs')
+                                    if run.get('pid') and run.get('process_created'))
+            except (httpx.HTTPError, AssertionError): pass
+        for pid, created in set(recorded):
             try:
                 process = psutil.Process(pid)
                 if abs(process.create_time() - created) < 0.2:
@@ -291,13 +314,13 @@ def test_pause_resume_stops_and_restarts_actual_process_group(actual_worker):
     heartbeat = h.output(run) / "heartbeat.txt"
     child_heartbeat = h.output(run) / "child_heartbeat.txt"
     wait_until(lambda: child_heartbeat.exists() and heartbeat.exists())
-    paused = h.request("POST", f"/api/runs/{run['id']}/pause", json={})
+    paused = h.control_request(f"/api/runs/{run['id']}/pause", json={})
     assert paused["status"] == "paused"
     time.sleep(0.2)
     before = (heartbeat.read_text(), child_heartbeat.read_text())
     time.sleep(0.5)
     assert (heartbeat.read_text(), child_heartbeat.read_text()) == before
-    h.request("POST", f"/api/runs/{run['id']}/resume", json={})
+    h.control_request(f"/api/runs/{run['id']}/resume", json={})
     wait_until(lambda: heartbeat.read_text() != before[0])
     assert h.terminal(run)["status"] == "completed"
 
@@ -327,13 +350,13 @@ def test_live_container_executor_uses_recalculated_timeout_after_resume(tmp_path
         wait_until(lambda: (output / "workspace" / "starts.txt").exists())
         assert active["config"]["timeout"] == 2
 
-        paused = h.request("POST", f"/api/runs/{run['id']}/pause", json={})
+        paused = h.control_request(f"/api/runs/{run['id']}/pause", json={})
         assert paused["status"] == "paused"
         current_project = h.request("GET", f"/api/projects/{project['id']}")
         increased_budget = {**current_project["budget"], "seconds": 20}
         h.request("PATCH", f"/api/projects/{project['id']}",
                   json={"expected_revision": current_project["revision"], "budget": increased_budget})
-        resumed = h.request("POST", f"/api/runs/{run['id']}/resume", json={})
+        resumed = h.control_request(f"/api/runs/{run['id']}/resume", json={})
         assert resumed["status"] == "running"
         assert resumed["pid"] == active["pid"]
         assert resumed["config"]["timeout"] == 20
@@ -355,7 +378,7 @@ def test_cancel_terminates_executor_and_descendant(actual_worker):
     child_file = h.output(run) / "child.pid"
     # File creation and PID write are separate observable events.
     child_pid = int(wait_until(lambda: child_file.read_text().strip() if child_file.exists() else ''))
-    cancelled = h.request("POST", f"/api/runs/{run['id']}/cancel", json={})
+    cancelled = h.control_request(f"/api/runs/{run['id']}/cancel", json={})
     assert cancelled["status"] == "cancelled"
     def stopped(pid):
         return not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
@@ -374,7 +397,7 @@ def test_cancel_records_consumed_time_before_releasing_project_reservation(actua
     first = h.launch(node)
     h.running(first)
     time.sleep(0.25)
-    cancelled = h.request("POST", f"/api/runs/{first['id']}/cancel", json={})
+    cancelled = h.control_request(f"/api/runs/{first['id']}/cancel", json={})
     assert cancelled["status"] == "cancelled"
     consumed = cancelled["resource"]["elapsed_seconds"]
     assert consumed >= 0.2
@@ -391,10 +414,10 @@ def test_cancel_while_paused_records_wall_elapsed_before_releasing_reservation(a
     first = h.launch(node)
     h.running(first)
     time.sleep(0.25)
-    paused = h.request("POST", f"/api/runs/{first['id']}/pause", json={})
+    paused = h.control_request(f"/api/runs/{first['id']}/pause", json={})
     assert paused["status"] == "paused"
     time.sleep(0.3)
-    cancelled = h.request("POST", f"/api/runs/{first['id']}/cancel", json={})
+    cancelled = h.control_request(f"/api/runs/{first['id']}/cancel", json={})
     assert cancelled["status"] == "cancelled"
     consumed = cancelled["resource"]["elapsed_seconds"]
     assert consumed >= 0.45
@@ -411,17 +434,17 @@ def test_resume_recalculates_against_current_project_time_budget(actual_worker):
     run = h.launch(node)
     h.running(run)
     time.sleep(0.25)
-    paused = h.request("POST", f"/api/runs/{run['id']}/pause", json={})
+    paused = h.control_request(f"/api/runs/{run['id']}/pause", json={})
     assert paused["status"] == "paused"
 
     h.request("PATCH", f"/api/projects/{project['id']}", json={
         "budget": {"max_runs": 20, "seconds": 4, "allow_paid": False},
     })
-    resumed = h.request("POST", f"/api/runs/{run['id']}/resume", json={})
+    resumed = h.control_request(f"/api/runs/{run['id']}/resume", json={})
     assert resumed["status"] == "running"
     assert resumed["config"]["timeout"] == 4
     assert resumed["resource"]["time_budget"]["effective_total_timeout_seconds"] == 4
-    cancelled = h.request("POST", f"/api/runs/{run['id']}/cancel", json={})
+    cancelled = h.control_request(f"/api/runs/{run['id']}/cancel", json={})
     assert cancelled["status"] == "cancelled"
 
 
@@ -433,19 +456,19 @@ def test_resume_restores_requested_timeout_when_project_time_budget_is_removed(a
     assert run["config"]["timeout"] == 4
     h.running(run)
     time.sleep(0.25)
-    paused = h.request("POST", f"/api/runs/{run['id']}/pause", json={})
+    paused = h.control_request(f"/api/runs/{run['id']}/pause", json={})
     assert paused["status"] == "paused"
 
     h.request("PATCH", f"/api/projects/{project['id']}", json={
         "budget": {"max_runs": 20, "allow_paid": False},
     })
-    resumed = h.request("POST", f"/api/runs/{run['id']}/resume", json={})
+    resumed = h.control_request(f"/api/runs/{run['id']}/resume", json={})
     assert resumed["status"] == "running"
     assert resumed["config"]["timeout"] == 30
     assert resumed["resource"]["time_budget"]["effective_total_timeout_seconds"] == 30
     assert resumed["resource"]["elapsed_seconds"] >= 0.2
 
-    cancelled = h.request("POST", f"/api/runs/{run['id']}/cancel", json={})
+    cancelled = h.control_request(f"/api/runs/{run['id']}/cancel", json={})
     assert cancelled["status"] == "cancelled"
 
 
@@ -456,7 +479,7 @@ def test_resume_rejects_live_paused_run_after_wall_clock_budget_is_spent(actual_
     run = h.launch(node)
     h.running(run)
     time.sleep(0.15)
-    paused = h.request("POST", f"/api/runs/{run['id']}/pause", json={})
+    paused = h.control_request(f"/api/runs/{run['id']}/pause", json={})
     assert paused["status"] == "paused" and paused["pid"] is not None
 
     # A live paused executor still consumes the wall-clock project budget.
@@ -466,7 +489,7 @@ def test_resume_rejects_live_paused_run_after_wall_clock_budget_is_spent(actual_
     assert resumed.json()["detail"]["code"] == "TIME_BUDGET_EXHAUSTED"
     current = h.run(run)
     assert current["status"] == "paused"
-    cancelled = h.request("POST", f"/api/runs/{run['id']}/cancel", json={})
+    cancelled = h.control_request(f"/api/runs/{run['id']}/cancel", json={})
     assert cancelled["status"] == "cancelled"
 
 
@@ -996,7 +1019,7 @@ def test_paused_queued_job_stays_pending_and_does_not_occupy_process_slot(actual
     _, node = h.project_node(seconds=0.5)
     run = h.launch(node)
     assert run["status"] == "queued"
-    paused = h.request("POST", f"/api/runs/{run['id']}/pause", json={})
+    paused = h.control_request(f"/api/runs/{run['id']}/pause", json={})
     assert paused["status"] == "paused" and paused["pid"] is None
     h.start_worker()
     time.sleep(0.8)
@@ -1005,7 +1028,7 @@ def test_paused_queued_job_stays_pending_and_does_not_occupy_process_slot(actual
     other = h.launch(other_node)
     h.running(other)
     assert h.terminal(other)["status"] == "completed"
-    h.request("POST", f"/api/runs/{run['id']}/resume", json={})
+    h.control_request(f"/api/runs/{run['id']}/resume", json={})
     h.running(run)
     assert h.terminal(run)["status"] == "completed"
 
@@ -1219,6 +1242,100 @@ def test_failed_current_run_keeps_rerun_marker(actual_worker):
     assert failed_node.get("needs_rerun") is True
 
 
+def test_latest_same_revision_failure_rearms_rerun_for_affected_scope(actual_worker):
+    h = actual_worker
+    project = h.request("POST", "/api/projects", json={
+        "name": "Rearm rerun after a same-revision failure",
+        "budget": {"max_runs": 8, "seconds": 60, "allow_paid": False},
+    })
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    branch_id = graph["branches"][0]["id"]
+
+    def add_command_node(title, command):
+        current = h.request("GET", f"/api/projects/{project['id']}/graph")
+        node_id = str(uuid.uuid4())
+        created = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+            "request_id": str(uuid.uuid4()),
+            "expected_revision": current["revision"],
+            "operation": "add_node",
+            "params": {
+                "id": node_id,
+                "branch_id": branch_id,
+                "type": "experiment",
+                "title": title,
+                "config": {"kind": "command", "command": command, "timeout": 10},
+            },
+        })
+        return next(node for node in created["graph"]["nodes"] if node["id"] == node_id)
+
+    root = add_command_node("Root", [sys.executable, "-c", "print('root')"])
+    child = add_command_node("Child", [sys.executable, "-c", "print('child')"])
+    grandchild = add_command_node("Grandchild", [sys.executable, "-c", "print('grandchild')"])
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": current["revision"],
+        "operation": "add_dependency",
+        "params": {"source": root["id"], "target": child["id"]},
+    })
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": current["revision"],
+        "operation": "add_dependency",
+        "params": {"source": child["id"], "target": grandchild["id"]},
+    })
+
+    assert h.terminal(h.launch(root))["status"] == "completed"
+    first_success = h.launch(child)
+    assert h.terminal(first_success)["status"] == "completed"
+    first_grandchild_success = h.launch(grandchild)
+    assert h.terminal(first_grandchild_success)["status"] == "completed"
+    after_success = h.request("GET", f"/api/projects/{project['id']}/graph")
+    successful_child = next(node for node in after_success["nodes"] if node["id"] == child["id"])
+    assert successful_child["results_current"] is True
+    assert successful_child.get("needs_rerun") is not True
+
+    control = h.request("POST", f"/api/nodes/{root['id']}/run", json={
+        "request_id": str(uuid.uuid4()), "scope": "affected",
+    })
+    control_runs = control.get("runs", [control])
+    assert [run["node_id"] for run in control_runs] == [root["id"]]
+    assert h.terminal(control_runs[0])["status"] == "completed"
+
+    failed = h.request("POST", f"/api/nodes/{child['id']}/run", json={
+        "request_id": str(uuid.uuid4()),
+        "scope": "single",
+        "config": {"kind": "command", "command": [sys.executable, "-c", "raise SystemExit(7)"], "timeout": 10},
+    })
+    assert h.terminal(failed)["status"] == "failed"
+
+    after_failure = h.request("GET", f"/api/projects/{project['id']}/graph")
+    failed_child = next(node for node in after_failure["nodes"] if node["id"] == child["id"])
+    assert failed_child["latest_run_id"] == failed["id"]
+    assert failed_child["results_current"] is False
+    assert failed_child.get("needs_rerun") is True, failed_child
+    stale_grandchild = next(node for node in after_failure["nodes"] if node["id"] == grandchild["id"])
+    assert stale_grandchild["results_current"] is False, stale_grandchild
+    assert stale_grandchild["deliverable_status"] == "needs_update", stale_grandchild
+    assert stale_grandchild.get("needs_rerun") is True, stale_grandchild
+
+    affected = h.request("POST", f"/api/nodes/{root['id']}/run", json={
+        "request_id": str(uuid.uuid4()), "scope": "affected",
+    })
+    affected_runs = affected.get("runs", [affected])
+    run_by_node = {run["node_id"]: run for run in affected_runs}
+    assert child["id"] in run_by_node
+    assert grandchild["id"] in run_by_node
+    assert run_by_node[grandchild["id"]]["dependencies"] == [run_by_node[child["id"]]["id"]]
+    for run in affected_runs:
+        assert h.terminal(run)["status"] == "completed"
+    after_recovery = h.request("GET", f"/api/projects/{project['id']}/graph")
+    current_grandchild = next(node for node in after_recovery["nodes"] if node["id"] == grandchild["id"])
+    assert current_grandchild["results_current"] is True, current_grandchild
+    assert current_grandchild["latest_run_id"] == run_by_node[grandchild["id"]]["id"]
+
+
 def test_stale_run_does_not_consume_rerun_marker_or_promote_results(actual_worker):
     h = actual_worker
     project = h.request("POST", "/api/projects", json={
@@ -1271,7 +1388,7 @@ def test_real_debug_checkpoint_can_edit_payload_then_resume(actual_worker, stage
     wait_until(lambda: psutil.Process(stopped["pid"]).status() == psutil.STATUS_STOPPED)
     override = {"text": "owner edited callback payload"} if stage == "after_model" else {"tool": "write_file", "arguments": {"path": "checkpoint_output.txt", "content": "owner edited callback payload"}}
     h.request("PATCH", f"/api/runs/{run['id']}/checkpoint", json={"payload": override})
-    h.request("POST", f"/api/runs/{run['id']}/resume", json={})
+    h.control_request(f"/api/runs/{run['id']}/resume", json={})
     completed = h.terminal(run)
     assert completed["status"] == "completed", completed
     assert completed["metrics"]["checkpoint_value"] == override
@@ -1288,7 +1405,7 @@ def test_cancel_at_real_debug_checkpoint_terminates_stopped_process(actual_worke
     run = h.launch(node)
     stopped = wait_until(lambda: (r if (r := h.run(run))["status"] == "waiting_input" and r["resource"].get("checkpoint") else None))
     h.run_processes.append((stopped["pid"], stopped["process_created"]))
-    h.request("POST", f"/api/runs/{run['id']}/cancel", json={})
+    h.control_request(f"/api/runs/{run['id']}/cancel", json={})
     wait_until(lambda: not psutil.pid_exists(stopped["pid"]) or psutil.Process(stopped["pid"]).status() == psutil.STATUS_ZOMBIE)
     assert h.run(run)["status"] == "cancelled"
     assert not (h.output(run) / "workspace" / "checkpoint_output.txt").exists()

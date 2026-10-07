@@ -55,6 +55,27 @@ def project_snapshot(project_id, *, epoch, generation, previous_cursor=0):
         dependencies['controller']=controller
         dependencies['run_counts']=str(sorted(counts.items()))
         fact('project:'+project_id,'now','Controller',controller,SourceRef(epoch=epoch,project_id=project_id,kind='project',object_id=project_id,revision=p.revision))
+        from services.interventions.models import Intervention, InterventionEffect, ActionDecision
+        interventions=list(s.scalars(select(Intervention).where(Intervention.project_id==project_id)
+            .order_by(Intervention.updated_at.desc(),Intervention.id).limit(20)))
+        effects={}
+        if interventions:
+            for ident,status,count in s.execute(select(InterventionEffect.intervention_id,InterventionEffect.status,func.count())
+                    .where(InterventionEffect.intervention_id.in_([row.id for row in interventions]))
+                    .group_by(InterventionEffect.intervention_id,InterventionEffect.status)):
+                effects.setdefault(ident,{})[status]=count
+        for row in interventions:
+            status=row.status if row.status in ('accepted','applied','partially_applied','needs_attention','superseded') else 'unrecognized recorded state'
+            summary='; '.join(f'{count} {state}' for state,count in sorted(effects.get(row.id,{}).items()))
+            fact('intervention:'+row.id,'attention' if status in ('accepted','partially_applied','needs_attention') else 'recent',
+                 'Intervention '+row.id[:8],status+('; '+summary if summary else '')+'; accepted revision '+str(row.applied_revision),
+                 SourceRef(epoch=epoch,project_id=project_id,kind='project',object_id=project_id,revision=p.revision),time=row.updated_at)
+            dependencies['intervention:'+row.id]=f'{row.updated_at}:{status}:{summary}'
+        for decision in s.scalars(select(ActionDecision).where(ActionDecision.project_id==project_id,ActionDecision.status=='pending')
+                .order_by(ActionDecision.created_at,ActionDecision.id).limit(20)):
+            fact('decision:'+decision.id,'attention','Saved action awaits owner decision',decision.run_id[:8]+'; no action executed',
+                 SourceRef(epoch=epoch,project_id=project_id,kind='run',object_id=decision.run_id,attempt_id=decision.attempt_id),time=decision.created_at)
+            dependencies['decision:'+decision.id]=decision.updated_at
         for r in runs.values():
             n=nodes.get(r.node_id); current=not n or (n.revision==r.node_revision and (n.extra or {}).get('latest_run_id')==r.id)
             source=SourceRef(epoch=epoch,project_id=project_id,kind='run',object_id=r.id,revision=r.node_revision,

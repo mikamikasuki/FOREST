@@ -76,6 +76,14 @@ def test_actual_multirun_equations_tables_figures_and_standalone_pdf(tmp_path):
     output = tmp_path / 'paper'
     generated = write_manuscript(output, evidence, complete_draft(evidence))
     assert len(generated['bindings']) == 6
+    locations=generated['dependency_bindings']
+    assert any(row['target_path']=='/abstract' and row['source_id']=='run-160' for row in locations)
+    assert any(row['target_path']=='/sections/4/blocks/0/rows/0/1' and row['metric_pointer']=='/integral' for row in locations)
+    assert any(row['target_path']=='/sections/4/blocks/1' and row['source_kind']=='figure' for row in locations)
+    assert json.loads((output/'dependency_bindings.json').read_text())==locations
+    from research.paper.dependencies import bind_source_files
+    bound=bind_source_files(locations,evidence['runs'],tmp_path)
+    assert any(row['source_kind']=='file' and row['source_id']=='160/workspace/metrics.json' and row['target_path']=='/abstract' for row in bound)
     assert generated['figures'][0]['run_id'] == 'run-160'
     assert generated['evidence_report']['referenced_passages'] == ['python-sin:p0']
     assert set(generated['evidence_report']['section_roles']) == FULL_PAPER_ROLES

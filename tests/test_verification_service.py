@@ -116,6 +116,73 @@ def test_standalone_verification_current_config_and_idempotency(verification_wor
     assert h.request('GET',f"/api/runs/{run['id']}/verification")['verification_status']=='inconclusive'
 
 
+def test_worker_completion_lock_preserves_service_verification_receipt(verification_worker):
+    h=verification_worker; p=project(h); producer,source=produced(h,p); verifier,checked=verified(h,p,producer)
+    script = r'''import sys, threading
+from services.api.db import Session, TaskRun
+from services.api.verification import finish_verification
+from services.worker.scheduler import _lock_project
+import services.api.verification as verification
+
+project_id, run_id = sys.argv[1:]
+with Session.begin() as session:
+    run = session.get(TaskRun, run_id)
+    resource = dict(run.resource)
+    resource.pop('verification_receipt', None)
+    resource['verification_status'] = 'inconclusive'
+    resource.pop('verification', None)
+    run.resource = resource
+
+loaded = threading.Event()
+release_monitor = threading.Event()
+evaluated = threading.Event()
+errors = []
+original_evaluate = verification._evaluate
+def observe_evaluation(session, run, *, execution=False):
+    result = original_evaluate(session, run, execution=execution)
+    evaluated.set()
+    return result
+verification._evaluate = observe_evaluation
+
+def monitor_transaction():
+    try:
+        with Session.begin() as session:
+            _lock_project(session, project_id)
+            run = session.get(TaskRun, run_id)
+            run.resource = {**run.resource, 'elapsed_seconds': 1.25,
+                            'worker_monitor_marker': 'committed'}
+            loaded.set()
+            if not release_monitor.wait(10):
+                raise RuntimeError('test did not release the worker transaction')
+    except BaseException as exc:
+        errors.append(exc)
+
+def service_transaction():
+    try:
+        finish_verification(run_id)
+    except BaseException as exc:
+        errors.append(exc)
+
+monitor = threading.Thread(target=monitor_transaction)
+monitor.start()
+assert loaded.wait(5), 'worker did not acquire the project/run lock'
+service = threading.Thread(target=service_transaction)
+service.start()
+try:
+    assert not evaluated.wait(.25), 'verification read the stale run resource while worker completion held the lock'
+finally:
+    release_monitor.set()
+monitor.join(5); service.join(10)
+assert not monitor.is_alive() and not service.is_alive(), 'concurrent writers did not finish'
+assert not errors, repr(errors)
+'''
+    subprocess.run([sys.executable,'-c',script,p['id'],checked['id']],cwd=h.directory,env=h.env,
+                   check=True,timeout=15,capture_output=True,text=True)
+    value=h.request('GET',f"/api/runs/{checked['id']}")
+    assert value['resource']['worker_monitor_marker']=='committed',value
+    assert h.request('GET',f"/api/runs/{checked['id']}/verification")['verification_status']=='accepted'
+
+
 def test_deleted_producer_is_inconclusive(verification_worker):
     h=verification_worker; p=project(h); producer,source=produced(h,p); verifier,checked=verified(h,p,producer)
     graph=h.request('GET',f"/api/projects/{p['id']}/graph")

@@ -26,6 +26,16 @@ def ok(response, status=200):
     return response.json()
 
 
+def await_intervention(client, identifier):
+    import time
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        receipt = ok(client.get('/api/interventions/' + identifier))
+        if receipt['status'] == 'applied': return receipt
+        time.sleep(.02)
+    raise AssertionError(receipt)
+
+
 def create(client):
     return ok(client.post("/api/projects", json={"name": "Integration research", "goal": "Compare measured results", "budget": {"max_runs": 50, "seconds": 300, "allow_paid": False}}))
 
@@ -76,7 +86,7 @@ def case_graph_receipts_cycles_and_schema(client, app):
     assert len(graph(client, p)["nodes"]) == 1
     bad = {**body, "request_id": "new-stale-request"}
     conflict = client.post(path, json=bad)
-    assert conflict.status_code == 409 and conflict.json()["detail"]["code"] == "revision_conflict"
+    assert conflict.status_code == 409 and conflict.json()["detail"]["code"] == "REVISION_CONFLICT"
     n1 = first["graph"]["nodes"][0]
     n2 = add_node(client, p)
     ok(command(client, p, "add_dependency", source=n1["id"], target=n2["id"]))
@@ -111,7 +121,9 @@ def case_fork_merge_undo_and_files(client, app):
     main = graph(client, p)["branches"][0]
     path = main["workspace"] + "/model.py"
     ok(client.put(f"/api/projects/{p['id']}/file", json={"path": path, "content": "base\n", "expected_revision": 0}))
-    fork = ok(command(client, p, "fork_branch", [n["id"]], name="Candidate"))["graph"]["branches"][-1]
+    fork_result = ok(command(client, p, "fork_branch", [n["id"]], name="Candidate"))
+    await_intervention(client, fork_result['intervention']['id'])
+    fork = fork_result["graph"]["branches"][-1]
     fork_path = fork["workspace"] + "/model.py"
     assert ok(client.get(f"/api/projects/{p['id']}/file", params={"path": fork_path}))["content"] == "base\n"
     ok(client.put(f"/api/projects/{p['id']}/file", json={"path": path, "content": "left\n", "expected_revision": 1}))
@@ -122,6 +134,7 @@ def case_fork_merge_undo_and_files(client, app):
     collision = command(client, p, "merge_branches", left=main["id"], right=fork["id"])
     assert collision.status_code == 409
     result = ok(command(client, p, "merge_branches", left=main["id"], right=fork["id"], resolution={"files": {"model.py": {"content": "combined\n"}}}))
+    await_intervention(client, result['intervention']['id'])
     merged = result["graph"]["branches"][-1]
     assert ok(client.get(f"/api/projects/{p['id']}/file", params={"path": merged["workspace"] + "/model.py"}))["content"] == "combined\n"
     undone = ok(command(client, p, "undo"))
@@ -724,10 +737,14 @@ def case_paused_container_resume_persists_elapsed_before_reconnect(client, app):
 
     with patch('runners.container.control_container', side_effect=container_control):
         paused = ok(client.post(f"/api/runs/{run['id']}/pause", json={}))
+        await_intervention(client, paused['intervention']['id'])
+        paused = ok(client.get(f"/api/runs/{run['id']}"))
         assert paused['status'] == 'paused' and paused['pid'] is None
         assert paused['resource']['paused_live_attempt'] is True
         time.sleep(0.15)
         resumed = ok(client.post(f"/api/runs/{run['id']}/resume", json={}))
+        await_intervention(client, resumed['intervention']['id'])
+        resumed = ok(client.get(f"/api/runs/{run['id']}"))
 
     assert resumed['status'] == 'queued'
     assert resumed['resource']['elapsed_seconds'] >= 0.4
@@ -785,7 +802,7 @@ def case_paused_waiting_child_resume_defers_continue_until_worker_dispatch(clien
             self.signals = []
 
         def all(self):
-            return [{'status': self.status}]
+            return [{'process_id': 'fixture-child', 'status': self.status}]
 
         def signal_all(self, signum):
             self.signals.append(signum)
@@ -794,10 +811,14 @@ def case_paused_waiting_child_resume_defers_continue_until_worker_dispatch(clien
     manager = FakeManager()
     with patch('research.execution.process_manager.process_manager', return_value=manager):
         paused = ok(client.post(f"/api/runs/{run['id']}/pause", json={}))
+        await_intervention(client, paused['intervention']['id'])
+        paused = ok(client.get(f"/api/runs/{run['id']}"))
         assert paused['status'] == 'paused'
         assert paused['resource']['paused_live_attempt'] is True
         time.sleep(0.1)
         resumed = ok(client.post(f"/api/runs/{run['id']}/resume", json={}))
+        await_intervention(client, resumed['intervention']['id'])
+        resumed = ok(client.get(f"/api/runs/{run['id']}"))
 
     assert resumed['status'] == 'queued'
     assert resumed['resource']['live_process_pending_dispatch'] is True

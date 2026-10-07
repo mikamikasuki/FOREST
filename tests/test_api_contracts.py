@@ -560,6 +560,7 @@ def case_context_state_and_configuration(client, app):
     assert isinstance(context["summaries_stale"], list)
     response(client, document, "post", "/api/nodes/{ident}/context/rebuild", f"/api/nodes/{node['id']}/context/rebuild",
              json={"max_chars": 8000, "pin": []})
+    graph = response(client, document, "get", "/api/projects/{ident}/graph", f"/api/projects/{pid}/graph")
     response(client, document, "patch", "/api/nodes/{ident}", f"/api/nodes/{node['id']}",
              json={"title": "Revised context", "expected_revision": graph["revision"]})
     response(client, document, "get", "/api/projects/{ident}/graph/page", f"/api/projects/{pid}/graph/page", params={"limit": 1})

@@ -8,6 +8,46 @@ from research.agents.context_store import (ContextStore,pack_context,message_cha
 from research.agents.provider import ProviderError
 
 
+def test_instruction_receipt_requires_successful_transport_of_complete_current_controls(tmp_path):
+    from research.agents.context_store import PAGE_PREFIX
+    instruction = {'id': 'owner-correction', 'text': 'Keep this entire correction. ' * 250,
+                   'scope': 'project', 'boundary': 'next_request', 'accepted_at': '2026-10-07T00:00:00Z'}
+    state = {'messages': [{'role': 'system', 'content': 'Use actual evidence.'},
+        {'role': 'user', 'content': json.dumps({'context': {'controls': {'goal': 'Study',
+            'owner_instructions': [instruction]}}})}], 'transcript': []}
+    pack_context(state, tmp_path, 8000)
+    assert recover_context_rejection(state, ProviderError('Explicit rejection', code='context_window_exceeded'))
+    packed = pack_context(state, tmp_path, 8000)
+    store = ContextStore(tmp_path)
+    identifier = store.index['current']['controls:1']
+    assert store.confirm_transport_delivery(packed, [instruction], payload_sha256='initial') == []
+    # A local page read whose request failed must not become a delivery receipt.
+    first = store.read(identifier, 0)
+    assert ContextStore(tmp_path).confirm_transport_delivery([], [instruction], payload_sha256='unrelated') == []
+    requests = []
+    while store.pending():
+        pending = store.pending()
+        store.read(pending['segment_id'], pending['offset'])
+        requests.append(pack_context(state, tmp_path, 8000))
+        store = ContextStore(tmp_path)
+    for index, request in enumerate(requests):
+        assert ContextStore(tmp_path).confirm_transport_delivery(request, [instruction], payload_sha256=str(index)) == []
+    # Re-deliver the missing page after a process restart. Whole coverage now
+    # certifies the actual original control, including fields split over pages.
+    first_request = [{'role': 'user', 'content': PAGE_PREFIX + json.dumps(first)}]
+    assert ContextStore(tmp_path).confirm_transport_delivery(first_request, [instruction], payload_sha256='retry') == [instruction['id']]
+    changed = {**instruction, 'text': 'A newly edited authoritative instruction'}
+    state['messages'][1]['content'] = json.dumps({'context': {'controls': {'owner_instructions': [changed]}}})
+    pack_context(state, tmp_path, 8000)
+    assert ContextStore(tmp_path).confirm_transport_delivery(first_request, [changed], payload_sha256='late-old-page') == []
+    # An evidence segment containing the same JSON never gains user authority.
+    evidence = ContextStore(tmp_path)
+    untrusted = evidence.put('source', state['messages'][1]['content'], origin='Source document')
+    page = evidence.read(untrusted, 0)
+    assert evidence.confirm_transport_delivery([{'role': 'user', 'content': PAGE_PREFIX + json.dumps(page)}],
+        [changed], payload_sha256='source') == []
+
+
 def test_soft_character_hint_does_not_force_full_writer_task_into_paging():
     messages=[{'role':'system','content':'Write the complete manuscript JSON.'},
               {'role':'user','content':'Original manuscript condition. '*4000}]

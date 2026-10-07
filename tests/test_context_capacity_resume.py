@@ -59,7 +59,7 @@ with Session.begin() as s:
         for body in ({'context_char_budget': True}, {'context_char_budget': 20.5}, {'context_char_budget': 0}):
             assert harness.client.post(endpoint, json=body).status_code == 422
             assert harness.request('GET', f"/api/runs/{run['id']}")['status'] == 'failed'
-        resumed = harness.request('POST', endpoint, json={})
+        resumed = harness.control_request(endpoint, json={})
         assert resumed['id'] == run['id'] and resumed['status'] == 'queued'
         assert resumed['config']['_next_attempt']['mode'] == 'continue'
         assert resumed['config']['agent_budget'] == {'cost': 1.1}

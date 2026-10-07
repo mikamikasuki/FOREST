@@ -110,17 +110,47 @@ def project(ident:str):
         p=asdict(get(s,Project,ident)); p.pop('graph_meta',None); return p
 @app.patch('/api/projects/{ident}')
 def edit_project(ident:str,body:dict=Body(...)):
+    if 'budget' in body: validate_project_budget(body['budget'])
+    from research.agents.tool_policy import validate_permissions
+    if 'config' in body:
+        try: validate_permissions(body['config'])
+        except ValueError as exc: error('INVALID_TOOL_POLICY', str(exc), 422)
     if 'mode' in body and body['mode'] not in ('auto','assisted','manual'):
         error('INVALID_MODE','Project mode must be auto, assisted, or manual',422)
     with Session.begin() as s:
-        p=s.scalar(select(Project).where(Project.id==ident).with_for_update())
-        if not p: error('NOT_FOUND','Project missing',404)
+        from services.worker.scheduler import _lock_project
+        p=_lock_project(s,ident)
+        if body.get('request_id'):
+            from services.interventions.models import Intervention
+            from services.interventions.application import readback
+            old=s.scalar(select(Intervention).where(Intervention.project_id==ident,Intervention.request_id==body['request_id']))
+            if old:
+                intent={key:value for key,value in body.items() if key not in ('request_id','expected_revision')}
+                if old.kind!='configuration' or old.intent!=intent: error('REQUEST_ID_CONFLICT','Request identity belongs to different intent',409)
+                return {**asdict(p),'intervention':readback(s,old)}
         if body.get('expected_revision',p.revision)!=p.revision: error('REVISION_CONFLICT','Project changed',409)
+        observed=p.revision
         for k in ('name','description','goal','current_direction','archived','mode','budget','config'):
             if k in body: setattr(p,k,body[k])
+        if 'mode' in body and p.config.get('controller'):
+            p.config={**p.config,'controller':{**p.config['controller'],'autonomous':p.mode=='auto'}}
+        if 'budget' in body:
+            from services.worker.scheduler import reserve_project_time
+            for run in s.scalars(select(TaskRun).where(TaskRun.project_id==ident,TaskRun.status.in_(('running','queued','waiting','pausing'))).with_for_update()):
+                if 'requested_task_timeout_seconds' not in run.resource.get('time_budget',{}):
+                    requested,_=requested_task_timeout(s,run)
+                    run.resource={**run.resource,'time_budget':{**run.resource.get('time_budget',{}),
+                        'requested_task_timeout_seconds':requested}}
+                reserved,_=reserve_project_time(s,p,run)
+                if not reserved:
+                    run.config={**run.config,'timeout':run.resource.get('elapsed_seconds',0)}
+                emit(s,ident,'run_changed',{'run_id':run.id,'status':run.status,'budget_policy_updated':True})
         if 'goal' in body:
             for n in s.scalars(select(Node).where(Node.project_id==ident)): n.context_overrides={**n.context_overrides,'needs_refresh':True}
-        p.revision+=1; emit(s,ident,'project_changed',{'revision':p.revision}); s.flush(); return asdict(p)
+        p.revision+=1; emit(s,ident,'project_changed',{'revision':p.revision}); s.flush()
+        from services.interventions.configuration import record_change
+        receipt=record_change(s,p,observed,{key:value for key,value in body.items() if key not in ('request_id','expected_revision')},body.get('request_id'))
+        return {**asdict(p),**({'intervention':receipt} if receipt else {})}
 @app.delete('/api/projects/{ident}')
 def delete_project(ident:str):
     from runners.local import stop_group
@@ -149,14 +179,18 @@ def delete_project(ident:str):
 def duplicate_project(ident:str):
     import copy
     with Session.begin() as s:
-        p=get(s,Project,ident)
+        from services.worker.scheduler import _lock_project
+        p=_lock_project(s,ident)
         graph=copy.deepcopy(graph_from_db(s,p)); graph.pop('_history',None)
         resources={key:[asdict(r) for r in s.scalars(select(model).where(model.project_id==p.id))] for key,model in RESOURCE_MODELS.items()}
         papers=[asdict(r) for r in s.scalars(select(PaperDocument).where(PaperDocument.project_id==p.id))]
         runs=[asdict(r) for r in s.scalars(select(TaskRun).where(TaskRun.project_id==p.id))]
+        from services.interventions.history import export_history,history_ids,import_history,historical_resource
+        history=export_history(s,p.id)
         mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(resources.values())+[papers,runs]:
             for item in rows: mapping.setdefault(item['id'],uid())
+        for item in history_ids(history):mapping.setdefault(item,uid())
         mode=p.mode if p.mode in ('auto','assisted','manual') else 'assisted'
         new=make_project(s,p.name+' · Copy',p.goal,p.description,mode=mode,budget=copy.deepcopy(p.budget),config=copy.deepcopy(p.config))
         def remap(value):
@@ -166,13 +200,17 @@ def duplicate_project(ident:str):
                 value=value.replace(p.id,new.id)
                 for original,replacement in mapping.items(): value=value.replace(original,replacement)
             return value
-        graph=remap(graph); graph['revision']=0
+        from services.interventions.history import historical_branches
+        graph=historical_branches(remap(graph)); graph['revision']=0
         for node in graph['nodes']:
             if node.get('execution_status') in ACTIVE:
                 node['copied_execution_status']=node['execution_status']; node['execution_status']='interrupted'
+        if new.config.get('controller'):
+            controller=remap(new.config['controller'])
+            new.config={**new.config,'controller':{**controller,'status':'paused','phase':'PLAN'}}
         source=project_dir(p.id); destination=project_dir(new.id)
         for path in source.rglob('*'):
-            if path.is_symlink(): continue
+            if path.is_symlink() or '.forest-interventions' in path.relative_to(source).parts: continue
             relative=path.relative_to(source).as_posix()
             target=safe_path(destination,remap(relative))
             if path.is_dir(): target.mkdir(parents=True,exist_ok=True)
@@ -188,7 +226,8 @@ def duplicate_project(ident:str):
                 request_id='copy:'+run_id,kind=row['kind'],status=row['status'] if row['status'] in TERMINAL else 'interrupted',
                 config={**remap(row['config']),'origin':'copied_run','original_run_id':row['id']},node_revision=row['node_revision'],
                 created_at=row['created_at'],started_at=row.get('started_at'),finished_at=row.get('finished_at'),
-                output_path=remap(row['output_path']),dependencies=remap(row.get('dependencies',[])),metrics=remap(row['metrics']),resource=row['resource'],exit_code=row['exit_code']))
+                output_path=remap(row['output_path']),dependencies=remap(row.get('dependencies',[])),metrics=remap(row['metrics']),resource=historical_resource(row['resource']),exit_code=row['exit_code']))
+        import_history(s,new.id,history,remap)
         s.flush(); return asdict(new)
 @app.get('/api/projects/{ident}/graph')
 def graph(ident:str):
@@ -202,46 +241,9 @@ def preview(ident:str,body:GraphCommand):
         return GraphCommandService(graph_from_db(s,p),project_dir(ident)).preview(cmd)
 @app.post('/api/projects/{ident}/graph/commands')
 def command(ident:str,body:GraphCommand):
-    from research.kernel import GraphCommandService
-    with Session.begin() as s:
-        # SQLite has no SELECT FOR UPDATE. Serialize read/compare/write so two
-        # local clients cannot both apply against the same graph revision.
-        if s.bind.dialect.name=='sqlite': s.execute(sql_text('BEGIN IMMEDIATE'))
-        if body.project_id and body.project_id!=ident: error('CROSS_PROJECT','The command belongs to a different project',422)
-        p=s.scalar(select(Project).where(Project.id==ident).with_for_update())
-        if not p: error('NOT_FOUND','Project missing',404)
-        receipt=s.scalar(select(CommandReceipt).where(CommandReceipt.project_id==ident,CommandReceipt.request_id==body.request_id))
-        if receipt: return receipt.response
-        cmd=body.model_dump(); cmd['project_id']=ident
-        result=GraphCommandService(graph_from_db(s,p),project_dir(ident)).apply(cmd); save_graph(s,p,result['graph'])
-        for action in result['impact'].get('actions',[]):
-            if action['action']=='cancel_current_run':
-                for active in s.scalars(select(TaskRun).where(TaskRun.node_id==action['node_id'],TaskRun.status.in_(ACTIVE))
-                                        .with_for_update().execution_options(populate_existing=True)):
-                    from research.execution.process_manager import process_manager
-                    process_manager(safe_path(project_dir(active.project_id),active.output_path+'/workspace'),active.config).cancel_all()
-                    if active.config.get('execution_backend')=='container':
-                        from runners.container import cancel_container
-                        cancel_container(active.config,safe_path(project_dir(active.project_id),active.output_path))
-                    if active.config.get('remote'):
-                        from runners.remote import cancel_remote
-                        cancel_remote(active.config,safe_path(project_dir(active.project_id),active.output_path))
-                    if active.pid:
-                        from runners.local import stop_group
-                        stop_group(active.pid,active.process_created)
-                    finalize_cancelled_run_elapsed(active)
-                    active.status='cancelled'; active.finished_at=now(); active.error='Stopped to apply owner edits'
-                    interrupt_run_reservations(active.id,session=s)
-                    edited=s.get(Node,action['node_id'])
-                    if edited and edited.extra.get('latest_run_id')==active.id: edited.execution_status='cancelled'
-                    emit(s,ident,'run_changed',{'run_id':active.id,'status':'cancelled'})
-        # Editing history cannot roll back completed external effects.
-        for nid in result['impact'].get('affected_nodes',[]): touch_dependents(s,ident,nid if isinstance(nid,str) else nid.get('id',''))
-        run_ids=[]
-        if body.run:
-            run_ids=[r.id for r in enqueue_selected(s,result.get('run_nodes',[]),body.request_id+':run')]
-        public={**result,'graph':{k:v for k,v in result['graph'].items() if k!='_history'},'run_ids':run_ids}
-        s.add(CommandReceipt(project_id=ident,request_id=body.request_id,response=public)); emit(s,ident,'node_changed',{'revision':p.revision}); return public
+    from services.interventions.application import apply_commands
+    if body.project_id and body.project_id!=ident: error('CROSS_PROJECT','The command belongs to a different project',422)
+    return apply_commands(ident,body.request_id,body.expected_revision,[body.model_dump()])
 @app.get('/api/nodes/{ident}')
 def node(ident:str):
     with Session() as s: return asdict(get(s,Node,ident))
@@ -255,11 +257,22 @@ def context(ident:str):
     from research.kernel import ContextBuilder
     with Session() as s:
         n=get(s,Node,ident); p=get(s,Project,n.project_id); g=graph_from_db(s,p); g['goal']=p.goal; g['budget']=p.budget
-        return ContextBuilder(g,project_dir(p.id)).build(ident,n.config.get('role','Researcher'),n.context_overrides)
+        role=n.config.get('role','Researcher')
+        agent=s.get(Agent,n.config['agent_id']) if n.config.get('agent_id') else s.scalar(select(Agent).where(Agent.role==role))
+        from research.agents.tool_policy import effective_tools
+        packet=ContextBuilder(g,project_dir(p.id)).build(ident,role,n.context_overrides)
+        packet['controls']['allowed_tools']=effective_tools(agent.tools if agent else None,project=p.config,node=n.config)
+        if agent and not agent.enabled:packet['controls']['allowed_tools']=[]
+        return packet
 @app.post('/api/nodes/{ident}/context/rebuild')
 def context_rebuild(ident:str,body:dict=Body(default={})):
+    from services.worker.scheduler import _lock_project
+    with Session() as s: project_id=get(s,Node,ident).project_id
     with Session.begin() as s:
-        n=get(s,Node,ident); n.context_overrides={**n.context_overrides,**body,'needs_refresh':False}; emit(s,n.project_id,'context_changed',{'node_id':ident})
+        p=_lock_project(s,project_id); n=get(s,Node,ident,for_update=True)
+        if body.get('expected_revision',p.revision)!=p.revision: error('REVISION_CONFLICT','Project changed',409)
+        n.context_overrides={**n.context_overrides,**{key:value for key,value in body.items() if key!='expected_revision'},'needs_refresh':False}
+        p.revision+=1; emit(s,n.project_id,'context_changed',{'node_id':ident,'revision':p.revision})
     return context(ident)
 @app.post('/api/nodes/{ident}/run')
 def run_node(ident:str,body:RunRequest):
@@ -291,10 +304,17 @@ def run(ident:str):
         r['tools']=[asdict(t) for t in s.scalars(select(ToolExecution).where(ToolExecution.run_id==ident).order_by(ToolExecution.created_at))]; return r
 @app.post('/api/runs/{ident}/{action}')
 def run_action(ident:str,action:str,body:dict=Body(default={})):
-    from runners.local import signal_group,stop_group
+    if action=='cancel':
+        from services.interventions.application import cancel_run
+        return cancel_run(ident,body)
+    if action in ('pause','resume'):
+        from services.interventions.lifecycle import control_run
+        return control_run(ident,action,body)
     with Session.begin() as s:
-        if action in ('cancel','pause','resume') and s.bind.dialect.name=='sqlite': s.execute(sql_text('BEGIN IMMEDIATE'))
-        r=get(s,TaskRun,ident)
+        with Session() as reader: project_id=get(reader,TaskRun,ident).project_id
+        from services.worker.scheduler import _lock_project
+        _lock_project(s,project_id)
+        r=get(s,TaskRun,ident,for_update=True)
         if action=='retry':
             from services.worker.scheduler import _lock_project
             _lock_project(s,r.project_id)
@@ -304,140 +324,6 @@ def run_action(ident:str,action:str,body:dict=Body(default={})):
             return asdict(enqueue(s,r.project_id,r.kind,r.config,body.get('request_id'),s.get(Node,r.node_id) if r.node_id else None,r.dependencies,
                                   requested_timeout_override=requested_timeout,
                                   node_revision=r.node_revision if r.node_id else None))
-        if action in ('cancel','pause','resume'):
-            # Validate control actions against locked current state before
-            # signaling anything, using the request guard's project -> run order.
-            project=s.scalar(select(Project).where(Project.id==r.project_id).with_for_update())
-            if not project: error('NOT_FOUND','Project does not exist',404)
-            r=s.scalar(select(TaskRun).where(TaskRun.id==ident).with_for_update().execution_options(populate_existing=True))
-            if not r: error('NOT_FOUND','Run missing',404)
-        if action=='cancel':
-            if r.status in TERMINAL:
-                if r.status in ('cancelled','interrupted','failed'): interrupt_run_reservations(r.id,session=s)
-                return asdict(r)
-            from research.execution.process_manager import process_manager
-            process_manager(safe_path(project_dir(r.project_id),r.output_path+'/workspace'),r.config).cancel_all()
-            if r.config.get('execution_backend')=='container':
-                from runners.container import cancel_container
-                cancel_container(r.config,safe_path(project_dir(r.project_id),r.output_path))
-            if r.config.get('remote'):
-                from runners.remote import cancel_remote
-                cancel_remote(r.config,safe_path(project_dir(r.project_id),r.output_path))
-            if r.pid: stop_group(r.pid,r.process_created)
-            finalize_cancelled_run_elapsed(r)
-            r.status='cancelled'; r.finished_at=now(); r.error='Stopped by owner'
-            interrupt_run_reservations(r.id,session=s)
-        elif action=='pause':
-            if r.status not in ('queued','waiting','budget_exhausted','running'): error('INVALID_RUN_STATE','Run is not running or queued',409)
-            container_state=None
-            from research.execution.process_manager import process_manager
-            manager=process_manager(safe_path(project_dir(r.project_id),r.output_path+'/workspace'),r.config)
-            managed_before=manager.all()
-            manager.signal_all(signal.SIGSTOP)
-            if r.config.get('execution_backend')=='container':
-                from runners.container import control_container
-                container_state=control_container(r.config,safe_path(project_dir(r.project_id),r.output_path),'pause')
-            if r.status in ('queued','waiting','budget_exhausted'):
-                if r.status in ('waiting','budget_exhausted'):
-                    resource={**(r.resource or {}),'elapsed_seconds':_elapsed_seconds_at(r)}
-                    resource.pop('waiting_started_at',None); resource.pop('elapsed_before_wait',None)
-                    r.resource=resource
-                r.status='paused'
-                live_managed=any(item['status'] not in ('completed','failed','cancelled','lost') for item in managed_before)
-                live_container=container_state and container_state.get('status') in ('running','paused','starting')
-                if live_managed or live_container:
-                    r.resource={**(r.resource or {}),'paused_live_attempt':True}
-            elif r.status=='running':
-                r.status='pausing'
-                if r.pid and signal_group(r.pid,r.process_created,signal.SIGSTOP): r.status='paused'
-                elif container_state and container_state['status']=='paused': r.status='paused'; r.pid=None; r.process_created=None
-                else: error('PROCESS_UNAVAILABLE','Cannot pause a process that is no longer running',409)
-                r.resource={**(r.resource or {}),'paused_live_attempt':True}
-        elif action=='resume':
-            legacy_context_failure = (r.kind=='agent' and r.status=='failed' and
-                str(r.error or '').startswith(('Task controls exceed the configured context_char_budget;',
-                    'The latest complete native tool exchange exceeds context_char_budget;')))
-            if r.status not in ('paused','waiting_input','waiting','budget_exhausted') and not legacy_context_failure: error('INVALID_RUN_STATE','Run is not paused or waiting',409)
-            requested_timeout,timeout_source=requested_task_timeout(s,r)
-            project_budget=project.budget or {}
-            other_runs=s.scalars(select(TaskRun).where(TaskRun.project_id==r.project_id,TaskRun.id!=r.id))
-            other_elapsed=sum(_elapsed_seconds_at(item) for item in other_runs)
-            elapsed=_elapsed_seconds_at(r)
-            time_budget=dict((r.resource or {}).get('time_budget') or {})
-            time_budget['requested_task_timeout_seconds']=requested_timeout
-            r.resource={**(r.resource or {}),'elapsed_seconds':elapsed,'time_budget':time_budget}
-            reserved,held_by_other=reserve_project_time(s,project,r)
-            if not reserved: error('TIME_BUDGET_EXHAUSTED','No project or task time budget remains for this run',409)
-            effective_timeout=(r.resource.get('time_budget') or {}).get('effective_total_timeout_seconds')
-            resource=dict(r.resource or {})
-            resource.pop('paused_live_attempt',None)
-            resource.pop('live_process_pending_dispatch',None)
-            if r.status in ('waiting','budget_exhausted'):
-                resource.pop('waiting_started_at',None); resource.pop('elapsed_before_wait',None)
-            r.resource=resource
-            time_budget=dict((r.resource or {}).get('time_budget') or {})
-            resume_record={'resumed_at':now(),'requested_task_timeout_seconds':requested_timeout,
-                           'requested_timeout_source':timeout_source,'effective_total_timeout_seconds':effective_timeout,
-                           'project_budget_seconds':project_budget.get('seconds'),
-                           'project_revision':project.revision,'other_run_elapsed_seconds':other_elapsed,
-                           'other_run_reserved_seconds':held_by_other,'run_elapsed_seconds':elapsed}
-            time_budget.update(project_budget_seconds_at_resume=project_budget.get('seconds'),
-                               project_revision_at_resume=project.revision,
-                               resume_history=[*time_budget.get('resume_history',[]),resume_record])
-            r.resource={**r.resource,'time_budget':time_budget}
-            emit(s,r.project_id,'run_time_budget_recalculated',{'run_id':r.id,**resume_record})
-            if r.kind=='agent' and (legacy_context_failure or r.config.get('context_policy')!='automatic'):
-                change={'changed_at':now(),'previous':r.config.get('context_policy','legacy'),
-                        'updated':'automatic','previous_status':r.status,'previous_error':r.error}
-                r.config={**r.config,'context_policy':'automatic',
-                          'context_policy_changes':[*r.config.get('context_policy_changes',[]),change]}
-                emit(s,r.project_id,'agent_context_policy_changed',{'run_id':r.id,**change})
-            if 'context_char_budget' in body:
-                if r.kind!='agent': error('INVALID_RUN_KIND','Context edits apply only to Agent runs',422)
-                value=body['context_char_budget']
-                if isinstance(value,bool) or not isinstance(value,int) or value<1000:
-                    error('INVALID_CONTEXT_BUDGET','context_char_budget must be an integer of at least1000 characters',422)
-                previous=r.config.get('context_char_budget')
-                if value!=previous or legacy_context_failure:
-                    change={'changed_at':now(),'previous':previous,'updated':value,'action':'resume',
-                            'previous_status':r.status,'previous_error':r.error}
-                    r.config={**r.config,'context_char_budget':value,'context_budget_changes':[*r.config.get('context_budget_changes',[]),change]}
-                    emit(s,r.project_id,'agent_context_budget_changed',{'run_id':r.id,**change})
-            if 'agent_budget' in body:
-                if r.kind!='agent': error('INVALID_RUN_KIND','agent_budget updates apply only to Agent runs',422)
-                from research.agents.budget import agent_budget_update
-                previous=dict(r.config.get('agent_budget') or {})
-                try: updated=agent_budget_update(previous,body['agent_budget'])
-                except ValueError as exc: error('INVALID_AGENT_BUDGET',str(exc),422)
-                if updated!=previous:
-                    change={'changed_at':now(),'previous':previous,'updated':updated,'action':'resume'}
-                    r.config={**r.config,'agent_budget':updated,'agent_budget_changes':[*r.config.get('agent_budget_changes',[]),change]}
-                    emit(s,r.project_id,'agent_budget_changed',{'run_id':r.id,**change})
-            from research.execution.process_manager import process_manager
-            manager=process_manager(safe_path(project_dir(r.project_id),r.output_path+'/workspace'),r.config)
-            managed_before=manager.all()
-            if r.pid:
-                manager.signal_all(signal.SIGCONT)
-                if signal_group(r.pid,r.process_created,signal.SIGCONT):
-                    if r.config.get('execution_backend')=='container':
-                        from runners.container import control_container
-                        control_container(r.config,safe_path(project_dir(r.project_id),r.output_path),'resume')
-                    r.status='running'
-                elif legacy_context_failure:
-                    r.pid=None; r.process_created=None; r.status='queued'; r.config={**r.config,'_next_attempt':{'mode':'continue'}}
-                elif r.config.get('execution_backend')=='container':
-                    r.pid=None; r.process_created=None; r.status='queued'; r.config={**r.config,'_next_attempt':{'mode':'container_reconnect'}}
-                    r.resource={**r.resource,'container_reconnect_pending_dispatch':True}
-                else: error('PROCESS_UNAVAILABLE','Paused process was lost; restart the run',409)
-            else:
-                next_mode='container_reconnect' if r.config.get('execution_backend')=='container' else 'continue'
-                r.status='queued'; r.config={**r.config,'_next_attempt':{'mode':next_mode}}
-                if r.config.get('execution_backend')=='container':
-                    r.resource={**r.resource,'container_reconnect_pending_dispatch':True}
-                elif any(item['status'] not in ('completed','failed','cancelled','lost') for item in managed_before):
-                    # Keep a paused managed child stopped until the worker has
-                    # reacquired project budget and records the queue interval.
-                    r.resource={**r.resource,'live_process_pending_dispatch':True}
         elif action=='skip':
             if r.status!='queued': error('INVALID_RUN_STATE','Only queued steps may be skipped',409)
             r.status='skipped'; r.finished_at=now()
@@ -548,12 +434,20 @@ def update_settings(body:dict=Body(...)):
 @app.post('/api/settings/cleanup')
 def cleanup(body:dict=Body(...)):
     cutoff=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(days=max(0,int(body.get('days',30))))).isoformat(); removed=0
-    with Session.begin() as s:
-        for r in s.scalars(select(TaskRun).where(TaskRun.finished_at<cutoff,TaskRun.status.in_(TERMINAL))):
-            if body.get('project_id') and r.project_id!=body['project_id']: continue
-            shutil.rmtree(safe_path(project_dir(r.project_id),r.output_path),ignore_errors=True); touch_dependents(s,r.project_id,r.id); s.delete(r); removed+=1
-        if body.get('clear_edit_history'):
-            for p in s.scalars(select(Project)): p.graph_meta={k:v for k,v in p.graph_meta.items() if k!='_history'}
+    with Session() as reader:
+        projects=list(reader.scalars(select(Project.id).where(Project.id==body['project_id']) if body.get('project_id') else select(Project.id)))
+    for project_id in sorted(projects):
+        with Session.begin() as s:
+            from services.worker.scheduler import _lock_project
+            project=_lock_project(s,project_id)
+            for run in s.scalars(select(TaskRun).where(TaskRun.project_id==project_id,
+                    TaskRun.finished_at<cutoff,TaskRun.status.in_(TERMINAL)).with_for_update()):
+                from services.interventions.controls import close_unconsumed
+                close_unconsumed(s,run)
+                shutil.rmtree(safe_path(project_dir(project_id),run.output_path),ignore_errors=True)
+                touch_dependents(s,project_id,run.id); s.delete(run); removed+=1
+            if body.get('clear_edit_history'):
+                project.graph_meta={key:value for key,value in project.graph_meta.items() if key!='_history'}
     return {'deleted_runs':removed}
 @app.get('/api/providers')
 def providers():
@@ -627,14 +521,26 @@ def agents():
     with Session() as s: return [asdict(a) for a in s.scalars(select(Agent))]
 @app.post('/api/agents')
 def agent_create(body:dict=Body(...)):
+    from research.agents.tool_policy import validate_permissions
+    try:
+        validate_permissions({key: body[key] for key in ('tools',) if key in body})
+        validate_permissions(body.get('config', {}))
+    except ValueError as exc: error('INVALID_TOOL_POLICY', str(exc), 422)
     values={k:body[k] for k in ('name','role','instructions','provider_id','tools','config','enabled') if k in body}
     values['config']=explicit_agent_config(values.get('config'))
     with Session.begin() as s:
+        if values.get('provider_id') and not s.get(Provider,values['provider_id']): error('PROVIDER_NOT_FOUND','Selected provider does not exist',422)
         a=Agent(**values); s.add(a); s.flush(); return asdict(a)
 @app.patch('/api/agents/{ident}')
 def agent_edit(ident:str,body:dict=Body(...)):
+    from research.agents.tool_policy import validate_permissions
+    try:
+        validate_permissions({key: body[key] for key in ('tools',) if key in body})
+        validate_permissions(body.get('config', {}))
+    except ValueError as exc: error('INVALID_TOOL_POLICY', str(exc), 422)
     with Session.begin() as s:
-        a=get(s,Agent,ident)
+        a=get(s,Agent,ident,for_update=True)
+        if body.get('provider_id') and not s.get(Provider,body['provider_id']): error('PROVIDER_NOT_FOUND','Selected provider does not exist',422)
         customized=bool((a.config or {}).get('tools_customized')) or 'tools' in body
         for k in ('name','role','instructions','provider_id','tools','config','enabled'):
             if k in body: setattr(a,k,body[k])
@@ -685,6 +591,8 @@ from .run_diagnostics import router as diagnostics_router
 app.include_router(diagnostics_router)
 from .verification import router as verification_router
 app.include_router(verification_router)
+from .interventions import router as interventions_router
+app.include_router(interventions_router)
 
 def api_openapi():
     """Describe the existing API without changing handler validation or output."""

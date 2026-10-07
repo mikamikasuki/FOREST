@@ -59,11 +59,17 @@ def compare_papers(body:dict=Body(...)):
 @router.post('/api/library/{ident}/reindex')
 def reindex(ident:str):
     from research.literature.sources import extract_pdf
-    with Session.begin() as s:
-        r=get(s,SourcePaper,ident); path=r.data.get('pdf_path') or r.data.get('fulltext_path')
+    with Session() as s:
+        r=get(s,SourcePaper,ident); pid=r.project_id; revision=r.revision
+        path=r.data.get('pdf_path') or r.data.get('fulltext_path')
         if not path: error('FULLTEXT_UNAVAILABLE','Import a public PDF or upload one first',409)
-        p=safe_path(project_dir(r.project_id),path,True); passages=extract_pdf(p)
-        if isinstance(passages,dict): passages=passages.get('passages',[])
+        p=safe_path(project_dir(pid),path,True)
+    passages=extract_pdf(p)
+    if isinstance(passages,dict): passages=passages.get('passages',[])
+    with Session.begin() as s:
+        from services.worker.scheduler import _lock_project
+        _lock_project(s,pid);r=get(s,SourcePaper,ident,for_update=True)
+        if r.revision!=revision:error('REVISION_CONFLICT','Source changed during extraction; reindex the current source',409)
         r.data={**r.data,'passages':passages,'reading_scope':'fulltext'}; r.revision+=1; touch_dependents(s,r.project_id,ident); return asdict(r)
 @router.post('/api/research/ideas')
 def generate_ideas(body:dict=Body(...)):
@@ -93,7 +99,7 @@ def adopt(ident:str,body:dict=Body(default={})):
                 return g
         if body.get('expected_revision',p.revision)!=p.revision:
             error('REVISION_CONFLICT','The project changed; refresh before adopting the idea',409)
-        original=deepcopy(g)
+        original=deepcopy(g); commands=[]
         config=deepcopy(body.get('config',idea.data.get('experiment_config',{})))
         if not isinstance(config,dict): error('INVALID_EXPERIMENT_CONFIG','Experiment config must be an object',422)
         inputs=deepcopy(body.get('inputs',config.pop('inputs',idea.data.get('inputs',[]))))
@@ -133,8 +139,7 @@ def adopt(ident:str,body:dict=Body(default={})):
             params={'id':nid,'branch_id':branch_id,'type':node_type,'title':label,'instructions':instructions,
                     'config':node_config,'inputs':node_inputs,'position':{'x':x+column*320,'y':80},'adopted_idea_id':idea.id}
             if parent: params['parent_id']=parent
-            g=GraphCommandService(g,project_dir(p.id)).apply({'project_id':p.id,'request_id':uid(),'expected_revision':g['revision'],
-                    'operation':'add_node','targets':[],'params':params})['graph']
+            commands.append({'operation':'add_node','targets':[],'params':params})
         add(hypothesis_id,'hypothesis',title,
             'Develop this adopted idea into a testable protocol. '+duty+' Write hypothesis.md in the run workspace and finish with that actual artifact.\n'
             +'Owner instructions: '+custom+'\nIdea source material (claims are untested unless supported):\n'+source_text,
@@ -182,16 +187,15 @@ def adopt(ident:str,body:dict=Body(default={})):
                 {'kind':'agent','role':'Experimenter','requires_implementation':True},
                 [*common_inputs,protocol,*generated],2,engineer_id)
             adopted_ids=[hypothesis_id,engineer_id,experiment_id]
-        # Adoption is one editable graph operation: one revision and one undo.
-        history=deepcopy(original.get('_history',{'undo':[],'redo':[]}))
-        history['undo']=(history.get('undo',[])+[{k:v for k,v in original.items() if k!='_history'}])
-        history['redo']=[]
-        g['_history']=history
-        g['revision']=p.revision+1
-        save_graph(s,p,g)
+        from services.interventions.application import apply_in_session
+        graph_request='adopt:'+(request_id or uid())
+        applied=apply_in_session(s,p,graph_request,original['revision'],commands,
+            actor='owner',batch=True,origin={'idea_id':idea.id},single_revision=True)
+        g=applied['graph']
         idea.status='adopted'
         idea.data={**idea.data,'adoption':{'node_ids':adopted_ids,'branch_id':branch_id,'graph_revision':g['revision']}}
-        if request_id: s.add(CommandReceipt(project_id=p.id,request_id=receipt_key,response={'idea_id':idea.id,'node_ids':adopted_ids}))
+        receipt=s.scalar(select(CommandReceipt).where(CommandReceipt.project_id==p.id,CommandReceipt.request_id==graph_request))
+        receipt.response={**receipt.response,'idea_id':idea.id,'node_ids':adopted_ids}
         emit(s,p.id,'node_changed',{'adopted_idea_id':idea.id,'node_ids':adopted_ids})
         g=graph_from_db(s,p)
         g.pop('_history',None)
@@ -304,6 +308,10 @@ def generate_manuscript(ident:str,body:dict=Body(...)):
             run=get(s,TaskRun,run_id)
             if run.project_id!=p.project_id or run.status!='completed':
                 error('INVALID_EVIDENCE','Manuscript evidence must be completed runs in this project',422)
+            from services.interventions.applicability import goal_applicability
+            applicable=goal_applicability(s,run)
+            if not applicable['ready']:
+                error('GOAL_APPLICABILITY_REQUIRED','Review manuscript evidence against the current goal: '+run.id,409)
         return asdict(enqueue(s,p.project_id,'paper_generate',{**body,'manuscript_type':body.get('manuscript_type','full_paper')},body.get('request_id')))
 @router.post('/api/papers/{ident}/figures')
 def insert_paper_figure(ident:str,body:dict=Body(...)):
@@ -430,26 +438,38 @@ def export_paper(ident:str,body:dict=Body(default={})):
 
 # Separate SQL tables for research object types, with uniform revision-aware editing.
 def install_resource_routes(name,model):
+    def lock_record(s,ident):
+        from services.worker.scheduler import _lock_project
+        project_id=s.scalar(select(model.project_id).where(model.id==ident))
+        if not project_id:error('NOT_FOUND','Research object missing',404)
+        _lock_project(s,project_id)
+        return get(s,model,ident,for_update=True)
     def listing(project_id:str,limit:int=100,offset:int=0):
         with Session() as s: get(s,Project,project_id); return [asdict(r) for r in s.scalars(select(model).where(model.project_id==project_id).order_by(model.updated_at.desc()).limit(min(limit,500)).offset(max(0,offset)))]
     def create(body:ResourceCreate):
         with Session.begin() as s:
-            get(s,Project,body.project_id); r=model(**body.model_dump()); s.add(r); s.flush(); emit(s,r.project_id,'artifact_available',{'kind':name,'id':r.id}); return asdict(r)
+            from services.worker.scheduler import _lock_project
+            _lock_project(s,body.project_id)
+            from services.interventions.dependencies import validate_bindings
+            validate_bindings(s,body.project_id,body.data)
+            r=model(**body.model_dump()); s.add(r); s.flush(); emit(s,r.project_id,'artifact_available',{'kind':name,'id':r.id}); return asdict(r)
     def read(ident:str):
         with Session() as s: return asdict(get(s,model,ident))
     def edit(ident:str,body:dict=Body(...)):
         with Session.begin() as s:
-            # Both mutations lock the resource before dependents and the SSE
-            # cursor; deleting must not take the cursor lock ahead of this row.
-            r=get(s,model,ident,for_update=True)
+            # Project -> resource -> dependent records -> event cursor.
+            r=lock_record(s,ident)
             if body.get('expected_revision',r.revision)!=r.revision: error('REVISION_CONFLICT','This research object changed',409)
             if 'title' in body: r.title=body['title']
-            if 'data' in body: r.data={**r.data,**body['data']}
+            if 'data' in body:
+                from services.interventions.dependencies import validate_bindings
+                validate_bindings(s,r.project_id,{**r.data,**body['data']})
+                r.data={**r.data,**body['data']}
             if 'status' in body: r.status=body['status']
             r.revision+=1; touch_dependents(s,r.project_id,r.id); return asdict(r)
     def remove(ident:str):
         with Session.begin() as s:
-            r=get(s,model,ident,for_update=True); touch_dependents(s,r.project_id,ident); s.delete(r); return {'deleted':ident}
+            r=lock_record(s,ident); touch_dependents(s,r.project_id,ident); s.delete(r); return {'deleted':ident}
     router.add_api_route('/api/'+name,listing,methods=['GET'],name=name+'_list')
     if name!='reviews': router.add_api_route('/api/'+name,create,methods=['POST'],name=name+'_create')
     router.add_api_route('/api/'+name+'/{ident}',read,methods=['GET'],name=name+'_get')
@@ -459,13 +479,29 @@ for name,model in RESOURCE_MODELS.items(): install_resource_routes(name,model)
 
 @router.post('/api/projects/{ident}/research/{action}')
 def research_control(ident:str,action:str,body:dict=Body(default={})):
+    intervention_id=None
     with Session.begin() as s:
-        p=s.scalar(select(Project).where(Project.id==ident).with_for_update())
-        if not p: error('NOT_FOUND','Project does not exist',404)
+        from services.worker.scheduler import _lock_project
+        p=_lock_project(s,ident)
         control=p.config.get('controller',{}); affected=[]
+        from services.interventions.models import Intervention
+        old=s.scalar(select(Intervention).where(Intervention.project_id==ident,
+            Intervention.request_id==body.get('request_id'))) if body.get('request_id') else None
+        if old:
+            from services.interventions.application import readback
+            requested={'start':'resume','pause':'pause','stop':'cancel'}.get(action)
+            if old.actor!='owner_controller' or old.intent.get('action')!=requested:
+                error('REQUEST_ID_CONFLICT','Request identity belongs to different controller intent',409)
+            parameters={key:value for key,value in body.items() if key not in ('request_id','expected_revision')}
+            if old.intent.get('parameters',{})!=parameters:
+                error('REQUEST_ID_CONFLICT','Request identity belongs to different controller parameters',409)
+            return {**control,'intervention':readback(s,old),'process_control_errors':[]}
         if action=='start':
+            parallelism=body.get('ready_parallelism',control.get('ready_parallelism',1))
+            if type(parallelism) is not int or not 1<=parallelism<=32:
+                error('INVALID_PARALLELISM','ready_parallelism must be an integer from 1 to 32',422)
             affected=control.get('paused_run_ids',[])
-            control={**control,'status':'running','phase':'PLAN','branch_id':body.get('branch_id',control.get('branch_id')),'required_artifacts':body.get('required_artifacts',control.get('required_artifacts',[])), 'autonomous':body.get('autonomous',control.get('autonomous',p.mode=='auto')), 'max_cycles':body.get('max_cycles',control.get('max_cycles'))}
+            control={**control,'status':'running','phase':'PLAN','branch_id':body.get('branch_id',control.get('branch_id')),'required_artifacts':body.get('required_artifacts',control.get('required_artifacts',[])), 'autonomous':body.get('autonomous',control.get('autonomous',p.mode=='auto')), 'max_cycles':body.get('max_cycles',control.get('max_cycles')),'ready_parallelism':parallelism}
             control.pop('reason',None);control.pop('paused_run_ids',None)
         elif action in ('pause','stop'):
             from services.worker.scheduler import ACTIVE
@@ -474,29 +510,50 @@ def research_control(ident:str,action:str,body:dict=Body(default={})):
             affected=[r.id for r in s.scalars(q) if action=='stop' or r.status in ('running','waiting','queued')]
             control={**control,'status':'paused' if action=='pause' else 'stopped'}
             if action=='pause':control['paused_run_ids']=affected
+            if action=='stop':
+                from services.interventions.application import accept_cancel_in_session
+                receipt=accept_cancel_in_session(s,p,body.get('request_id') or uid(),affected,
+                    expected_revision=body.get('expected_revision'),actor='owner_controller',
+                    parameters={key:value for key,value in body.items() if key not in ('request_id','expected_revision')})
+                intervention_id=receipt.id
         else: error('UNKNOWN_ACTION','Use start, pause or stop',404)
+        if action in ('pause','start'):
+            from services.interventions.lifecycle import accept_lifecycle
+            receipt=accept_lifecycle(s,p,body.get('request_id') or uid(),affected,
+                'pause' if action=='pause' else 'resume',body=body,actor='owner_controller')
+            intervention_id=receipt.id
         p.config={**p.config,'controller':control};emit(s,ident,'controller_changed',control)
-    # Release project lock before each ordinary process-control transaction.
-    from .main import run_action
-    failures=[]
-    for rid in affected:
-        try:run_action(rid,{'start':'resume','pause':'pause','stop':'cancel'}[action],{})
-        except Exception as exc:failures.append({'run_id':rid,'error':str(exc)})
-    return {**control,'process_control_errors':failures}
+    if intervention_id:
+        from services.interventions.application import kick_effects,readback
+        from services.interventions.models import Intervention
+        kick_effects(intervention_id=intervention_id,limit=10)
+        with Session() as s:receipt=readback(s,get(s,Intervention,intervention_id))
+        return {**control,'intervention':receipt,'process_control_errors':[]}
+    return {**control,'process_control_errors':[]}
 
 @router.post('/api/research/proposals/{ident}/apply')
 def apply_proposal(ident:str,body:dict=Body(...)):
-    from research.kernel import GraphCommandService
+    from services.interventions.application import apply_in_session,kick_effects,readback
+    from services.interventions.models import Intervention
+    from services.worker.scheduler import _lock_project
+    with Session() as reader: project_id=get(reader,Hypothesis,ident).project_id
     with Session.begin() as s:
-        proposal=get(s,Hypothesis,ident); p=s.scalar(select(Project).where(Project.id==proposal.project_id).with_for_update())
-        if body.get('expected_revision',p.revision)!=p.revision: error('REVISION_CONFLICT','Graph changed before proposal application',409)
-        commands=body.get('commands',proposal.data.get('commands',[])); selected=body.get('indices',list(range(len(commands))))
-        if not selected: error('EMPTY_SELECTION','Choose at least one proposed command')
-        graph=graph_from_db(s,p); applied=[]
-        for index in selected:
-            cmd={**commands[index],'project_id':p.id,'request_id':uid(),'expected_revision':graph['revision']}
-            result=GraphCommandService(graph,project_dir(p.id)).apply(cmd); graph=result['graph']; applied.append(index)
-        save_graph(s,p,graph); proposal.data={**proposal.data,'accepted_indices':sorted(set(proposal.data.get('accepted_indices',[])+applied))}; proposal.status='partly_adopted' if len(applied)<len(commands) else 'adopted'; graph.pop('_history',None); emit(s,p.id,'node_changed',{'revision':p.revision}); return {'graph':graph,'accepted_indices':applied}
+        p=_lock_project(s,project_id);proposal=get(s,Hypothesis,ident)
+        if proposal.status=='rejected':error('PROPOSAL_REJECTED','This proposal was rejected; submit a revised proposal',409)
+        commands=body.get('commands',proposal.data.get('commands',[]))
+        selected=body.get('indices',list(range(len(commands))))
+        if not selected or any(type(i) is not int or not 0<=i<len(commands) for i in selected):
+            error('INVALID_SELECTION','Choose valid proposed commands',422)
+        request_id=body.get('request_id') or uid()
+        result=apply_in_session(s,p,request_id,body.get('expected_revision',proposal.data.get('graph_revision')),
+                                [commands[i] for i in selected],actor='owner_proposal',batch=True,
+                                origin={'proposal_id':ident,'indices':selected})
+        proposal.data={**proposal.data,'accepted_indices':sorted(set(proposal.data.get('accepted_indices',[])+selected))}
+        proposal.status='partly_adopted' if len(proposal.data['accepted_indices'])<len(commands) else 'adopted'
+        result['accepted_indices']=selected;intervention_id=result['intervention']['id']
+    kick_effects(intervention_id=intervention_id,limit=10)
+    with Session() as s:result['intervention']=readback(s,get(s,Intervention,intervention_id))
+    return result
 
 @router.post('/api/reviews/{ident}/apply')
 def apply_revision(ident:str,body:dict=Body(...)):

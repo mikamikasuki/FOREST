@@ -57,7 +57,14 @@ import {
   Download,
   GitCompare,
 } from "lucide-react";
-import { api, uid, hasCycle, parseJson, formatDate, executionLinks } from "./api";
+import {
+  api,
+  uid,
+  hasCycle,
+  parseJson,
+  formatDate,
+  executionLinks,
+} from "./api";
 import type { Graph, ResearchNode, Run, Json } from "./api";
 import {
   useUI,
@@ -313,7 +320,10 @@ function WorkspaceInner() {
   useEffect(() => {
     if (!selected && graph.nodes.length) setSelected(graph.nodes[0].id);
   }, [graph.nodes, selected]);
-  const linkedEdges = useMemo(() => executionLinks(graph), [graph.nodes, graph.edges]);
+  const linkedEdges = useMemo(
+    () => executionLinks(graph),
+    [graph.nodes, graph.edges],
+  );
   const hidden = useMemo(() => {
     const out = new Set<string>();
     for (const root of collapsed) {
@@ -404,9 +414,11 @@ function WorkspaceInner() {
         animated: runs.some(
           (r) => r.node_id === e.target && r.status === "running",
         ),
-        label: e.implicit ? "input binding" : ["depends_on", "consumes"].includes(e.relation)
-          ? undefined
-          : e.relation,
+        label: e.implicit
+          ? "input binding"
+          : ["depends_on", "consumes"].includes(e.relation)
+            ? undefined
+            : e.relation,
         style: {
           stroke: e.relation === "depends_on" ? "#9bad9e" : "#a7b2bd",
           strokeWidth: 1.5,
@@ -975,7 +987,12 @@ function WorkspaceInner() {
           }}
           onPreview={async (op, targets, params) => {
             const result = await request(op, targets, params, true);
-            setPending({ op, targets, params });
+            setPending({
+              op,
+              targets,
+              params,
+              expectedRevision: graph.revision,
+            });
             setImpact(result.impact || result);
           }}
         />
@@ -1015,7 +1032,13 @@ function WorkspaceInner() {
               onClick={() =>
                 action(async () => {
                   if (pending)
-                    await request(pending.op, pending.targets, pending.params);
+                    await request(
+                      pending.op,
+                      pending.targets,
+                      pending.params,
+                      false,
+                      pending.expectedRevision,
+                    );
                   setImpact(null);
                   setPending(null);
                   setCommand(false);
@@ -1048,9 +1071,16 @@ function AddNode({
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
-          await action(() => onCreate({ type, title, instructions,
-            ...(type === "verification" ? {config: {kind: "verification"}} : {}),
-          }));
+          await action(() =>
+            onCreate({
+              type,
+              title,
+              instructions,
+              ...(type === "verification"
+                ? { config: { kind: "verification" } }
+                : {}),
+            }),
+          );
           setBusy(false);
         }}
       >
@@ -1267,7 +1297,7 @@ function NodeInspector({
             context_overrides: parseJson(overrides),
             stop_current_run: stopCurrent,
           },
-          graph.revision,
+          base.revision,
         ),
       t(
         "节点已保存；已有运行保留启动配置。",
@@ -1503,7 +1533,9 @@ function NodeInspector({
                 onChange={(e) => setInputs(e.target.value)}
               />
             </Field>
-            <JsonView value={executionLinks(graph).filter((e) => e.target === node.id)} />
+            <JsonView
+              value={executionLinks(graph).filter((e) => e.target === node.id)}
+            />
           </>
         )}
         {tab === "results" && (
@@ -1594,7 +1626,15 @@ function NodeInspector({
           </>
         )}
       </div>
-      {["running", "queued", "paused"].includes(node.execution_status) && (
+      {[
+        "running",
+        "queued",
+        "pausing",
+        "paused",
+        "waiting",
+        "waiting_input",
+        "budget_exhausted",
+      ].includes(node.execution_status) && (
         <label className="checkbox-label stop-apply">
           <input
             type="checkbox"
@@ -1627,11 +1667,29 @@ export function RunPanel({
   const [output, setOutput] = useState("");
   const run = runs.find((r) => r.id === selected) || runs[0];
   const status = run?.status || "";
-  const terminal = ["completed", "failed", "cancelled", "interrupted", "skipped"].includes(status);
+  const terminal = [
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+    "skipped",
+  ].includes(status);
   const allowedActions: Record<string, boolean> = {
-    pause: ["queued", "waiting", "budget_exhausted", "running"].includes(status),
-    resume: ["paused", "waiting_input", "waiting", "budget_exhausted"].includes(status),
-    cancel: ["queued", "running", "pausing", "paused", "waiting_input", "waiting", "budget_exhausted"].includes(status),
+    pause: ["queued", "waiting", "budget_exhausted", "running"].includes(
+      status,
+    ),
+    resume: ["paused", "waiting_input", "waiting", "budget_exhausted"].includes(
+      status,
+    ),
+    cancel: [
+      "queued",
+      "running",
+      "pausing",
+      "paused",
+      "waiting_input",
+      "waiting",
+      "budget_exhausted",
+    ].includes(status),
     retry: terminal,
   };
   useEffect(() => {

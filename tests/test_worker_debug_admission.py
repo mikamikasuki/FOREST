@@ -62,7 +62,8 @@ def test_debug_checkpoint_retains_shared_capacity_until_resumed_and_completed(po
         assert not (harness.output(second) / 'heartbeat.txt').exists()
 
         resumed = harness.request('POST', f"/api/runs/{first['id']}/resume", json={})
-        assert resumed['status'] == 'running'
+        assert resumed['status'] in ('pausing', 'running')
+        wait_until(lambda: harness.run(first)['status'] in ('running', 'completed'))
         observed = set()
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:

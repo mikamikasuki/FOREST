@@ -69,11 +69,13 @@ def planning_context(project_id):
         runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==p.id).order_by(TaskRun.created_at.desc())))
         from services.api.verification import verification_for_run, numerical_coverage_for_run, required_policy
         from research.planning.route_review import route_health
+        from services.interventions.applicability import goal_applicability
+        applicability={r.id:goal_applicability(s,r) for r in runs}
         verifications={r.id:verification_for_run(s,r) for r in runs}
         numerical={r.id:numerical_coverage_for_run(s,r) for r in runs if r.kind in ('experiment','command','agent','analysis') and r.status=='completed'}
         from .scoreboard import compare_trials
         trial_rows=compare_trials([{'id':r.id,'kind':r.kind,'status':r.status,'metrics':r.metrics,'config':r.config,'created_at':r.created_at,
-                                   'verification_status':verifications[r.id]['verification_status'],
+                                   'verification_status':verifications[r.id]['verification_status'], 'goal_applicability':applicability[r.id],
                                    'numerical_verification':numerical.get(r.id,{}),
                                    'verification_policy':'required' if required_policy(s,r) else 'optional'} for r in runs],p.config.get('objective'))
         profile=publication_profile(p.config)
@@ -89,10 +91,13 @@ def planning_context(project_id):
                            'verification_policy':p.config.get('verification_policy','optional'),
                            'publication_profile':profile,'submission_quality':summary,'publication_instructions':publication_instructions(profile),'planner_context_chars':p.config.get('planner_context_chars',24000)},'graph':graph,
                 'runs':[{'id':r.id,'node_id':r.node_id,'status':r.status,'kind':r.kind,'metrics':r.metrics,'error':r.error,'output_path':r.output_path,
-                         'verification':verifications[r.id],
+                         'verification':verifications[r.id], 'goal_applicability':applicability[r.id],
                          'numerical_verification':numerical.get(r.id,{}),
                          'artifact_observations':run_artifact_observations(r,project_dir(p.id)) if i<12 else []} for i,r in enumerate(runs)],
                 'sources':sources,
+                'rejected_proposals':[{'id':x.id,'commands':x.data.get('commands',[]),'rejection':x.data.get('rejection')}
+                    for x in s.scalars(select(Hypothesis).where(Hypothesis.project_id==p.id,Hypothesis.status=='rejected')
+                        .order_by(Hypothesis.updated_at.desc()).limit(20))],
                 'claims':[asdict(x) for x in s.scalars(select(ResearchClaim).where(ResearchClaim.project_id==p.id))]}
 
 
@@ -123,14 +128,31 @@ def submission_audit(session, project):
     sources=[{'id':x.id,'data':x.data} for x in session.scalars(select(SourcePaper).where(SourcePaper.project_id==project.id))]
     audit=assess_submission(project_dir(project.id),publication_profile(project.config),sources=sources,runs=[_audit_run(r) for r in runs])
     from services.api.verification import verification_for_run, numerical_coverage_for_run
-    critical=set()
-    if project.config.get('verification_policy')=='required':
-        if audit.get('manifest_path'):
-            try:
-                manifest=json.loads(safe_path(project_dir(project.id),audit['manifest_path']).read_text())
+    critical=set(); goal_sources=set(); manifest=None
+    if audit.get('manifest_path'):
+        try:
+            manifest=json.loads(safe_path(project_dir(project.id),audit['manifest_path']).read_text())
+            from services.interventions.dependencies import record_bindings
+            goal_sources.update(item['source_id'] for item in record_bindings(manifest) if item['source_kind']=='run')
+            if publication_profile(project.config)['id']=='full_submission' or project.config.get('verification_policy')=='required':
                 critical.update(row['run_id'] for row in manifest.get('measured_cells',[]) if isinstance(row,dict) and row.get('run_id'))
                 critical.update(manifest.get('analysis_run_ids',[]))
-            except (OSError,ValueError,TypeError):pass
+        except (OSError,ValueError,TypeError):pass
+    from services.api.db import PaperDocument
+    from services.interventions.dependencies import record_bindings
+    for paper in session.scalars(select(PaperDocument).where(PaperDocument.project_id==project.id)):
+        goal_sources.update(item['source_id'] for item in record_bindings(paper.data) if item['source_kind']=='run')
+    from services.interventions.applicability import goal_applicability
+    goal_checks=[]
+    for identifier in sorted(goal_sources):
+        source=session.get(TaskRun,identifier)
+        if source is None or source.project_id!=project.id:
+            audit['gaps'].append({'code':'goal_applicability','finding':'Delivery source is unavailable in this project: '+identifier,'next_role':'Evidence Verifier'})
+            continue
+        checked=goal_applicability(session,source);goal_checks.append(checked)
+        if not checked['ready']:
+            audit['gaps'].append({'code':'goal_applicability','finding':'Delivery source '+identifier+' needs a current goal-use decision: '+checked['status'],'next_role':'Evidence Verifier'})
+    if goal_checks:audit['goal_applicability']=goal_checks
     # Current node policy applies to its latest actual attempt. Superseded
     # evidence remains recorded without becoming a permanent completion gate.
     node_policies={node['id']:node.get('config',{}).get('verification_policy')
@@ -152,10 +174,47 @@ def submission_audit(session, project):
         checks.append(observed)
         if observed['verification_status']!='accepted' or not observed['numerical_verification']['ready']:
             audit['gaps'].append({'code':'independent_verification','finding':'Critical measured run '+run.id+' requires current source-bound acceptance of its numerical evidence; actual status: '+observed['verification_status']+', numeric coverage: '+str(observed['numerical_verification']['ready']),'next_role':'Evidence Verifier'})
-    if checks:
-        audit['independent_verification']=checks
-        audit['ready']=not audit['gaps']
-        audit['status']='ready' if audit['ready'] else 'needs_revision'
+    if checks:audit['independent_verification']=checks
+    if publication_profile(project.config)['id']=='full_submission' and manifest is not None:
+        from services.interventions.acceptance import acceptance_gate
+        from services.api.verification import evidence_sources
+        handoffs=manifest.get('acceptance_handoffs',[])
+        admitted={}; acceptance_checks=[]; accepted_sources={}; accepted_raw=set()
+        if not isinstance(handoffs,list): handoffs=[]
+        for identifier in handoffs:
+            source=session.get(TaskRun,identifier) if isinstance(identifier,str) else None
+            if not source or source.project_id!=project.id or source.status!='completed':
+                audit['gaps'].append({'code':'acceptance_handoff','finding':'Select a completed actual acceptance handoff in this project: '+str(identifier),'next_role':'Evidence Verifier'})
+                continue
+            actual_sources=evidence_sources(session,source)
+            try: result=acceptance_gate(session,source,actual_sources)
+            except ValueError as exc:
+                result={'ready':False,'purpose':'unknown','failures':[str(exc)]}
+            current=goal_applicability(session,source)
+            acceptance_checks.append({'run_id':source.id,**result,'goal_applicability':current})
+            if result['ready'] and current['ready']:
+                admitted.setdefault(result['purpose'],[]).append(source.id)
+                accepted_sources.setdefault(result['purpose'],set()).update(item.id for item in actual_sources)
+                if result['purpose']=='raw_data':
+                    accepted_raw.update((item.id,path) for item in actual_sources for path in result['contract']['artifact_paths'])
+            else:
+                audit['gaps'].append({'code':'acceptance_handoff','finding':'Current purpose-bound admission is missing for '+source.id,'next_role':'Evidence Verifier'})
+        for purpose in ('raw_data','comparison','major_claim'):
+            if purpose not in admitted:
+                audit['gaps'].append({'code':'acceptance_'+purpose,'finding':'Full submission requires a current executed '+purpose+' acceptance handoff; list its run in acceptance_handoffs.','next_role':'Evidence Verifier'})
+        measured={cell['run_id'] for cell in manifest.get('measured_cells',[]) if isinstance(cell,dict) and cell.get('run_id')
+                  and (session.get(TaskRun,cell['run_id']) is None or session.get(TaskRun,cell['run_id']).config.get('research_phase')!='confirmation')}
+        for purpose in ('comparison','major_claim'):
+            missing=sorted(measured-accepted_sources.get(purpose,set()))
+            if missing:
+                audit['gaps'].append({'code':'acceptance_scope_'+purpose,'finding':'Current '+purpose+' handoffs do not cover measured runs: '+', '.join(missing),'next_role':'Evidence Verifier'})
+        missing_raw=[cell for cell in manifest.get('measured_cells',[]) if isinstance(cell,dict)
+                     and (cell.get('run_id'),cell.get('raw_path')) not in accepted_raw]
+        if missing_raw:
+            audit['gaps'].append({'code':'acceptance_raw_scope','finding':str(len(missing_raw))+' measured cells lack purpose-bound schema/units/identity/split admission for their actual raw_path.','next_role':'Evidence Verifier'})
+        audit['acceptance_handoffs']=acceptance_checks
+    audit['ready']=not audit['gaps']
+    audit['status']=('not_requested' if audit.get('status')=='not_requested' else 'ready') if audit['ready'] else 'needs_revision'
     return audit
 
 
@@ -185,6 +244,7 @@ def compact_planning_context(context, char_budget=24000):
             'graph_summary':{'execution_status_counts':dict(Counter(n.get('execution_status','idle') for n in nodes))},
             'runs':[],'trials':[],'sources':[],'claims':[],'global_best_by_conditions':[], 'context_coverage':coverage}
     if 'route_health' in context:result['route_health']=deepcopy(context['route_health'])
+    result['rejected_proposals']=deepcopy(context.get('rejected_proposals', []))
     if context.get('latest_route_review') is not None:
         review=context['latest_route_review']
         result['latest_route_review']={key:deepcopy(review[key]) for key in ('review_run_id','current','decision','summary','findings','stop_node_ids','recommendation','authority') if key in review}
@@ -343,7 +403,8 @@ def apply_plan(project_id, run_id, plan, expected_revision):
     if plan['action']!='continue' and commands: raise ValueError('Complete or block after proposed graph work has been adopted and evaluated in a separate cycle')
     allowed={'add_node','edit_node','add_dependency','fork_branch','prune_branch','set_main_branch'}
     with Session.begin() as s:
-        p=s.scalar(select(Project).where(Project.id==project_id).with_for_update())
+        from services.worker.scheduler import _lock_project
+        p=_lock_project(s,project_id)
         control=p.config.get('controller',{})
         if control.get('status')!='running':
             return {'status':'proposal_only','reason':'Research was paused or stopped before plan adoption','plan':plan}
@@ -353,7 +414,7 @@ def apply_plan(project_id, run_id, plan, expected_revision):
         graph=graph_from_db(s,p)
         original_graph=deepcopy(graph)
         project_runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==p.id)))
-        for c in commands:
+        for index, c in enumerate(commands):
             if c.get('operation') not in allowed: raise ValueError('Unsupported autonomous graph operation')
             params=c.get('params',{})
             cfg=params.get('config',{})
@@ -368,7 +429,7 @@ def apply_plan(project_id, run_id, plan, expected_revision):
                     checks=spec.get('checks') if isinstance(spec,dict) else None
                     if not isinstance(spec,dict) or not spec.get('producer_node_id') or not isinstance(checks,list) or not checks or any(not isinstance(check,dict) or not check.get('id') or not check.get('kind') for check in checks):
                         raise ValueError('A verification node requires an actual producer and explicit identified executable checks')
-            graph=GraphCommandService(graph,project_dir(p.id)).apply({**c,'request_id':uid(),'expected_revision':graph['revision']})['graph']
+            graph=GraphCommandService(graph,project_dir(p.id)).simulate({**c,'request_id':f'plan:{run_id}:{index}','expected_revision':graph['revision']})['graph']
         from research.planning.route_review import route_health
         health=route_health(original_graph,[asdict(run) for run in project_runs],p.config)
         replanned=validate_replanning(plan,original_graph,graph,[asdict(run) for run in project_runs],control,health,p.goal)
@@ -381,6 +442,10 @@ def apply_plan(project_id, run_id, plan, expected_revision):
             if not evidence or any(r.status!='completed' for r in evidence) or not any(r.kind not in ('research_plan','ideas','suggest_paths') for r in evidence):
                 raise ValueError('Research completion requires completed evidence runs')
             for evidence_run in evidence:
+                from services.interventions.applicability import goal_applicability
+                applicable=goal_applicability(s,evidence_run)
+                if not applicable['ready']:
+                    raise ValueError('Completion evidence requires current goal applicability: '+evidence_run.id+' ('+applicable['status']+')')
                 receipt=safe_path(project_dir(p.id),evidence_run.output_path+'/result.json')
                 if not receipt.is_file(): raise ValueError('Evidence completion receipt is missing: '+evidence_run.id)
                 content=json.loads(receipt.read_text())
@@ -413,7 +478,10 @@ def apply_plan(project_id, run_id, plan, expected_revision):
                 return {'decision_id':record.id,'action':'continue','status':'needs_revision','applied_commands':0,
                         'graph_revision':p.revision,'submission_quality':audit,
                         'rationale':'Continue the real research and manuscript revision loop until the delivery audit is ready.'}
-        if commands: save_graph(s,p,graph)
+        if commands:
+            from services.interventions.application import apply_in_session
+            applied=apply_in_session(s,p,'plan:'+run_id,expected_revision,commands,actor='planner',batch=True)
+            graph=applied['graph']
         record=Hypothesis(project_id=p.id,title='Research decision',status='adopted' if commands else plan['action'],data={**plan,'origin':'research_controller','run_id':run_id,'graph_revision':p.revision,'evidence_label':'INFERRED'})
         s.add(record); s.flush()
         control={**control,'phase':'EXECUTE' if commands else 'CONFIRM','last_decision_id':record.id,'last_rationale':plan['rationale'], 'last_plan_run':run_id, 'cycles':int(control.get('cycles',0))+1}

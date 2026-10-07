@@ -138,6 +138,16 @@ def preview_file(ident:str,path:str,offset:int=Query(default=0,ge=0,le=10_000_00
     return {'path':str(p.relative_to(root.resolve())),'format':suffix[1:],'columns':list(frame.columns),'rows':rows,
             'total':int(total),'offset':offset,'limit':limit,'returned':len(rows),'has_more':offset+len(rows)<total,
             'truncated_columns':len(columns)>100,'column_count':len(columns),'truncated_cells':clipped}
+def editable_workspace(session,project_id,path):
+    # A copy can be physically present before its durable DB confirmation. Owner
+    # edits at that point must wait rather than mutate an unactivated snapshot.
+    for branch in session.scalars(select(Branch).where(Branch.project_id==project_id)):
+        if not branch.extra.get('workspace_intervention'): continue
+        workspace=safe_path(project_dir(project_id),branch.workspace)
+        if path==workspace or path.is_relative_to(workspace) or workspace.is_relative_to(path):
+            error('WORKSPACE_PENDING','Workspace materialization is awaiting confirmation',409)
+
+
 @router.put('/api/projects/{ident}/file')
 def write_file(ident:str,body:FileWrite):
     from services.worker.scheduler import _lock_project
@@ -146,6 +156,7 @@ def write_file(ident:str,body:FileWrite):
     relative=str(p.relative_to(root.resolve()))
     with Session.begin() as s:
         _lock_project(s,ident)
+        editable_workspace(s,ident,p)
         rev=s.scalar(select(FileRevision).where(FileRevision.project_id==ident,FileRevision.path==relative).with_for_update())
         actual=rev.revision if rev else 0
         if body.expected_revision is not None and body.expected_revision!=actual: error('REVISION_CONFLICT','File changed in another editor',409,'Reload and merge changes.')
@@ -160,23 +171,32 @@ def write_file(ident:str,body:FileWrite):
 def delete_file(ident:str,path:str):
     root=validate_project(ident); p=safe_path(root,path,True)
     if p==root: error('INVALID_PATH','Cannot remove the project root with a file operation')
-    if p.is_dir(): shutil.rmtree(p)
-    else: p.unlink()
     with Session.begin() as s:
-        observation_write_lock(s,ident)
-        s.execute(delete(FileRevision).where(FileRevision.project_id==ident,FileRevision.path==path)); touch_dependents(s,ident,path)
-        managed_change(s,ident,path,'owner_editor')
+        from services.worker.scheduler import _lock_project
+        _lock_project(s,ident);editable_workspace(s,ident,p)
+        if p.is_dir(): shutil.rmtree(p)
+        else: p.unlink()
+        relative=str(p.relative_to(root.resolve()))
+        for rev in s.scalars(select(FileRevision).where(FileRevision.project_id==ident)):
+            if rev.path==relative or rev.path.startswith(relative+'/'): s.delete(rev)
+        touch_dependents(s,ident,relative)
+        managed_change(s,ident,relative,'owner_editor')
     return {'deleted':path}
 @router.post('/api/projects/{ident}/file/rename')
 def rename_file(ident:str,body:dict=Body(...)):
     root=validate_project(ident); src=safe_path(root,body['path'],True); dst=safe_path(root,body['new_path'])
-    if dst.exists(): error('FILE_EXISTS','Destination already exists',409)
-    dst.parent.mkdir(parents=True,exist_ok=True); src.rename(dst)
     with Session.begin() as s:
-        observation_write_lock(s,ident)
-        touch_dependents(s,ident,body['path'])
-        managed_change(s,ident,body['path'],'owner_editor')
-        managed_change(s,ident,body['new_path'],'owner_editor')
+        from services.worker.scheduler import _lock_project
+        _lock_project(s,ident);editable_workspace(s,ident,src);editable_workspace(s,ident,dst)
+        if dst.exists(): error('FILE_EXISTS','Destination already exists',409)
+        dst.parent.mkdir(parents=True,exist_ok=True);src.rename(dst)
+        relative=str(src.relative_to(root.resolve()));new_relative=str(dst.relative_to(root.resolve()))
+        for rev in s.scalars(select(FileRevision).where(FileRevision.project_id==ident)):
+            if rev.path==relative or rev.path.startswith(relative+'/'):
+                previous=rev.path;rev.path=new_relative+previous[len(relative):];rev.revision+=1
+                touch_dependents(s,ident,previous)
+        touch_dependents(s,ident,relative)
+        managed_change(s,ident,relative,'owner_editor');managed_change(s,ident,new_relative,'owner_editor')
     return {'path':body['new_path']}
 @router.get('/api/projects/{ident}/download')
 def download_file(ident:str,path:str):
@@ -194,15 +214,15 @@ async def upload(ident:str,file:UploadFile=File(...),directory:str='uploads'):
                 total+=len(chunk)
                 if total>settings.max_upload_mb*1024*1024: error('UPLOAD_TOO_LARGE','Upload exceeds configured limit',413)
                 out.write(chunk)
-        # Publish only complete uploads, keeping existing file permissions.
-        if p.is_file(): temporary.chmod(p.stat().st_mode & 0o7777)
-        temporary.replace(p)
+        with Session.begin() as s:
+            from services.worker.scheduler import _lock_project
+            _lock_project(s,ident);editable_workspace(s,ident,p)
+            if p.is_file(): temporary.chmod(p.stat().st_mode & 0o7777)
+            temporary.replace(p)
+            touch_dependents(s,ident,str(p.relative_to(root)))
+            managed_change(s,ident,str(p.relative_to(root)),'upload')
     finally:
         temporary.unlink(missing_ok=True)
-    with Session.begin() as s:
-        observation_write_lock(s,ident)
-        touch_dependents(s,ident,str(p.relative_to(root)))
-        managed_change(s,ident,str(p.relative_to(root)),'upload')
     return {'path':str(p.relative_to(root)),'size':total,'origin':'user_import'}
 
 def project_export(s,p,selection=None):
@@ -214,7 +234,9 @@ def project_export(s,p,selection=None):
     runs=[]
     for r in s.scalars(select(TaskRun).where(TaskRun.project_id==p.id)):
         value=asdict(r); value['config']={k:v for k,v in value['config'].items() if k not in ('provider_snapshot','credential_ref')}; value['pid']=None; value['worker_id']=None; runs.append(value)
-    payload={'format':'forest-project-v1','project':project,'graph':graph,'resources':resources,'papers':papers,'runs':runs}
+    from services.interventions.history import export_history
+    payload={'format':'forest-project-v1','project':project,'graph':graph,'resources':resources,'papers':papers,'runs':runs,
+             **export_history(s,p.id)}
     with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
         z.writestr('forest-project.json',json.dumps(payload,ensure_ascii=False,indent=2))
         for f in root.rglob('*'):
@@ -257,6 +279,9 @@ async def import_project(file:UploadFile=File(...)):
     if sum(x.file_size for x in z.infolist())>500*1024*1024: error('ARCHIVE_TOO_LARGE','Uncompressed archive exceeds 500 MB',413)
     for info in z.infolist():
         if info.filename.startswith('/') or '..' in Path(info.filename).parts or (info.external_attr>>16)&0o170000==0o120000: error('UNSAFE_ARCHIVE','Archive contains unsafe paths or symbolic links')
+    from services.interventions.history import validate_history
+    try: validate_history(manifest)
+    except ValueError as exc: error('INVALID_ARCHIVE',str(exc),422)
     validate_graph(manifest['graph'])
     run_timestamps={}
     for r in manifest.get('runs',[]):
@@ -280,6 +305,8 @@ async def import_project(file:UploadFile=File(...)):
         graph=manifest['graph']; old_id=graph['project_id']; mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(manifest.get('resources',{}).values())+[manifest.get('papers',[]),manifest.get('runs',[])]:
             for item in rows: mapping.setdefault(item['id'],uid())
+        from services.interventions.history import history_ids,import_history,historical_resource
+        for ident in history_ids(manifest):mapping.setdefault(ident,uid())
         def remap(obj):
             if isinstance(obj,dict): return {k:remap(v) for k,v in obj.items()}
             if isinstance(obj,list): return [remap(v) for v in obj]
@@ -294,7 +321,8 @@ async def import_project(file:UploadFile=File(...)):
             branch_id=controller['branch_id']; remapped_branch=mapping.get(branch_id)
             if remapped_branch!=branch_id:
                 p.config={**p.config,'controller':{**controller,'branch_id':remapped_branch}}
-        graph=remap(graph); graph['project_id']=p.id; graph['revision']=0; graph.pop('_history',None)
+        from services.interventions.history import historical_branches
+        graph=historical_branches(remap(graph)); graph['project_id']=p.id; graph['revision']=0; graph.pop('_history',None)
         for node in graph['nodes']:
             if node.get('execution_status') in ('queued','running','pausing','paused','waiting_input'):
                 node['imported_execution_status']=node['execution_status']; node['execution_status']='interrupted'
@@ -325,6 +353,7 @@ async def import_project(file:UploadFile=File(...)):
                 finished_at=timestamps['finished_at'],
                 output_path=remap(r.get('output_path','')),
                 dependencies=remap(r.get('dependencies',[])),metrics=remap(r.get('metrics',{})),
-                resource=r.get('resource',{}),exit_code=r.get('exit_code')
+                resource=historical_resource(r.get('resource',{})),exit_code=r.get('exit_code')
             ))
+        import_history(s,p.id,manifest,remap)
         emit(s,p.id,'project_imported',{}); s.flush(); return asdict(p)

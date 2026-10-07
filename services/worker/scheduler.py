@@ -90,6 +90,7 @@ def finalize_cancelled_run_elapsed(run):
         elapsed = 0.0
     current = datetime.now(timezone.utc)
     live_attempt = (run.status in ('running', 'pausing', 'paused') or
+                    (run.status == 'waiting_input' and resource.get('branch_scheduling_hold') and run.started_at) or
                     (run.status == 'queued' and (
                         resource.get('container_reconnect_pending_dispatch') or
                         resource.get('live_process_pending_dispatch'))))
@@ -144,6 +145,7 @@ def _elapsed_seconds_at(run, current=None):
     current = current or datetime.now(timezone.utc)
 
     if (run.status in ('running', 'pausing') or
+            (run.status == 'waiting_input' and resource.get('branch_scheduling_hold') and run.started_at) or
             (run.status == 'paused' and (run.pid is not None or resource.get('paused_live_attempt'))) or
             (run.status == 'queued' and (
                 resource.get('container_reconnect_pending_dispatch') or
@@ -260,6 +262,7 @@ def _lock_project(s, project_id):
 def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencies=None,
             requested_timeout_override=_TIMEOUT_UNSET, defer_time_budget_reservation=False, node_revision=None):
     retry_snapshot = node_revision is not None
+    provider_origin='run' if config.get('provider_id') else 'node' if node and node.config.get('provider_id') else None
     p = _lock_project(s, project_id)
     if node is not None:
         # An edit may have committed while this session waited for the project.
@@ -275,6 +278,9 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
         error('RUN_BUDGET_EXHAUSTED', 'Project run budget exhausted', 409, 'Increase budget or choose a narrower next experiment.')
     dependencies = dependencies or []
     config = deepcopy(config) if retry_snapshot else {**(node.config if node else {}), **config}
+    from research.agents.tool_policy import validate_permissions
+    try: validate_permissions(config)
+    except ValueError as exc: error('INVALID_TOOL_POLICY', str(exc), 422)
     if '_repository_source' in config:
         error('INVALID_CONFIGURATION', 'Source provenance is managed by the runner', 422)
     from services.api.verification import prepare_verification_enqueue
@@ -304,11 +310,16 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     except (ValueError,TypeError) as exc: error('INVALID_RESOURCES',str(exc),422)
     requested_timeout = (config.get('timeout', (config.get('budget') or {}).get('seconds'))
                          if requested_timeout_override is _TIMEOUT_UNSET else requested_timeout_override)
+    import math
+    if requested_timeout is not None and (type(requested_timeout) not in (int,float) or not math.isfinite(requested_timeout) or requested_timeout<=0):
+        error('INVALID_TIMEOUT','Task timeout must be a finite positive number or null',422)
     requested_timeout = float(requested_timeout) if requested_timeout is not None else None
     if requested_timeout is not None and requested_timeout <= 0:
         error('INVALID_TIMEOUT', 'Task timeout must be positive or omitted', 422)
     timeout = requested_timeout if deferred_reservation else _bounded_timeout(requested_timeout, remaining)
     merged = {**config, 'timeout': timeout, 'project_goal': p.goal, 'allow_paid': bool(budget.get('allow_paid', False))}
+    from services.interventions.applicability import goal_scope_snapshot
+    merged['goal_scope'] = goal_scope_snapshot(s, p, node.id if node else None)
     from research.publication.profile import publication_profile
     try:
         merged['publication_profile'] = publication_profile({**p.config, **config})
@@ -322,13 +333,24 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     if node and not retry_snapshot:
         merged.update(instructions=node.instructions, node_type=node.type, node_title=node.title,
                       context_overrides=deepcopy(node.context_overrides), input_references=deepcopy(node.inputs))
-    provider_id = merged.get('provider_id') or p.config.get('provider_id')
+    role = merged.get('role', 'Researcher')
+    agent = (s.get(Agent, merged['agent_id']) if merged.get('agent_id') else
+             s.scalar(select(Agent).where(Agent.role == role)))
+    provider_id = merged.get('provider_id') or (agent.provider_id if agent else None) or p.config.get('provider_id')
+    provider_origin=provider_origin or ('agent' if agent and agent.provider_id else 'project' if p.config.get('provider_id') else None)
+    if retry_snapshot and merged.get('provider_snapshot'):
+        provider_id=merged['provider_snapshot']['id'];provider_origin='historical_run'
     if not provider_id:
         preference=s.get(Preference,'settings')
         provider_id=preference.value.get('default_provider_id') if preference else None
+        provider_origin='global' if provider_id else 'first_available'
     provider = s.get(Provider, provider_id) if provider_id else s.scalar(select(Provider).order_by(Provider.created_at))
+    if provider_id and not provider: error('PROVIDER_NOT_FOUND','Selected model provider no longer exists',422)
     if provider:
-        merged['provider_snapshot'] = asdict(provider, secrets=True)
+        if not (retry_snapshot and merged.get('provider_snapshot')):
+            merged['provider_snapshot'] = asdict(provider, secrets=True)
+        merged['provider_selection']={'provider_id':provider.id,'source':provider_origin,'agent_id':agent.id if agent else None}
+
     if not retry_snapshot and (kind == 'paper_generate' or (kind == 'paper_compile' and merged.get('source_scope') == 'workspace')):
         from services.api.paper_state import generation_snapshot
         # Server-owned snapshot: callers cannot opt out of revision protection.
@@ -440,7 +462,7 @@ def enqueue_selected(s, node_ids, request_id=None, overrides=None):
             continue
         if n.archived:
             error('NODE_ARCHIVED', f'{n.title} is archived', 409, 'Restore the node before scheduling it.')
-        if branches.get(n.branch_id, {}).get('status', 'active') != 'active':
+        if branches.get(n.branch_id, {}).get('status', 'active') not in ('active', 'materializing'):
             error('BRANCH_INACTIVE', 'The selected branch has stopped exploring', 409, 'Restore this branch before scheduling new runs.')
         _validate_inputs(s, n, graph, selected)
         dependencies = []
