@@ -69,7 +69,25 @@ def owner_token():
     if not path.exists(): path.write_text(secrets.token_urlsafe(40)); path.chmod(0o600)
     return path.read_text().strip()
 
+def validate_project_budget(budget):
+    import math
+    if not isinstance(budget,dict): error('INVALID_BUDGET','Project budget must be an object',422)
+    for field in ('seconds','cost_usd'):
+        value=budget.get(field)
+        if value is not None and (type(value) not in (int,float) or not math.isfinite(value) or value<0):
+            error('INVALID_BUDGET',field+' must be a finite nonnegative number or null',422)
+    value=budget.get('max_runs')
+    if value is not None and (type(value) is not int or value<0):
+        error('INVALID_BUDGET','max_runs must be a nonnegative integer or null',422)
+    if 'allow_paid' in budget and type(budget['allow_paid']) is not bool:
+        error('INVALID_BUDGET','allow_paid must be a boolean',422)
+
+
 def make_project(s,name,goal='',description='',**kwargs):
+    validate_project_budget(kwargs.get('budget',{}))
+    from research.agents.tool_policy import validate_permissions
+    try: validate_permissions(kwargs.get('config', {}))
+    except ValueError as exc: error('INVALID_TOOL_POLICY', str(exc), 422)
     preference=s.get(Preference,'settings')
     default_provider=preference.value.get('default_provider_id') if preference else None
     if default_provider:
@@ -82,9 +100,6 @@ def make_project(s,name,goal='',description='',**kwargs):
     return p
 
 def touch_dependents(s,project_id,origin):
-    for cls in (Figure,PaperDocument,ResearchClaim,Analysis):
-        for obj in s.scalars(select(cls).where(cls.project_id==project_id)):
-            text=json.dumps(obj.data,ensure_ascii=False)
-            if origin in text or cls is PaperDocument:
-                obj.status='needs_update'; obj.data={**obj.data,'stale_reason':f'Upstream material changed: {origin}'}
-    emit(s,project_id,'artifact_changed',{'source':origin})
+    from services.interventions.dependencies import invalidate_dependents
+    impacts=invalidate_dependents(s,project_id,origin)
+    emit(s,project_id,'artifact_changed',{'source':origin,'dependencies':impacts})

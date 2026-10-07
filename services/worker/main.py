@@ -147,7 +147,7 @@ class WorkerLoop:
         with Session.begin() as s:
             for n in s.scalars(select(Node).where(Node.execution_status=='completed')):
                 r=s.get(TaskRun,n.extra.get('latest_run_id')) if n.extra.get('latest_run_id') else None
-                if not r or r.status!='completed' or r.node_revision!=n.revision: continue
+                if not r or r.status!='completed' or r.node_revision!=n.revision or r.resource.get('pending_intervention'): continue
                 # Startup recovery must enforce the same invalidation snapshot as completion.
                 if int(n.extra.get('rerun_generation',0)) != int(r.resource.get('rerun_generation_at_enqueue',0)): continue
                 dependencies=[s.get(TaskRun,ident) for ident in r.dependencies]
@@ -161,6 +161,8 @@ class WorkerLoop:
                         if (folder/filename).is_file(): n.outputs.append({'kind':'file','path':r.output_path+'/'+filename,'project_scope':True,'node_revision':r.node_revision})
     def shutdown(self,*args): self.stopping=True
     def tick(self):
+        from services.interventions.application import kick_effects
+        kick_effects()
         now_clock=time.time()
         if now_clock-self.last_heartbeat>=2:
             with Session.begin() as s: get(s,Worker,self.id).heartbeat=now()
@@ -170,6 +172,7 @@ class WorkerLoop:
         self.wake_waiting()
         with Session() as s: active=[asdict(r) for r in s.scalars(select(TaskRun).where(TaskRun.status.in_(('running','paused','pausing'))))]
         for r in active:
+            if r['resource'].get('pending_intervention'): continue
             if r['worker_id']!=self.id:
                 with Session() as s: other=s.get(Worker,r['worker_id']) if r['worker_id'] else None
                 fresh=other and (dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(other.heartbeat)).total_seconds()<12
@@ -202,7 +205,9 @@ class WorkerLoop:
             candidates.sort(key=lambda item: -(item.priority+(now_epoch-dt.datetime.fromisoformat(item.created_at).timestamp())/age_seconds))
             for candidate in candidates:
                 r,p=_claim_queued_candidate(s,candidate)
-                if not r: continue
+                if not r or r.resource.get('pending_intervention'): continue
+                branch=s.get(Branch,r.branch_id) if r.branch_id else None
+                if branch and (branch.status=='materializing' or branch.extra.get('workspace_intervention')): continue
                 try: request=task_request(r.config)
                 except (ValueError,TypeError) as exc:
                     r.status='waiting_input'; r.error='Invalid task resource request: '+str(exc)
@@ -277,7 +282,8 @@ class WorkerLoop:
                 if resume_live_process:
                     resume_live_process_for_dispatch(r.config,output/'workspace',{'live_process_pending_dispatch':True})
                 log=(output/'stdout.txt').open('ab',buffering=0)
-                env={**os.environ,'PYTHONUNBUFFERED':'1','PYTHONPATH':str(ROOT),'PATH':os.environ.get('PATH','')+':/opt/homebrew/bin','FOREST_RUN_ID':r.id,'FOREST_ATTEMPT_ID':attempt['id']}
+                env={**os.environ,'PYTHONUNBUFFERED':'1','PYTHONPATH':str(ROOT),'PATH':os.environ.get('PATH','')+':/opt/homebrew/bin','FOREST_RUN_ID':r.id,'FOREST_ATTEMPT_ID':attempt['id'],
+                     'FOREST_EXECUTOR_TRANSACTION_FENCE':str(output/'.executor-transactions.lock')}
                 recovery=r.config.get('recovery') or {}
                 if recovery.get('checkpoint'): env['FOREST_CHECKPOINT_PATH']=str(safe_path(output/'workspace',recovery['checkpoint']))
                 if attempt.get('checkpoint_path'): env['FOREST_RESUME_PATH']=attempt['checkpoint_path']
@@ -424,10 +430,9 @@ class WorkerLoop:
         elif outcome is None and not alive:
             outcome={'status':'interrupted','exit_code':proc.returncode if proc else None,'error':'Task process ended without a current completion receipt.'}
         with Session.begin() as s:
-            begin_sqlite_write(s)
-            s.scalar(select(Project).where(Project.id==value['project_id']).with_for_update())
+            _lock_project(s,value['project_id'])
             r=s.scalar(select(TaskRun).where(TaskRun.id==ident).with_for_update())
-            if not r or r.status in ('cancelled','completed','failed','interrupted','waiting','budget_exhausted'): return
+            if not r or r.status in ('cancelled','completed','failed','interrupted','waiting','waiting_input','budget_exhausted') or r.resource.get('pending_intervention'): return
             if r.worker_id!=self.id: return
             if r.config.get('execution_attempt',{}).get('id')!=value['config'].get('execution_attempt',{}).get('id'): return
             r.resource={**r.resource,**resource}
@@ -458,7 +463,7 @@ class WorkerLoop:
                         r.resource={**r.resource,'container_reconnect_pending_dispatch':True}
                     r.status='paused' if value['status']=='paused' else 'queued'; r.pid=None; r.process_created=None; r.error=outcome.get('error')
                     emit(s,r.project_id,'run_recovery_queued',{'run_id':r.id,'mode':decision['mode'],'attempt':attempt})
-                elif outcome['status'] in ('waiting','budget_exhausted'):
+                elif outcome['status'] in ('waiting','waiting_input','budget_exhausted'):
                     r.status=outcome['status']; r.pid=None; r.process_created=None; r.error=outcome.get('error')
                     r.resource=_waiting_outcome_resource(r.resource,outcome)
                     emit(s,r.project_id,'run_waiting',{'run_id':r.id,'status':r.status,'wait_for':outcome.get('wait_for',{})})

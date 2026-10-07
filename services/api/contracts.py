@@ -171,7 +171,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "edges": array(ref("GraphEdge")), "next_offset": field("integer", nullable=True)},
         ("revision", "offset", "nodes", "edges", "next_offset")),
     "GraphBatchRequest": obj({"request_id": field("string", "Optional idempotency key. Shared with graph command receipts in this project."),
-        "expected_revision": I, "commands": array(J)}, ("expected_revision", "commands")),
+        "expected_revision": I, "commands": {**array(J), "minItems": 1, "maxItems": 200}}, ("expected_revision", "commands")),
     "GraphBatchResult": obj({"revision": I, "applied": I, "node_count": I, "edge_count": I}, ("revision", "applied", "node_count", "edge_count")),
     "ComparisonDeclaration": obj({"run_id": S, "complete": B, "signature": J,
         "missing_fields": STRINGS, "conflicting_fields": STRINGS, "scope": S},
@@ -242,20 +242,20 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "observation": S, "remote_state_is_live": B},
         ("run_id", "status", "phase", "execution_backend", "repository", "processes", "processes_truncated", "logs", "elapsed_seconds", "observed_at", "observation", "remote_state_is_live")),
     "ProviderUsage": obj({"provider_id": S, "limit_usd": field("number", nullable=True),
-        "estimated_cost_usd": N, "reserved_usd": N, "remaining_usd": field("number", nullable=True),
+        "estimated_cost_usd": field("number", nullable=True), "known_cost_usd": N, "unknown_cost_requests": I, "reserved_usd": N, "remaining_usd": field("number", nullable=True),
         "cost_source": S, "request_count": I, "uncertain_requests": I,
         "requests": array(obj({"id": S, "run_id": field("string", nullable=True), "project_id": field("string", nullable=True),
             "model": S, "api": S, "purpose": S, "report_job_id": field("string", nullable=True), "status": S, "estimated_cost_usd": field("number", nullable=True),
             "reserved_usd": N, "request_id": field("string", nullable=True), "usage": JSON, "created_at": S}))},
-        ("provider_id", "limit_usd", "estimated_cost_usd", "reserved_usd", "remaining_usd", "cost_source", "request_count", "uncertain_requests", "requests")),
+        ("provider_id", "limit_usd", "estimated_cost_usd", "known_cost_usd", "unknown_cost_requests", "reserved_usd", "remaining_usd", "cost_source", "request_count", "uncertain_requests", "requests")),
     "ProjectUsage": obj({"project_id": S, "allow_paid": B, "limits": J,
-        "estimated_cost_usd": N, "reserved_usd": N, "remaining_usd": field("number", nullable=True),
+        "estimated_cost_usd": field("number", nullable=True), "known_cost_usd": N, "unknown_cost_requests": I, "reserved_usd": N, "remaining_usd": field("number", nullable=True),
         "cost_source": S, "uncertain_requests": I, "run_count": I, "elapsed_seconds": N,
         "providers": array(obj({"id": S, "name": S, "scope": S, "allow_paid": B,
-            "limit_usd": field("number", nullable=True), "estimated_cost_usd": N, "reserved_usd": N,
-            "remaining_usd": field("number", nullable=True)})),
+            "limit_usd": field("number", nullable=True), "estimated_cost_usd": field("number", nullable=True), "known_cost_usd": N, "unknown_cost_requests": I, "reserved_usd": N,
+            "remaining_usd": field("number", nullable=True), "cost_source": S})),
         "active_run_limits": array(obj({"run_id": S, "status": S, "agent_budget": J}))},
-        ("project_id", "allow_paid", "limits", "estimated_cost_usd", "reserved_usd", "remaining_usd", "cost_source", "uncertain_requests", "run_count", "elapsed_seconds", "providers", "active_run_limits")),
+        ("project_id", "allow_paid", "limits", "estimated_cost_usd", "known_cost_usd", "unknown_cost_requests", "reserved_usd", "remaining_usd", "cost_source", "uncertain_requests", "run_count", "elapsed_seconds", "providers", "active_run_limits")),
     "ProviderHealth": obj({"id": S, "available": B, "checked_at": S, "last_chat_test": S, "reason": S}, ("id", "available", "checked_at", "last_chat_test")),
     "SystemState": obj({"cpu_percent": N, "memory": obj({"total": I, "used": I, "percent": N}),
         "disk": obj({"total": I, "used": I, "free": I}), "gpu": array(obj({"name": S, "memory_used_mb": S, "memory_total_mb": S, "utilization_percent": S})),
@@ -675,7 +675,7 @@ operation("post", "/api/projects/{ident}/writing/review", "Manuscripts", "Propos
     "body.source is text (default empty). Return character offsets and one-based line numbers. replacement:null means an evidence judgment is required; never apply it as empty replacement. This endpoint does not edit a saved paper.", ref("WritingReview"), body="WritingReviewRequest", errors={404: "NOT_FOUND"})
 SCHEMAS["WritingReviewRequest"] = obj({"source": S})
 operation("post", "/api/projects/{ident}/graph/batch", "Graph", "Apply a batch of supported graph edits",
-    "Require current PROJECT expected_revision and a nonempty commands array. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.", ref("GraphBatchResult"), body="GraphBatchRequest", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT", 422: "EMPTY_BATCH or UNSUPPORTED_BATCH_OPERATION"})
+    "Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.", ref("GraphBatchResult"), body="GraphBatchRequest", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT", 422: "INVALID_COMMANDS or UNSUPPORTED_BATCH_OPERATION"})
 operation("post", "/api/projects/{ident}/statistics/review", "Experiments", "Enqueue an independent statistics review",
     "Merge the extensible body, force review_scope=statistics and return queued Run. Optional request_id controls scheduler reuse; review findings arrive through saved run/resource output.", ref("Run"), body="JsonObject", errors={404: "NOT_FOUND"})
 operation("post", "/api/projects/{ident}/statistics/paired", "Experiments", "Enqueue paired real-data inference",
@@ -714,6 +714,21 @@ for method, suffix, summary, response in [
         'Owner-scoped reporting domain. Reads do not invoke a model, verifier or remote host. Source offsets are UTF-8 bytes (end-exclusive); lines are one-based. Inventory and retained current text are bounded, with explicit coverage. Refresh may consume the authorized provider allowance; duplicate requests coalesce. Narration selects service-rendered facts and cannot assign status or scientific acceptance.',
         schema, errors={404:'Project/source unavailable',409:'Revision conflict, rebuilding or narration disabled'})
 
+
+for method,path,summary,response,body in [
+    ('get','/api/projects/{ident}/interventions','Read durable intervention receipts',array(ref('InterventionView')),None),
+    ('get','/api/interventions/{ident}','Read the accepted intent and per-target application receipts',ref('InterventionView'),None),
+    ('get','/api/runs/{ident}/applicability','Read goal applicability independently of computational verification',ref('ApplicabilityView'),None),
+    ('get','/api/runs/{ident}/acceptance','Read source-bound scientific handoff acceptance for the configured use',ref('AcceptanceView'),None),
+    ('post','/api/runs/{ident}/applicability/decisions','Record an evidence-use decision bound to the reviewed goal',ref('InterventionView'),'ApplicabilityDecision'),
+    ('post','/api/projects/{ident}/instructions','Send an explicit scoped owner instruction',ref('InterventionView'),'InstructionRequest'),
+    ('get','/api/projects/{ident}/decisions','Read durable human action decisions',array(ref('DecisionView')),None),
+    ('post','/api/decisions/{ident}/answer','Accept, edit or reject the reviewed action',ref('DecisionView'),'DecisionAnswer'),
+    ('post','/api/research/proposals/{ident}/reject','Reject a proposal with planning feedback',ref('ResourceRecord'),'RejectionRequest'),
+]:
+    operation(method,path,'Interventions',summary,
+        'Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.',
+        response,body=body,errors={404:'Target unavailable',409:'Reviewed revision, request identity, decision or run state conflict'})
 
 WEBSOCKETS = [{
     "path": "/ws/projects/{ident}/terminal",

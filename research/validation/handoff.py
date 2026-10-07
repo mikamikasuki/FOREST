@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from copy import deepcopy
 import csv
+from decimal import Decimal, InvalidOperation
 import json
 import math
 import os
@@ -22,7 +23,7 @@ import numpy as np
 from research.validation.statistics import compare_result_files, paired_csv
 
 
-KINDS = {'numeric_compare', 'byte_compare', 'csv_integrity', 'csv_coverage', 'paired_recompute'}
+KINDS = {'numeric_compare', 'byte_compare', 'csv_integrity', 'csv_coverage', 'paired_recompute', 'data_contract'}
 PAIRED_FIELDS = {'baseline_mean', 'candidate_mean', 'improvement', 'unit_count', 'observation_count'}
 
 
@@ -127,6 +128,7 @@ def validate_contract(contract):
             'csv_coverage': {'workspace', 'required_columns', 'unique_by', 'numeric_columns', 'expected'},
             'paired_recompute': {'results', 'unit_column', 'baseline_column', 'candidate_column',
                                  'direction', 'fields', 'sampling', 'absolute_tolerance', 'relative_tolerance'},
+            'data_contract': {'columns', 'identity_columns', 'units_file', 'split', 'allow_extra_columns'},
         }
         if set(check) - common - supported[kind]:
             raise ValueError('Unsupported parameters in ' + kind + ' check')
@@ -135,6 +137,33 @@ def validate_contract(contract):
         if 'scope' in check:
             check['scope'] = _text(check['scope'], 'scope')
         check['source'] = _relative(check.get('source'), 'source')
+        if kind == 'data_contract':
+            if Path(check['source']).suffix.lower() not in ('.csv','.json'):
+                raise ValueError('Data contracts support CSV tables or JSON arrays of records')
+            columns = check.get('columns')
+            if not isinstance(columns, dict) or not columns: raise ValueError('Data contracts require a column schema')
+            for name, schema in columns.items():
+                _text(name, 'Column name')
+                if not isinstance(schema, dict) or set(schema) - {'type', 'unit', 'nullable'}:
+                    raise ValueError('Column schema supports type, unit and nullable')
+                if schema.get('type') not in ('number', 'integer', 'string'): raise ValueError('Choose number, integer or string columns')
+                if type(schema.get('nullable')) is not bool: raise ValueError('Declare nullable explicitly for every column')
+                if schema['type'] in ('number', 'integer'): _text(schema.get('unit'), 'Numeric column unit (dimensionless if applicable)')
+            check['identity_columns'] = _names(check.get('identity_columns'), 'identity_columns')
+            if not set(check['identity_columns']) <= columns.keys(): raise ValueError('Identity columns must belong to the schema')
+            if any(columns[name]['nullable'] for name in check['identity_columns']): raise ValueError('Sample identities cannot be nullable')
+            check['units_file'] = _relative(check.get('units_file'), 'units_file')
+            if type(check.get('allow_extra_columns', False)) is not bool: raise ValueError('allow_extra_columns must be boolean')
+            split = check.get('split')
+            if not isinstance(split, dict) or set(split) != {'column', 'identity_columns', 'expected_counts'}:
+                raise ValueError('Declare split column, disjoint sample identity_columns and expected_counts')
+            if split['column'] not in columns or columns[split['column']]['nullable']: raise ValueError('Split requires a nonnullable schema column')
+            split['identity_columns'] = _names(split['identity_columns'], 'Split identity columns')
+            if not set(split['identity_columns']) <= columns.keys() or any(columns[name]['nullable'] for name in split['identity_columns']):
+                raise ValueError('Split identities must be nonnullable schema columns')
+            counts = split['expected_counts']
+            if not isinstance(counts, dict) or not counts or any(not isinstance(label, str) or not label or type(count) is not int or count < 1 for label, count in counts.items()):
+                raise ValueError('Declare positive actual expected row counts for every split')
         if kind in {'numeric_compare', 'byte_compare'}:
             check['repeat'] = _relative(check.get('repeat'), 'repeat')
         if kind == 'numeric_compare':
@@ -420,6 +449,81 @@ def _csv(check, producer, verifier):
             'verification_scope': 'All actual CSV rows checked for declared columns, finite values, unit identity and configured matrix; row count is not a training-replication count'}
 
 
+def _data_contract(check, producer, verifier):
+    """Check schema, literal units and sample partitioning of actual CSV/JSON."""
+    path = _file(producer, check['source'])
+    if path.suffix.lower() == '.json':
+        records = json.loads(path.read_text())
+        if not isinstance(records, list): raise ValueError('Raw JSON data must be an array of records')
+        columns = sorted({name for row in records if isinstance(row,dict) for name in row})
+        handle = None; rows = iter(records)
+    else:
+        handle = path.open(newline='',encoding='utf-8-sig')
+        reader = csv.DictReader(handle); columns = reader.fieldnames or []; rows = iter(reader)
+    schemas = check['columns']; issues = []; issue_count = 0
+    def issue(value):
+        nonlocal issue_count
+        issue_count += 1
+        if len(issues) < 200: issues.append(value)
+    if len(columns) != len(set(columns)): issue({'check': 'unique_header'})
+    missing = sorted(set(schemas)-set(columns))
+    extra = sorted(set(columns)-set(schemas)) if not check.get('allow_extra_columns', False) else []
+    if missing or extra: issue({'check': 'schema_columns', 'missing': missing, 'extra': extra})
+    identities = set(); partitions = {}; counts = defaultdict(int); nullable_counts = defaultdict(int); row_count = 0
+    try:
+        units = json.loads(_file(producer, check['units_file']).read_text())
+        expected_units = {name: schema['unit'] for name, schema in schemas.items() if schema['type'] != 'string'}
+        if not isinstance(units, dict) or not isinstance(units.get('units'), dict) or any(units['units'].get(name) != unit for name, unit in expected_units.items()):
+            issue({'check': 'declared_units', 'expected': expected_units, 'actual': units.get('units') if isinstance(units, dict) else None})
+        for index, row in enumerate(rows):
+            row_count += 1
+            if not isinstance(row,dict): issue({'check':'row_shape','row':index}); continue
+            if None in row or any(name not in row for name in schemas): issue({'check': 'row_shape', 'row': index})
+            normalized = {}
+            for name, schema in schemas.items():
+                value = row.get(name)
+                if value is None or value == '':
+                    nullable_counts[name] += 1; normalized[name] = None
+                    if not schema['nullable']: issue({'check': 'missing_value', 'row': index, 'column': name})
+                    continue
+                try:
+                    if schema['type'] == 'string':
+                        if not isinstance(value,str): raise ValueError()
+                        normalized[name] = value
+                    else:
+                        if isinstance(value,bool) or not isinstance(value,(str,int,float)): raise ValueError()
+                        if path.suffix.lower() == '.json' and isinstance(value,str): raise ValueError()
+                        number = Decimal(str(value))
+                        if not number.is_finite(): raise ValueError()
+                        if schema['type'] == 'integer':
+                            if number != number.to_integral_value(): raise ValueError()
+                            normalized[name] = int(number)
+                        else:
+                            number = float(number)
+                            if not math.isfinite(number): raise ValueError()
+                            normalized[name] = number
+                except (TypeError,ValueError,InvalidOperation,OverflowError):
+                    normalized[name] = None
+                    issue({'check': 'column_type', 'row': index, 'column': name, 'expected': schema['type']})
+            identity = tuple(normalized.get(name) for name in check['identity_columns'])
+            if identity in identities: issue({'check': 'duplicate_sample_identity', 'row': index})
+            identities.add(identity)
+            split = check['split']; partition = normalized.get(split['column']); counts[partition] += 1
+            sample = tuple(normalized.get(name) for name in split['identity_columns'])
+            previous = partitions.setdefault(sample, partition)
+            if previous != partition: issue({'check': 'split_leakage', 'row': index, 'partitions': [previous, partition]})
+        if row_count == 0: issue({'check': 'observed_rows', 'problem': 'No observed samples'})
+        if dict(counts) != check['split']['expected_counts']:
+            issue({'check': 'split_counts', 'expected': check['split']['expected_counts'], 'actual': dict(counts)})
+    finally:
+        if handle is not None: handle.close()
+    return {'status': 'rejected' if issue_count else 'accepted', 'source': check['source'], 'units_file': check['units_file'],
+        'columns': schemas, 'identity_columns': check['identity_columns'], 'split': check['split'],
+        'row_count': row_count, 'nullable_counts': dict(nullable_counts), 'issues': issues,
+        'issue_count': issue_count, 'issues_truncated': issue_count > len(issues),
+        'verification_scope': 'Literal declared schema and unit labels, missing-value policy, sample identity and split disjointness; physical unit correctness and study validity require scientific review'}
+
+
 def _paired(check, producer, verifier):
     source, results_file = _file(producer, check['source']), _file(producer, check['results'])
     columns, rows = _read_csv(source)
@@ -498,7 +602,7 @@ def check_contract(contract, producer_workspace: Path, verifier_workspace: Path)
     normalized = validate_contract(contract)
     checks = []
     functions = {'numeric_compare': _numeric, 'byte_compare': _bytes,
-                 'csv_integrity': _csv, 'csv_coverage': _csv, 'paired_recompute': _paired}
+                 'csv_integrity': _csv, 'csv_coverage': _csv, 'paired_recompute': _paired, 'data_contract': _data_contract}
     for configured in normalized['checks']:
         try:
             result = functions[configured['kind']](configured, producer_workspace, verifier_workspace)

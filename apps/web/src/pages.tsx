@@ -1,4 +1,5 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
+import { DependencyImpact } from "./interventions/DependencyImpact";
 import { useState, useEffect, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
@@ -42,7 +43,12 @@ import { api, download, uid, parseJson, formatDate } from "./api";
 import type { Json, RecordItem, Run } from "./api";
 import { ProviderUsage } from "./ProviderUsage";
 import { ExecutionSettings } from "./ExecutionSettings";
-import { PaperLayoutSettings, PaperPreflight, paperLayoutDefaults, paperTemplate } from "./PaperLayout";
+import {
+  PaperLayoutSettings,
+  PaperPreflight,
+  paperLayoutDefaults,
+  paperTemplate,
+} from "./PaperLayout";
 import type { PaperTemplate, PaperLayoutConfig } from "./PaperLayout";
 import {
   useUI,
@@ -906,7 +912,9 @@ function ExperimentForm({
   const [params, setParams] = useState(
     JSON.stringify(item?.data.parameters || {}, null, 2),
   );
-  const [seconds, setSeconds] = useState(String(item?.data.timeout ?? item?.data.budget?.seconds ?? ""));
+  const [seconds, setSeconds] = useState(
+    String(item?.data.timeout ?? item?.data.budget?.seconds ?? ""),
+  );
   const [duty, setDuty] = useState(item?.data.duty || "effectiveness");
   const [executionConfig, setExecutionConfig] = useState<Json>(
     item?.data || {},
@@ -1554,9 +1562,15 @@ function FigureEditor({
   const [metric, setMetric] = useState(figure.data.metric || "");
   const [runIds, setRunIds] = useState<string[]>(figure.data.run_ids || []);
   const [caption, setCaption] = useState(figure.data.caption || "");
-  const [dataText, setDataText] = useState(JSON.stringify(figure.data.data || {}, null, 2));
-  const [purpose, setPurpose] = useState(figure.data.purpose || "effectiveness");
-  const [imagePrompt, setImagePrompt] = useState(figure.data.image_prompt || "");
+  const [dataText, setDataText] = useState(
+    JSON.stringify(figure.data.data || {}, null, 2),
+  );
+  const [purpose, setPurpose] = useState(
+    figure.data.purpose || "effectiveness",
+  );
+  const [imagePrompt, setImagePrompt] = useState(
+    figure.data.image_prompt || "",
+  );
   const [instruction, setInstruction] = useState("");
   const [tab, setTab] = useState("style");
   const [region, setRegion] = useState<Json | null>(null);
@@ -1580,7 +1594,10 @@ function FigureEditor({
         data: parseJson(dataText),
         purpose,
         image_prompt: imagePrompt,
-        code_origin: code !== (figure.data.code || "") ? "custom" : figure.data.code_origin,
+        code_origin:
+          code !== (figure.data.code || "")
+            ? "custom"
+            : figure.data.code_origin,
       },
     });
     setEditRevision(r.revision);
@@ -1739,9 +1756,21 @@ function FigureEditor({
                 <option value="scatter">Paired/scenario analysis</option>
               </select>
             </Field>
-            {kind === "image" && <Field label={t("论文图片提示词", "Scientific illustration prompt")} hint={t("描述真实机制和组件；实验图表使用真实数据绘图。图片模型在连接设置中配置。", "Describe the actual mechanism and components. Use measured-data plots for results. Configure the image model in connection settings.")}>
-              <textarea rows={5} value={imagePrompt} onChange={e => setImagePrompt(e.target.value)} />
-            </Field>}
+            {kind === "image" && (
+              <Field
+                label={t("论文图片提示词", "Scientific illustration prompt")}
+                hint={t(
+                  "描述真实机制和组件；实验图表使用真实数据绘图。图片模型在连接设置中配置。",
+                  "Describe the actual mechanism and components. Use measured-data plots for results. Configure the image model in connection settings.",
+                )}
+              >
+                <textarea
+                  rows={5}
+                  value={imagePrompt}
+                  onChange={(e) => setImagePrompt(e.target.value)}
+                />
+              </Field>
+            )}
             {[
               "title",
               "xlabel",
@@ -1780,12 +1809,17 @@ function FigureEditor({
               />
             </Field>
             <Field label={t("论证职责", "Scientific purpose")}>
-              <select value={purpose} onChange={e => setPurpose(e.target.value)}>
+              <select
+                value={purpose}
+                onChange={(e) => setPurpose(e.target.value)}
+              >
                 <option value="overview">Introduction overview</option>
                 <option value="mechanism">Mechanism</option>
                 <option value="effectiveness">Effectiveness</option>
                 <option value="scenario_value">Scenario value</option>
-                <option value="alternative_explanation">Alternative explanation</option>
+                <option value="alternative_explanation">
+                  Alternative explanation
+                </option>
               </select>
             </Field>
           </>
@@ -1815,18 +1849,27 @@ function FigureEditor({
               </select>
             </Field>
             <JsonView value={{ run_ids: runIds, metric }} />
-            <Field label={t("真实数据或方法图结构 JSON", "Observed data or method graph JSON")} hint={t("方法图使用 nodes 和 edges；留空时由设计 agent 根据研究上下文生成结构。", "Use nodes and edges for method diagrams; an empty graph invokes the design agent.")}>
-              <textarea rows={10} value={dataText} onChange={e => setDataText(e.target.value)} />
+            <Field
+              label={t(
+                "真实数据或方法图结构 JSON",
+                "Observed data or method graph JSON",
+              )}
+              hint={t(
+                "方法图使用 nodes 和 edges；留空时由设计 agent 根据研究上下文生成结构。",
+                "Use nodes and edges for method diagrams; an empty graph invokes the design agent.",
+              )}
+            >
+              <textarea
+                rows={10}
+                value={dataText}
+                onChange={(e) => setDataText(e.target.value)}
+              />
             </Field>
           </>
         )}
         {tab === "code" && (
           <div className="figure-code">
-            <CodeEditor
-              value={code}
-              onChange={setCode}
-              language="python"
-            />
+            <CodeEditor value={code} onChange={setCode} language="python" />
           </div>
         )}
         <div className="inline-actions">
@@ -1857,8 +1900,20 @@ function FigureEditor({
             {t("生成图表", "Render figure")}
           </Button>
         </div>
-        {figure.data.visual_review_status && <p className="muted">{t("独立图片评审", "Independent visual review")}: {figure.data.visual_review_status}</p>}
-        {figure.data.visual_selection && <details><summary>{t("候选图片与评选理由", "Candidates and selection rationale")}</summary><JsonView value={figure.data.visual_selection} /></details>}
+        {figure.data.visual_review_status && (
+          <p className="muted">
+            {t("独立图片评审", "Independent visual review")}:{" "}
+            {figure.data.visual_review_status}
+          </p>
+        )}
+        {figure.data.visual_selection && (
+          <details>
+            <summary>
+              {t("候选图片与评选理由", "Candidates and selection rationale")}
+            </summary>
+            <JsonView value={figure.data.visual_selection} />
+          </details>
+        )}
       </aside>
     </div>
   );
@@ -1881,7 +1936,9 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [editingRevision, setEditingRevision] = useState<number | undefined>();
   const [template, setTemplate] = useState<PaperTemplate>("article");
-  const [layout, setLayout] = useState<PaperLayoutConfig>(paperLayoutDefaults());
+  const [layout, setLayout] = useState<PaperLayoutConfig>(
+    paperLayoutDefaults(),
+  );
   const [layoutDirty, setLayoutDirty] = useState(false);
   const [layoutRun, setLayoutRun] = useState<string | null>(null);
   useEffect(() => {
@@ -1897,8 +1954,12 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
     const currentTemplate = paperTemplate(paper.data);
     if (!layoutDirty) {
       if (template !== currentTemplate) setTemplate(currentTemplate);
-      if (JSON.stringify(layout) !== JSON.stringify(currentLayout)) setLayout(currentLayout);
-    } else if (currentTemplate === template && JSON.stringify(currentLayout) === JSON.stringify(layout)) {
+      if (JSON.stringify(layout) !== JSON.stringify(currentLayout))
+        setLayout(currentLayout);
+    } else if (
+      currentTemplate === template &&
+      JSON.stringify(currentLayout) === JSON.stringify(layout)
+    ) {
       setLayoutDirty(false);
     }
   }, [paper, layoutDirty, template, layout]);
@@ -1976,11 +2037,19 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
           <Check size={14} />
           {t("检查引用与主张", "Check evidence")}
         </Button>
-        <Button disabled={busy || !paper} onClick={() => action(save, t("论文已保存", "Paper saved"))}>
+        <Button
+          disabled={busy || !paper}
+          onClick={() => action(save, t("论文已保存", "Paper saved"))}
+        >
           <Save size={14} />
           {t("保存", "Save")}
         </Button>
-        <Button className="primary" busy={busy} disabled={!paper} onClick={compile}>
+        <Button
+          className="primary"
+          busy={busy}
+          disabled={!paper}
+          onClick={compile}
+        >
           <Play size={13} />
           {t("编译 PDF", "Compile PDF")}
         </Button>
@@ -1999,21 +2068,44 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
           {t("导出", "Export")}
         </Button>
       </div>
+      {paper && id && <DependencyImpact projectId={id} data={paper.data} />}
       <PaperLayoutSettings
         template={template}
         layout={layout}
         onTemplateChange={(value) => {
           setTemplate(value);
-          if (value === "iclr2027") setLayout((current) => ({ ...current, columns: "single" }));
+          if (value === "iclr2027")
+            setLayout((current) => ({ ...current, columns: "single" }));
           setLayoutDirty(true);
         }}
-        onChange={(value) => { setLayout(value); setLayoutDirty(true); }}
+        onChange={(value) => {
+          setLayout(value);
+          setLayoutDirty(true);
+        }}
         onApply={applyLayout}
         busy={busy}
         disabled={!paper}
       />
-      {paper && <PaperGeneration projectId={id!} template={template} layout={layout} dirty={dirty} save={save} reload={reload} />}
-      {paper && <PaperFigureInsertion projectId={id!} revision={editingRevision} source={source} dirty={dirty} save={save} reload={reload} />}
+      {paper && (
+        <PaperGeneration
+          projectId={id!}
+          template={template}
+          layout={layout}
+          dirty={dirty}
+          save={save}
+          reload={reload}
+        />
+      )}
+      {paper && (
+        <PaperFigureInsertion
+          projectId={id!}
+          revision={editingRevision}
+          source={source}
+          dirty={dirty}
+          save={save}
+          reload={reload}
+        />
+      )}
       <div className="paper-editors">
         <div className="paper-source">
           <Tabs
@@ -2075,9 +2167,21 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
           )}
           {rightTab === "checks" && (
             <div className="paper-checks">
-              {layoutRun && <p className="muted">Requested layout run: {layoutRun.slice(0, 8)}</p>}
-              <PaperPreflight report={paper?.data.layout_preflight} plan={paper?.data.layout_plan} />
-              {issues ? <details open><summary>Evidence checks</summary><JsonView value={issues} /></details> : null}
+              {layoutRun && (
+                <p className="muted">
+                  Requested layout run: {layoutRun.slice(0, 8)}
+                </p>
+              )}
+              <PaperPreflight
+                report={paper?.data.layout_preflight}
+                plan={paper?.data.layout_plan}
+              />
+              {issues ? (
+                <details open>
+                  <summary>Evidence checks</summary>
+                  <JsonView value={issues} />
+                </details>
+              ) : null}
             </div>
           )}
         </div>
@@ -2117,67 +2221,236 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
     </div>
   );
 }
-function PaperGeneration({ projectId, template, layout, dirty, save, reload }: { projectId: string; template: PaperTemplate; layout: PaperLayoutConfig; dirty: boolean; save: () => Promise<number>; reload: () => Promise<void> }) {
+function PaperGeneration({
+  projectId,
+  template,
+  layout,
+  dirty,
+  save,
+  reload,
+}: {
+  projectId: string;
+  template: PaperTemplate;
+  layout: PaperLayoutConfig;
+  dirty: boolean;
+  save: () => Promise<number>;
+  reload: () => Promise<void>;
+}) {
   const { t, action } = useUI();
   const { data: runs } = useLoad<Run[]>(`/runs?project_id=${projectId}`, []);
-  const { data: figures } = useLoad<RecordItem[]>(`/figures?project_id=${projectId}`, []);
+  const { data: figures } = useLoad<RecordItem[]>(
+    `/figures?project_id=${projectId}`,
+    [],
+  );
   const [runIds, setRunIds] = useState<string[]>([]);
   const [figureIds, setFigureIds] = useState<string[]>([]);
   const [instructions, setInstructions] = useState("");
   const [busy, setBusy] = useState(false);
-  const completed = runs.filter(run => run.status === "completed" && ["experiment", "command", "agent"].includes(run.kind));
-  const reviewed = figures.filter(figure => figure.status === "ready_for_review" && (figure.data.outputs?.pdf || figure.data.outputs?.png));
-  const toggle = (values: string[], id: string) => values.includes(id) ? values.filter(value => value !== id) : [...values, id];
-  return <details className="paper-layout">
-    <summary>{t("从真实实验生成完整论文", "Generate a full manuscript from actual experiments")}</summary>
-    <p className="muted">{t("默认完整投稿篇幅；图片由独立 agent 评选和定位，编译后检查实际位置。实验或文献缺项会保留待补工作。", "Uses the full submission profile. Independent agents select and place visuals; compiled locations are checked. Evidence gaps remain explicit work to complete.")}</p>
-    <form onSubmit={event => {
-      event.preventDefault(); setBusy(true);
-      void action(async () => {
-        if (dirty) await save();
-        await api(`/papers/${projectId}/generate`, "POST", { request_id: uid(), run_ids: runIds, figure_ids: figureIds, manuscript_type: "full_paper", template, layout, ...(instructions.trim() ? {instructions} : {}) });
-        await reload();
-      }, t("完整论文生成任务已排队", "Full manuscript generation queued")).finally(() => setBusy(false));
-    }}>
-      <Field label={t("已完成的实验与测量", "Completed experiments and measurements")}>
-        {completed.map(run => <label key={run.id}><input type="checkbox" checked={runIds.includes(run.id)} onChange={() => setRunIds(current => toggle(current, run.id))} />{run.kind} · {run.id.slice(0, 8)}</label>)}
-        {!completed.length && <p>{t("先完成实际实验。", "Complete actual experiments first.")}</p>}
-      </Field>
-      <Field label={t("必须插入的已评审图片", "Reviewed figures to include")}>
-        {reviewed.map(figure => <label key={figure.id}><input type="checkbox" checked={figureIds.includes(figure.id)} onChange={() => setFigureIds(current => toggle(current, figure.id))} />{figure.title}</label>)}
-      </Field>
-      <Field label={t("研究问题与写作要求", "Research question and writing requirements")}><textarea rows={3} value={instructions} onChange={event => setInstructions(event.target.value)} /></Field>
-      <Button className="primary" busy={busy} disabled={busy || !runIds.length}>{t("生成完整论文", "Generate full manuscript")}</Button>
-    </form>
-  </details>;
+  const completed = runs.filter(
+    (run) =>
+      run.status === "completed" &&
+      ["experiment", "command", "agent"].includes(run.kind),
+  );
+  const reviewed = figures.filter(
+    (figure) =>
+      figure.status === "ready_for_review" &&
+      (figure.data.outputs?.pdf || figure.data.outputs?.png),
+  );
+  const toggle = (values: string[], id: string) =>
+    values.includes(id)
+      ? values.filter((value) => value !== id)
+      : [...values, id];
+  return (
+    <details className="paper-layout">
+      <summary>
+        {t(
+          "从真实实验生成完整论文",
+          "Generate a full manuscript from actual experiments",
+        )}
+      </summary>
+      <p className="muted">
+        {t(
+          "默认完整投稿篇幅；图片由独立 agent 评选和定位，编译后检查实际位置。实验或文献缺项会保留待补工作。",
+          "Uses the full submission profile. Independent agents select and place visuals; compiled locations are checked. Evidence gaps remain explicit work to complete.",
+        )}
+      </p>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          setBusy(true);
+          void action(
+            async () => {
+              if (dirty) await save();
+              await api(`/papers/${projectId}/generate`, "POST", {
+                request_id: uid(),
+                run_ids: runIds,
+                figure_ids: figureIds,
+                manuscript_type: "full_paper",
+                template,
+                layout,
+                ...(instructions.trim() ? { instructions } : {}),
+              });
+              await reload();
+            },
+            t("完整论文生成任务已排队", "Full manuscript generation queued"),
+          ).finally(() => setBusy(false));
+        }}
+      >
+        <Field
+          label={t(
+            "已完成的实验与测量",
+            "Completed experiments and measurements",
+          )}
+        >
+          {completed.map((run) => (
+            <label key={run.id}>
+              <input
+                type="checkbox"
+                checked={runIds.includes(run.id)}
+                onChange={() => setRunIds((current) => toggle(current, run.id))}
+              />
+              {run.kind} · {run.id.slice(0, 8)}
+            </label>
+          ))}
+          {!completed.length && (
+            <p>{t("先完成实际实验。", "Complete actual experiments first.")}</p>
+          )}
+        </Field>
+        <Field label={t("必须插入的已评审图片", "Reviewed figures to include")}>
+          {reviewed.map((figure) => (
+            <label key={figure.id}>
+              <input
+                type="checkbox"
+                checked={figureIds.includes(figure.id)}
+                onChange={() =>
+                  setFigureIds((current) => toggle(current, figure.id))
+                }
+              />
+              {figure.title}
+            </label>
+          ))}
+        </Field>
+        <Field
+          label={t(
+            "研究问题与写作要求",
+            "Research question and writing requirements",
+          )}
+        >
+          <textarea
+            rows={3}
+            value={instructions}
+            onChange={(event) => setInstructions(event.target.value)}
+          />
+        </Field>
+        <Button
+          className="primary"
+          busy={busy}
+          disabled={busy || !runIds.length}
+        >
+          {t("生成完整论文", "Generate full manuscript")}
+        </Button>
+      </form>
+    </details>
+  );
 }
-function PaperFigureInsertion({ projectId, revision, source, dirty, save, reload }: { projectId: string; revision?: number; source: string; dirty: boolean; save: () => Promise<number>; reload: () => Promise<void> }) {
+function PaperFigureInsertion({
+  projectId,
+  revision,
+  source,
+  dirty,
+  save,
+  reload,
+}: {
+  projectId: string;
+  revision?: number;
+  source: string;
+  dirty: boolean;
+  save: () => Promise<number>;
+  reload: () => Promise<void>;
+}) {
   const { t, action } = useUI();
-  const { data: figures } = useLoad<RecordItem[]>(`/figures?project_id=${projectId}`, []);
+  const { data: figures } = useLoad<RecordItem[]>(
+    `/figures?project_id=${projectId}`,
+    [],
+  );
   const [figureId, setFigureId] = useState("");
   const [anchor, setAnchor] = useState("");
-  const ready = figures.filter(figure => figure.status === "ready_for_review" && (figure.data.outputs?.pdf || figure.data.outputs?.png));
-  return <details className="paper-layout">
-    <summary>{t("在文章中插入已评审图片", "Insert a reviewed figure in the manuscript")}</summary>
-    <form onSubmit={event => {
-      event.preventDefault();
-      void action(async () => {
-        const currentRevision = dirty ? await save() : revision;
-        await api(`/papers/${projectId}/figures`, "POST", { expected_revision: currentRevision, figure_id: figureId, anchor_text: anchor });
-        setAnchor("");
-        await reload();
-      }, t("图片已插入，请编译查看位置", "Figure inserted; compile to inspect placement"));
-    }}>
-      <Field label={t("选择图片", "Figure")}><select required value={figureId} onChange={event => setFigureId(event.target.value)}>
-        <option value="">{t("选择已生成和评审的图片", "Select a rendered and reviewed figure")}</option>
-        {ready.map(figure => <option key={figure.id} value={figure.id}>{figure.title}</option>)}
-      </select></Field>
-      <Field label={t("图片前的文章段落", "Preceding manuscript paragraph")} hint={t("粘贴当前正文中唯一的一段文字；图片和交叉引用将紧接其后。", "Paste a unique paragraph from the current source; the figure and reference follow it.")}>
-        <textarea required rows={3} value={anchor} onChange={event => setAnchor(event.target.value)} />
-      </Field>
-      <Button className="primary" disabled={!figureId || !anchor.trim() || !source.includes(anchor)}>{t("插入图片", "Insert figure")}</Button>
-    </form>
-  </details>;
+  const ready = figures.filter(
+    (figure) =>
+      figure.status === "ready_for_review" &&
+      (figure.data.outputs?.pdf || figure.data.outputs?.png),
+  );
+  return (
+    <details className="paper-layout">
+      <summary>
+        {t(
+          "在文章中插入已评审图片",
+          "Insert a reviewed figure in the manuscript",
+        )}
+      </summary>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void action(
+            async () => {
+              const currentRevision = dirty ? await save() : revision;
+              await api(`/papers/${projectId}/figures`, "POST", {
+                expected_revision: currentRevision,
+                figure_id: figureId,
+                anchor_text: anchor,
+              });
+              setAnchor("");
+              await reload();
+            },
+            t(
+              "图片已插入，请编译查看位置",
+              "Figure inserted; compile to inspect placement",
+            ),
+          );
+        }}
+      >
+        <Field label={t("选择图片", "Figure")}>
+          <select
+            required
+            value={figureId}
+            onChange={(event) => setFigureId(event.target.value)}
+          >
+            <option value="">
+              {t(
+                "选择已生成和评审的图片",
+                "Select a rendered and reviewed figure",
+              )}
+            </option>
+            {ready.map((figure) => (
+              <option key={figure.id} value={figure.id}>
+                {figure.title}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field
+          label={t("图片前的文章段落", "Preceding manuscript paragraph")}
+          hint={t(
+            "粘贴当前正文中唯一的一段文字；图片和交叉引用将紧接其后。",
+            "Paste a unique paragraph from the current source; the figure and reference follow it.",
+          )}
+        >
+          <textarea
+            required
+            rows={3}
+            value={anchor}
+            onChange={(event) => setAnchor(event.target.value)}
+          />
+        </Field>
+        <Button
+          className="primary"
+          disabled={!figureId || !anchor.trim() || !source.includes(anchor)}
+        >
+          {t("插入图片", "Insert figure")}
+        </Button>
+      </form>
+    </details>
+  );
 }
 export function FilesPage() {
   const { id } = useParams();
@@ -2690,7 +2963,9 @@ export function SettingsPage() {
                     <code>{item.base_url || item.address || item.role}</code>
                   </div>
                   <Badge status={item.status || "idle"} />
-                  {tab === "providers" && item.kind !== "ollama" && <ProviderUsage providerId={item.id} />}
+                  {tab === "providers" && item.kind !== "ollama" && (
+                    <ProviderUsage providerId={item.id} />
+                  )}
                   <IconButton
                     label={t("编辑连接", "Edit connection")}
                     onClick={() => setModal({ resource: tab, item })}
@@ -2712,7 +2987,21 @@ export function SettingsPage() {
                       {t("测试连接", "Test connection")}
                     </Button>
                   )}
-                  {tab === "providers" && <Button onClick={() => action(() => api('/settings','PATCH',{default_provider_id:item.id}), 'Default model updated')}>Use for new projects</Button>}
+                  {tab === "providers" && (
+                    <Button
+                      onClick={() =>
+                        action(
+                          () =>
+                            api("/settings", "PATCH", {
+                              default_provider_id: item.id,
+                            }),
+                          "Default model updated",
+                        )
+                      }
+                    >
+                      Use for new projects
+                    </Button>
+                  )}
                 </section>
               ))}
             </div>
@@ -2830,36 +3119,51 @@ function ConnectionEditor({
   const [key, setKey] = useState("");
   const [paid, setPaid] = useState(item?.allow_paid || false);
   const [apiMode, setApiMode] = useState(item?.config?.api || "responses");
-  const [limitUsd, setLimitUsd] = useState(String(item?.config?.budget_usd ?? ""));
-  const [inputRate, setInputRate] = useState(String(item?.config?.pricing?.input_per_million ?? ""));
-  const [cachedRate, setCachedRate] = useState(String(item?.config?.pricing?.cached_input_per_million ?? ""));
-  const [outputRate, setOutputRate] = useState(String(item?.config?.pricing?.output_per_million ?? ""));
-  const [imageModel, setImageModel] = useState(item?.config?.image_generation?.model || "");
-  const [imageCeiling, setImageCeiling] = useState(String(item?.config?.image_generation?.max_request_usd ?? ""));
+  const [limitUsd, setLimitUsd] = useState(
+    String(item?.config?.budget_usd ?? ""),
+  );
+  const [inputRate, setInputRate] = useState(
+    String(item?.config?.pricing?.input_per_million ?? ""),
+  );
+  const [cachedRate, setCachedRate] = useState(
+    String(item?.config?.pricing?.cached_input_per_million ?? ""),
+  );
+  const [outputRate, setOutputRate] = useState(
+    String(item?.config?.pricing?.output_per_million ?? ""),
+  );
+  const [imageModel, setImageModel] = useState(
+    item?.config?.image_generation?.model || "",
+  );
+  const [imageCeiling, setImageCeiling] = useState(
+    String(item?.config?.image_generation?.max_request_usd ?? ""),
+  );
   const [config, setConfig] = useState(
     JSON.stringify(
-      item && resource === "providers" ? item.config || {} : item
-        ? Object.fromEntries(
-            Object.entries(item).filter(
-              ([k]) => !["id", "name", "created_at", "updated_at"].includes(k),
-            ),
-          )
-        : resource === "hosts"
-          ? {
-              kind: "local",
-              hostname: "localhost",
-              workspace: "",
-              allow_shell: true,
-            }
-          : resource === "agents"
+      item && resource === "providers"
+        ? item.config || {}
+        : item
+          ? Object.fromEntries(
+              Object.entries(item).filter(
+                ([k]) =>
+                  !["id", "name", "created_at", "updated_at"].includes(k),
+              ),
+            )
+          : resource === "hosts"
             ? {
-                role: "researcher",
-                model: "",
-                instructions: "",
-                tools: [],
-                budget: {},
+                kind: "local",
+                hostname: "localhost",
+                workspace: "",
+                allow_shell: true,
               }
-            : {},
+            : resource === "agents"
+              ? {
+                  role: "researcher",
+                  model: "",
+                  instructions: "",
+                  tools: [],
+                  budget: {},
+                }
+              : {},
       null,
       2,
     ),
@@ -2883,9 +3187,38 @@ function ConnectionEditor({
                   model,
                   allow_paid: paid,
                   ...(key ? { api_key: key } : {}),
-                  config: {...parseJson(config), ...(kind !== "ollama" && kind !== "codex_cli" ? {api:apiMode, budget_usd:limitUsd.trim() ? Number(limitUsd) : null,
-                    ...(imageModel.trim() ? {image_generation:{...(parseJson(config).image_generation || {}),model:imageModel.trim(),max_request_usd:Number(imageCeiling)}} : {}),
-                    pricing: {input_per_million:inputRate.trim() ? Number(inputRate) : null, cached_input_per_million:cachedRate.trim() ? Number(cachedRate) : (inputRate.trim() ? Number(inputRate) : null), output_per_million:outputRate.trim() ? Number(outputRate) : null, currency:"USD"}} : {})},
+                  config: {
+                    ...parseJson(config),
+                    ...(kind !== "ollama" && kind !== "codex_cli"
+                      ? {
+                          api: apiMode,
+                          budget_usd: limitUsd.trim() ? Number(limitUsd) : null,
+                          ...(imageModel.trim()
+                            ? {
+                                image_generation: {
+                                  ...(parseJson(config).image_generation || {}),
+                                  model: imageModel.trim(),
+                                  max_request_usd: Number(imageCeiling),
+                                },
+                              }
+                            : {}),
+                          pricing: {
+                            input_per_million: inputRate.trim()
+                              ? Number(inputRate)
+                              : null,
+                            cached_input_per_million: cachedRate.trim()
+                              ? Number(cachedRate)
+                              : inputRate.trim()
+                                ? Number(inputRate)
+                                : null,
+                            output_per_million: outputRate.trim()
+                              ? Number(outputRate)
+                              : null,
+                            currency: "USD",
+                          },
+                        }
+                      : {}),
+                  },
                 }
               : { name, ...parseJson(config) };
           const r = await action(() =>
@@ -2917,13 +3250,23 @@ function ConnectionEditor({
                 value={kind}
                 onChange={(e) => {
                   setKind(e.target.value);
-                  if (e.target.value === "codex_cli") { setModel("gpt-6-luna"); setConfig(JSON.stringify({reasoning_effort:"xhigh",timeout:120},null,2)); setPaid(false); }
+                  if (e.target.value === "codex_cli") {
+                    setModel("gpt-6-luna");
+                    setConfig(
+                      JSON.stringify(
+                        { reasoning_effort: "xhigh", timeout: 120 },
+                        null,
+                        2,
+                      ),
+                    );
+                    setPaid(false);
+                  }
                   setUrl(
                     e.target.value === "codex_cli"
                       ? "http://127.0.0.1"
                       : e.target.value === "ollama"
-                      ? "http://127.0.0.1:11434"
-                      : "https://api.openai.com/v1",
+                        ? "http://127.0.0.1:11434"
+                        : "https://api.openai.com/v1",
                   );
                 }}
               >
@@ -2932,7 +3275,14 @@ function ConnectionEditor({
                 <option value="openai">OpenAI-compatible API</option>
               </select>
             </Field>
-            {kind === "codex_cli" && <p>Uses the server account’s existing Codex CLI login. FOREST owns tool execution; the inference subprocess has shell, plugins and browser tools disabled. Subscription USD cost and a hard token ceiling are unavailable; use a reporting request cap.</p>}
+            {kind === "codex_cli" && (
+              <p>
+                Uses the server account’s existing Codex CLI login. FOREST owns
+                tool execution; the inference subprocess has shell, plugins and
+                browser tools disabled. Subscription USD cost and a hard token
+                ceiling are unavailable; use a reporting request cap.
+              </p>
+            )}
             <Field label="Base URL">
               <input
                 required
@@ -2940,17 +3290,91 @@ function ConnectionEditor({
                 onChange={(e) => setUrl(e.target.value)}
               />
             </Field>
-            {kind !== "ollama" && kind !== "codex_cli" && <>
-              <Field label="API format"><select value={apiMode} onChange={e => setApiMode(e.target.value)}><option value="responses">OpenAI Responses</option><option value="chat_completions">Chat Completions compatible</option></select></Field>
-              <Field label="Shared API spending limit (USD)"><input type="number" min="0" step="any" required={paid} value={limitUsd} onChange={e => setLimitUsd(e.target.value)} /></Field>
-              <div className="form-row">
-                <Field label="Input price / 1M tokens (USD)"><input type="number" min="0" step="any" required={paid} value={inputRate} onChange={e => setInputRate(e.target.value)} /></Field>
-                <Field label="Output price / 1M tokens (USD)"><input type="number" min="0" step="any" required={paid} value={outputRate} onChange={e => setOutputRate(e.target.value)} /></Field>
-              </div>
-              <Field label="Cached input price / 1M tokens (USD, optional)"><input type="number" min="0" step="any" value={cachedRate} onChange={e => setCachedRate(e.target.value)} /></Field>
-              <Field label={t("图片模型 ID（可选）", "Image model ID (optional)")}><input value={imageModel} onChange={e => setImageModel(e.target.value)} /></Field>
-              {imageModel.trim() && <Field label={t("每次图片请求费用上界（美元）", "Per image request cost ceiling (USD)")} hint={t("图片请求与文字请求共用总限额；无法核算费用时保留预留金额。", "Image and text requests share the total limit; unknown image charges retain their reservation.")}><input required type="number" min="0.001" step="any" value={imageCeiling} onChange={e => setImageCeiling(e.target.value)} /></Field>}
-            </>}
+            {kind !== "ollama" && kind !== "codex_cli" && (
+              <>
+                <Field label="API format">
+                  <select
+                    value={apiMode}
+                    onChange={(e) => setApiMode(e.target.value)}
+                  >
+                    <option value="responses">OpenAI Responses</option>
+                    <option value="chat_completions">
+                      Chat Completions compatible
+                    </option>
+                  </select>
+                </Field>
+                <Field label="Shared API spending limit (USD)">
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    required={paid}
+                    value={limitUsd}
+                    onChange={(e) => setLimitUsd(e.target.value)}
+                  />
+                </Field>
+                <div className="form-row">
+                  <Field label="Input price / 1M tokens (USD)">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      required={paid}
+                      value={inputRate}
+                      onChange={(e) => setInputRate(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Output price / 1M tokens (USD)">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      required={paid}
+                      value={outputRate}
+                      onChange={(e) => setOutputRate(e.target.value)}
+                    />
+                  </Field>
+                </div>
+                <Field label="Cached input price / 1M tokens (USD, optional)">
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={cachedRate}
+                    onChange={(e) => setCachedRate(e.target.value)}
+                  />
+                </Field>
+                <Field
+                  label={t("图片模型 ID（可选）", "Image model ID (optional)")}
+                >
+                  <input
+                    value={imageModel}
+                    onChange={(e) => setImageModel(e.target.value)}
+                  />
+                </Field>
+                {imageModel.trim() && (
+                  <Field
+                    label={t(
+                      "每次图片请求费用上界（美元）",
+                      "Per image request cost ceiling (USD)",
+                    )}
+                    hint={t(
+                      "图片请求与文字请求共用总限额；无法核算费用时保留预留金额。",
+                      "Image and text requests share the total limit; unknown image charges retain their reservation.",
+                    )}
+                  >
+                    <input
+                      required
+                      type="number"
+                      min="0.001"
+                      step="any"
+                      value={imageCeiling}
+                      onChange={(e) => setImageCeiling(e.target.value)}
+                    />
+                  </Field>
+                )}
+              </>
+            )}
             <Field label={t("实际模型 ID", "Model ID")}>
               <input
                 required
@@ -3162,6 +3586,17 @@ function ProposalCommands({
     record.data.commands.map((c: Json) => JSON.stringify(c, null, 2)),
   );
   const [edit, setEdit] = useState<number | null>(null);
+  const [reviewedRevision, setReviewedRevision] = useState<number | null>(null);
+  const [rejectionReason, setRejectionReason] = useState("");
+  useEffect(() => {
+    let active = true;
+    api(`/projects/${record.project_id}/graph`).then((graph) => {
+      if (active) setReviewedRevision(graph.revision);
+    });
+    return () => {
+      active = false;
+    };
+  }, [record.id, record.project_id]);
   return (
     <div className="proposal-commands">
       <strong>{t("待采用的路线建议", "Unapplied suggestions")}</strong>
@@ -3222,9 +3657,9 @@ function ProposalCommands({
         onClick={() =>
           action(
             async () => {
-              const graph = await api(`/projects/${record.project_id}/graph`);
               await api(`/research/proposals/${record.id}/apply`, "POST", {
-                expected_revision: graph.revision,
+                request_id: uid(),
+                expected_revision: reviewedRevision,
                 indices: selected,
                 commands: commands.map(parseJson),
               });
@@ -3237,6 +3672,26 @@ function ProposalCommands({
       >
         <Check size={14} />
         {t("采用选中建议", "Apply selected suggestions")} ({selected.length})
+      </Button>
+      <Field label={t("拒绝理由", "Proposal rejection reason")}>
+        <textarea
+          value={rejectionReason}
+          onChange={(event) => setRejectionReason(event.target.value)}
+        />
+      </Field>
+      <Button
+        disabled={!rejectionReason.trim() || reviewedRevision === null}
+        onClick={() =>
+          action(async () => {
+            await api(`/research/proposals/${record.id}/reject`, "POST", {
+              expected_revision: reviewedRevision,
+              reason: rejectionReason,
+            });
+            await onApplied();
+          })
+        }
+      >
+        {t("拒绝建议", "Reject proposal")}
       </Button>
     </div>
   );

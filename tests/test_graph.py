@@ -398,3 +398,26 @@ def test_pruning_and_undo_layout_preserve_valid_run_revision(tmp_path):
     assert get(undone["graph"], "a")["revision"] == 4
     assert get(undone["graph"], "a")["deliverable_status"] == "ready_for_review"
     assert undone["impact"]["rerun_nodes"] == []
+
+
+def test_compound_steps_keep_kernel_effects_and_leave_original_graph_unchanged(tmp_path):
+    original = graph()
+    saved = deepcopy(original)
+    service = GraphCommandService(original, tmp_path)
+    ordinary = deepcopy(original)
+    operations = [('edit_node', ['a'], {'instructions': 'New method'}),
+                  ('edit_node', ['other'], {'title': 'Independent branch'}),
+                  ('add_node', [], {'id': 'new', 'branch_id': 'main', 'title': 'Additional baseline'})]
+    for operation, targets, params in operations:
+        cmd = command(ordinary, operation, targets, **params)
+        expected = GraphCommandService(ordinary, tmp_path).apply(cmd, defer_files=True)
+        actual = service.apply_compound_step(cmd)
+        assert actual['impact'] == expected['impact']
+        assert actual['run_nodes'] == expected['run_nodes']
+        ordinary = expected['graph']
+        assert {k: v for k, v in actual['graph'].items() if k != '_history'} == {
+            k: v for k, v in ordinary.items() if k != '_history'}
+        assert '_history' not in actual['graph']
+    assert original == saved
+    with pytest.raises(ValueError, match='History operations'):
+        service.apply_compound_step(command(service.graph, 'undo'))

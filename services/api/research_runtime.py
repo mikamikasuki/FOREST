@@ -85,9 +85,10 @@ def research_state(ident:str,overview:bool=False):
         runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident).order_by(TaskRun.created_at.desc())))
         active=[{'id':r.id,'kind':r.kind,'status':r.status,'node_id':r.node_id,'resource':r.resource} for r in runs if r.status in ('queued','running','waiting','waiting_input','paused','pausing','budget_exhausted')]
         from research.planning.scoreboard import compare_trials
+        from services.interventions.applicability import goal_applicability
         from services.api.verification import verification_for_run,numerical_coverage_for_run,required_policy
         trials=compare_trials([{'id':r.id,'kind':r.kind,'status':r.status,'metrics':r.metrics,'config':r.config,'created_at':r.created_at,
-                               'verification_status':verification_for_run(s,r)['verification_status'],
+                               'verification_status':verification_for_run(s,r)['verification_status'], 'goal_applicability':goal_applicability(s,r),
                                'numerical_verification':numerical_coverage_for_run(s,r),
                                'verification_policy':'required' if required_policy(s,r) else 'optional'} for r in runs],p.config.get('objective'))
         return {'objective':p.config.get('objective',{}),'trials':trials,'controller':p.config.get('controller',{}),'active_runs':active,'decisions':[asdict(x) for x in decisions if x.data.get('origin')=='research_controller'], 'counts':{'runs':len(runs),'completed':sum(r.status=='completed' for r in runs),'failed':sum(r.status in ('failed','interrupted') for r in runs)}}
@@ -95,12 +96,11 @@ def research_state(ident:str,overview:bool=False):
 @router.get('/api/projects/{ident}/usage')
 def project_usage(ident:str):
     """Read project spending and report account-wide provider limits separately."""
-    from research.agents.budget import totals,micro
+    from research.agents.budget import cost_summary
     with Session() as s:
         project=get(s,Project,ident)
         rows=list(s.scalars(select(ModelRequest).where(ModelRequest.project_id==ident)))
         runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident)))
-        estimated,reserved=totals(rows)
         limit=project.budget.get('cost_usd')
         provider_ids={row.provider_id for row in rows}
         if project.config.get('provider_id'): provider_ids.add(project.config['provider_id'])
@@ -109,16 +109,13 @@ def project_usage(ident:str):
             provider=s.get(Provider,provider_id)
             if not provider: continue
             provider_rows=list(s.scalars(select(ModelRequest).where(ModelRequest.provider_id==provider_id)))
-            used,held=totals(provider_rows);provider_limit=provider.config.get('budget_usd')
+            provider_limit=provider.config.get('budget_usd')
             providers.append({'id':provider.id,'name':provider.name,'scope':'all_projects',
                 'allow_paid':provider.allow_paid,'limit_usd':provider_limit,
-                'estimated_cost_usd':used/1000000,'reserved_usd':held/1000000,
-                'remaining_usd':max(0,micro(provider_limit)-used-held)/1000000 if provider_limit is not None else None})
+                **cost_summary(provider_rows, provider_limit, unpriced=provider.kind=='codex_cli')})
         elapsed=sum(float(run.resource.get('elapsed_seconds',0)) for run in runs)
         return {'project_id':ident,'allow_paid':bool(project.budget.get('allow_paid',False)),
-            'limits':project.budget,'estimated_cost_usd':estimated/1000000,'reserved_usd':reserved/1000000,
-            'remaining_usd':max(0,micro(limit)-estimated-reserved)/1000000 if limit is not None else None,
-            'cost_source':'configured_rates_estimate','uncertain_requests':sum(row.status=='uncertain' for row in rows),
+            'limits':project.budget,**cost_summary(rows, limit),'uncertain_requests':sum(row.status=='uncertain' for row in rows),
             'run_count':len(runs),'elapsed_seconds':elapsed,'providers':providers,
             'active_run_limits':[{'run_id':run.id,'status':run.status,'agent_budget':run.config.get('agent_budget',{})}
                 for run in runs if run.status in ('queued','running','waiting','waiting_input','paused','pausing','budget_exhausted')]}
@@ -164,8 +161,14 @@ def agent_session(ident:str,summary:bool=False):
 
 @router.patch('/api/runs/{ident}/configuration')
 def configure_run(ident:str,body:dict=Body(...)):
+    from research.agents.tool_policy import validate_permissions
+    try: validate_permissions(body)
+    except ValueError as exc: error('INVALID_TOOL_POLICY', str(exc), 422)
+    with Session() as reader: project_id=get(reader,TaskRun,ident).project_id
     with Session.begin() as s:
-        run=get(s,TaskRun,ident)
+        from services.worker.scheduler import _lock_project
+        _lock_project(s,project_id)
+        run=get(s,TaskRun,ident,for_update=True)
         # Execution identities belong to the runner; research parameters remain editable.
         blocked={'provider_snapshot','execution_attempt','resolved_inputs','project_goal','_repository_source',
                  '_verification_binding','_verification_contract','_verification_sources',
@@ -177,6 +180,21 @@ def configure_run(ident:str,body:dict=Body(...)):
                 error('INVALID_REPOSITORY','This task kind does not accept repository inputs',422)
             try: body={**body,'repository':normalize_repository(body['repository'])}
             except RepositoryError as exc:error(exc.code,str(exc),422)
+        if 'provider_id' in body and body['provider_id']!=run.config.get('provider_id'):
+            if run.started_at or run.config.get('execution_attempt'):
+                error('PROVIDER_BOUND','Started runs retain their provider snapshot; enqueue a new run to change provider',409)
+            provider=get(s,Provider,body['provider_id'])
+            run.config={**run.config,'provider_snapshot':{**asdict(provider,secrets=True),
+                '_usage_context':{'project_id':project_id,'run_id':run.id}},
+                'provider_selection':{'provider_id':provider.id,'source':'run_configuration'}}
+        if 'budget' in body:
+            from services.api.common import validate_project_budget
+            validate_project_budget(body['budget'])
+        if 'timeout' in body and body['timeout'] is not None:
+            import math
+            value=body['timeout']
+            if type(value) not in (int,float) or not math.isfinite(value) or value<=0:
+                error('INVALID_TIMEOUT','Task timeout must be a finite positive number or null',422)
         changed={key for key,value in body.items() if value!=run.config.get(key)}
         operational={'budget','agent_budget','timeout','priority','allow_paid','context_char_budget'}
         if changed-operational and (run.started_at or run.config.get('execution_attempt')):
@@ -220,29 +238,13 @@ def review_writing(ident:str,body:dict=Body(...)):
 
 @router.post('/api/projects/{ident}/graph/batch')
 def graph_batch(ident:str,body:dict=Body(...)):
-    from copy import deepcopy
-    from research.kernel import GraphCommandService
-    from .common import graph_from_db,save_graph
-    with Session.begin() as s:
-        p=s.scalar(select(Project).where(Project.id==ident).with_for_update())
-        if not p: error('NOT_FOUND','Project does not exist',404)
-        old=s.scalar(select(CommandReceipt).where(CommandReceipt.project_id==ident,CommandReceipt.request_id==body.get('request_id')))
-        if old: return old.response
-        if p.revision!=body.get('expected_revision'): error('REVISION_CONFLICT','Graph changed; reload before applying this batch',409)
-        graph=graph_from_db(s,p); history=deepcopy(graph.pop('_history',{'undo':[],'redo':[]})); before=deepcopy(graph)
-        commands=body.get('commands',[])
-        if not isinstance(commands,list) or not commands: error('EMPTY_BATCH','Provide graph commands',422)
-        for command in commands:
-            # Filesystem-mutating fork/merge operations remain separate explicit commands.
-            if command.get('operation') not in ('add_node','edit_node','add_dependency','remove_dependency','prune_branch','restore_branch','set_main_branch'):
-                error('UNSUPPORTED_BATCH_OPERATION','Use a separate command for this operation',422)
-            graph=GraphCommandService(graph,project_dir(ident)).apply({**command,'request_id':uid(),'expected_revision':graph['revision']})['graph']
-            graph.pop('_history',None)
-        history['undo'].append(before); history['redo']=[]; graph['_history']=history
-        save_graph(s,p,graph)
-        result={'revision':p.revision,'applied':len(commands),'node_count':len(graph['nodes']),'edge_count':len(graph['edges'])}
-        s.add(CommandReceipt(project_id=ident,request_id=body.get('request_id') or uid(),response=result))
-        emit(s,ident,'node_changed',{'revision':p.revision});return result
+    from services.interventions.application import apply_commands
+    commands=body.get('commands',[])
+    if not isinstance(commands,list) or not commands: error('EMPTY_BATCH','Provide graph commands',422)
+    allowed={'add_node','edit_node','add_dependency','remove_dependency','prune_branch','restore_branch','set_main_branch'}
+    if any(not isinstance(command,dict) or command.get('operation') not in allowed for command in commands):
+        error('UNSUPPORTED_BATCH_OPERATION','Use a separate command for this operation',422)
+    return apply_commands(ident,body.get('request_id') or uid(),body.get('expected_revision'),commands,batch=True)
 
 @router.post('/api/projects/{ident}/statistics/review')
 def review_statistics(ident:str,body:dict=Body(default={})):

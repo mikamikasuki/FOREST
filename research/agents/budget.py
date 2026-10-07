@@ -84,6 +84,24 @@ def totals(rows):
     return estimated, reserved
 
 
+def cost_summary(rows, limit=None, *, unpriced=False):
+    """Expose incomplete USD accounting without changing reservation guards."""
+    estimated, reserved = totals(rows)
+    unknown = sum(r.status != 'rejected' and r.estimated_microusd is None and
+                  (r.details.get('cost_source') in ('unpriced_local_provider', 'unknown') or
+                   r.status in ('completed', 'settled')) for r in rows)
+    incomplete = bool(unknown or unpriced)
+    return {'estimated_cost_usd': None if incomplete else estimated / 1000000,
+            'known_cost_usd': estimated / 1000000, 'unknown_cost_requests': unknown,
+            'reserved_usd': reserved / 1000000,
+            'remaining_usd': max(0, micro(limit)-estimated-reserved) / 1000000
+                if limit is not None and not incomplete else None,
+            'cost_source': ('mixed_known_and_unknown' if estimated else
+                            'unpriced_local_provider' if unpriced or any(
+                                r.details.get('cost_source') == 'unpriced_local_provider' for r in rows)
+                            else 'unknown') if incomplete else 'configured_rates_estimate'}
+
+
 def interrupt_run_reservations(run_id, *, session=None):
     """Retain unacknowledged spend when a run or execution attempt stops.
 
@@ -109,12 +127,9 @@ def usage_summary(provider_id):
         if provider is None:
             raise ValueError('Unknown provider')
         rows = list(s.scalars(select(ModelRequest).where(ModelRequest.provider_id == provider_id).order_by(ModelRequest.created_at.desc())))
-        estimated, reserved = totals(rows)
         limit = provider.config.get('budget_usd')
         return {'provider_id':provider_id, 'limit_usd':limit,
-                'estimated_cost_usd':estimated/1000000, 'reserved_usd':reserved/1000000,
-                'remaining_usd':max(0, micro(limit)-estimated-reserved)/1000000 if limit is not None else None,
-                'cost_source':'unpriced_local_provider' if provider.kind=='codex_cli' else 'configured_rates_estimate', 'request_count':len(rows),
+                **cost_summary(rows, limit, unpriced=provider.kind=='codex_cli'), 'request_count':len(rows),
                 'uncertain_requests':sum(r.status == 'uncertain' for r in rows),
                 'requests':[{'id':r.id,'run_id':r.run_id,'project_id':r.project_id,'model':r.model,
                     'api':r.details.get('api', 'text'), 'purpose':r.details.get('purpose','research'), 'report_job_id':r.details.get('report_job_id'),

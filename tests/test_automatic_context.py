@@ -131,7 +131,7 @@ def test_required_original_controls_are_fully_retrievable_before_other_actions(t
     assert state['context_management']['next_required']
     store = ContextStore(tmp_path)
     pieces = []
-    tool = ToolRuntime('local-page-read', tmp_path, allowed=[])
+    tool = ToolRuntime('local-page-read', tmp_path, allowed=['read_context_segment'])
     assert tool.allowed == ['read_context_segment']
     while store.pending():
         required = store.pending()

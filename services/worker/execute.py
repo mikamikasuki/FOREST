@@ -41,14 +41,20 @@ def relative_paths(value,root):
     return value
 
 def latest_experiment(s,pid,ids=None):
+    from services.interventions.applicability import goal_applicability
     if ids is not None:
         if not isinstance(ids,list) or not ids or any(not isinstance(rid,str) or not rid for rid in ids) or len(ids)!=len(set(ids)):
             raise ValueError('Explicit evidence run_ids must be a nonempty list of unique run IDs')
         result=[get(s,TaskRun,rid) for rid in ids]
         if any(r.project_id!=pid for r in result): raise ValueError('Cross-project run reference')
         if any(r.status!='completed' for r in result): raise ValueError('Evidence must come from completed runs')
+        if any(not goal_applicability(s, r)['ready'] for r in result):
+            raise ValueError('Review selected evidence against the current goal before using it')
         return result
-    return list(s.scalars(select(TaskRun).where(TaskRun.project_id==pid,TaskRun.kind.in_(('experiment','agent','command')),TaskRun.status=='completed').order_by(TaskRun.created_at.desc()).limit(1)))
+    for run in s.scalars(select(TaskRun).where(TaskRun.project_id==pid,
+            TaskRun.kind.in_(('experiment','agent','command')),TaskRun.status=='completed').order_by(TaskRun.created_at.desc())):
+        if goal_applicability(s, run)['ready']: return [run]
+    return []
 
 
 def statistical_run_evidence(root, selected):
@@ -454,8 +460,12 @@ def execute(run_id):
         if fig.get('kind')=='image' and rel.get('prompt'):
             rel['source']=rel['prompt']
         with Session.begin() as s:
+            from services.worker.scheduler import _lock_project
+            _lock_project(s, pid)
             f=get(s,Figure,fid)
-            if f.revision==config['figure_revision']:
+            from services.interventions.applicability import goal_applicability
+            sources_current = all(goal_applicability(s, get(s, TaskRun, source.id))['ready'] for source in selected)
+            if f.revision==config['figure_revision'] and sources_current:
                 reviewed=selection is not None
                 f.data={**fig,'data':data,'outputs':rel,'source_run_ids':[r.id for r in selected],
                     'visual_selection':selection,'visual_review_status':'selected' if reviewed else 'awaiting_independent_reviews',
@@ -542,6 +552,11 @@ def execute(run_id):
         with Session.begin() as s:
             data={'source':(folder/'paper.tex').read_text(),'bibtex':(folder/'references.bib').read_text(),'pdf_path':str((folder/'paper.pdf').relative_to(root)),'log':compiled['log'],'bindings':([{'run_id':r['id'],'path':str((Path(r['directory'])/r['metrics_file']).relative_to(root))} for r in evidence['runs']] if config.get('example')!='class_weight_calibration' else [{'run_id':selected[0].id,'path':str((source/'metrics.json').relative_to(root))}]),'numeric_bindings':generated['bindings'],'source_run_ids':[r.id for r in selected],'source_dir':str(folder.relative_to(root))}
             if reuse is not None: data['draft_reuse']=reuse
+            if generated.get('dependency_bindings'):
+                from research.paper.dependencies import bind_source_files
+                data['draft_path']=str((folder/'draft.json').relative_to(root))
+                data['dependency_bindings']=[{**binding,'target_artifact_path':data['draft_path']}
+                    for binding in bind_source_files(generated['dependency_bindings'],evidence['runs'],root)]
             from research.paper.style import writing_profile
             plan=json.loads((folder/'layout_plan.json').read_text()) if (folder/'layout_plan.json').exists() else None
             data.update(template=config.get('template','article'),layout=plan.get('config') if plan else None,

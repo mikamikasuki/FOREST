@@ -525,6 +525,10 @@ def write_manuscript(output_dir, evidence, draft, title=None, template='article'
         'placements': plan['visual_placements'],
         'scope': 'Explicit paragraph anchors and first substantive prose references; actual page positions are checked after compilation.'}, indent=2))
     (output / 'writing_profile.json').write_text(json.dumps(writing_profile(), indent=2))
+    from .dependencies import draft_bindings
+    dependency_bindings = draft_bindings(draft, evidence)
+    (output / 'dependency_bindings.json').write_text(json.dumps(dependency_bindings, ensure_ascii=False, indent=2))
     return {'source': str(output / 'paper.tex'), 'bibtex': str(output / 'references.bib'),
+            'dependency_bindings': dependency_bindings,
             'bindings': bindings, 'figures': figure_bindings, 'template': template_info, 'status': 'draft_generated',
             'title': title or draft['title'], 'evidence_report': report, 'layout_plan': plan}

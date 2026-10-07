@@ -834,7 +834,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/projects/{ident}/graph/batch`
 
-Require current PROJECT expected_revision and a nonempty commands array. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.
+Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -844,7 +844,7 @@ Body: `application/json`: `GraphBatchRequest`; required.
 
 Success `200`: `application/json`: `GraphBatchResult`.
 
-Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT; `422` EMPTY_BATCH or UNSUPPORTED_BATCH_OPERATION.
+Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT; `422` INVALID_COMMANDS or UNSUPPORTED_BATCH_OPERATION.
 
 #### `POST /api/projects/{ident}/graph/commands`
 
@@ -889,6 +889,128 @@ Body: `application/json`: `GraphCommand`; required.
 Success `200`: `application/json`: `GraphImpact`.
 
 Known domain failures: `400` Graph command errors; `404` NOT_FOUND or missing_node; `409` revision_conflict or patch_conflict; `422` CROSS_PROJECT.
+
+### Interventions
+
+#### `POST /api/decisions/{ident}/answer`
+
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Body: `application/json`: `DecisionAnswer`; required.
+
+Success `200`: `application/json`: `DecisionView`.
+
+Known domain failures: `404` Target unavailable; `409` Reviewed revision, request identity, decision or run state conflict.
+
+#### `GET /api/interventions/{ident}`
+
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `InterventionView`.
+
+Known domain failures: `404` Target unavailable; `409` Reviewed revision, request identity, decision or run state conflict.
+
+#### `GET /api/projects/{ident}/decisions`
+
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+| `limit` | query | integer | no | Default `50`.  minimum=1, maximum=200. |
+| `status` | query | string or null | no |  |
+
+Success `200`: `application/json`: `DecisionView[]`.
+
+Known domain failures: `404` Target unavailable; `409` Reviewed revision, request identity, decision or run state conflict.
+
+#### `POST /api/projects/{ident}/instructions`
+
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Body: `application/json`: `InstructionRequest`; required.
+
+Success `200`: `application/json`: `InterventionView`.
+
+Known domain failures: `404` Target unavailable; `409` Reviewed revision, request identity, decision or run state conflict.
+
+#### `GET /api/projects/{ident}/interventions`
+
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+| `limit` | query | integer | no | Default `50`.  minimum=1, maximum=200. |
+| `before` | query | string or null | no |  |
+
+Success `200`: `application/json`: `InterventionView[]`.
+
+Known domain failures: `404` Target unavailable; `409` Reviewed revision, request identity, decision or run state conflict.
+
+#### `POST /api/research/proposals/{ident}/reject`
+
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Body: `application/json`: `RejectionRequest`; required.
+
+Success `200`: `application/json`: `ResourceRecord`.
+
+Known domain failures: `404` Target unavailable; `409` Reviewed revision, request identity, decision or run state conflict.
+
+#### `GET /api/runs/{ident}/acceptance`
+
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `AcceptanceView`.
+
+Known domain failures: `404` Target unavailable; `409` Reviewed revision, request identity, decision or run state conflict.
+
+#### `GET /api/runs/{ident}/applicability`
+
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `ApplicabilityView`.
+
+Known domain failures: `404` Target unavailable; `409` Reviewed revision, request identity, decision or run state conflict.
+
+#### `POST /api/runs/{ident}/applicability/decisions`
+
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Body: `application/json`: `ApplicabilityDecision`; required.
+
+Success `200`: `application/json`: `InterventionView`.
+
+Known domain failures: `404` Target unavailable; `409` Reviewed revision, request identity, decision or run state conflict.
 
 ### Literature
 
@@ -2356,6 +2478,21 @@ Fields marked optional may be absent. A nullable field may be present with
 additional scientific/configuration keys. Timestamps are ordinary strings
 because saved receipts do not all use one strict RFC 3339 format.
 
+### `AcceptanceView`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `ready` | boolean | yes |  |
+| `purpose` | string | yes |  |
+| `scope` | string | yes |  |
+| `contract` | object or null | no |  |
+| `failures` | string[] | no |  |
+| `source_checks` | object[] | no |  |
+| `comparison` | object or null | no |  |
+| `confirmations` | object[] | no |  |
+
+Additional properties: extensible JSON.
+
 ### `Agent`
 
 | Field | Type | Required | Details |
@@ -2424,6 +2561,34 @@ Application errors use detail.code/message/retryable. suggestion and context key
 | `details` | JsonObject | no |  |
 | `expected_revision` | integer | no |  |
 | `current_revision` | integer | no |  |
+
+Additional properties: extensible JSON.
+
+### `ApplicabilityDecision`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `request_id` | string | yes |  minLength=1, maxLength=160. |
+| `expected_revision` | integer | yes |  minimum=0.0. |
+| `choice` | string | yes |  Values: `reuse`, `exclude`. |
+| `reason` | string | yes |  minLength=1, maxLength=100000. |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `ApplicabilityView`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `run_id` | string | yes |  |
+| `status` | string | yes |  Values: `current`, `approved`, `excluded`, `needs_review`, `unknown`. |
+| `ready` | boolean | yes |  |
+| `current_goal` | string | yes |  |
+| `execution_goals` | string[] | yes |  |
+| `current_goal_scope` | object | yes |  |
+| `execution_goal_scopes` | object[] | yes |  |
+| `decision_id` | string or null | yes |  |
+| `reason` | string | yes |  |
+| `scope` | string | yes |  |
 
 Additional properties: extensible JSON.
 
@@ -2581,11 +2746,65 @@ Additional properties: extensible JSON.
 
 Additional properties: extensible JSON.
 
+### `DecisionAnswer`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `expected_revision` | integer | yes |  minimum=0.0. |
+| `choice` | string | yes |  Values: `accept`, `edit`, `reject`. |
+| `reason` | string | no |  Default: ``. maxLength=100000. |
+| `action` | object or null | no |  |
+| `resume` | boolean | no |  Default: `True`. |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `DecisionView`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `project_id` | string | yes |  |
+| `run_id` | string | yes |  |
+| `action_id` | string | yes |  |
+| `attempt_id` | string or null | yes |  |
+| `observed_revision` | integer | yes |  |
+| `proposed` | object | yes |  |
+| `status` | string | yes |  |
+| `answer` | object | yes |  |
+| `answered_at` | string or null | yes |  |
+| `consumed_at` | string or null | yes |  |
+| `created_at` | string | yes |  |
+| `updated_at` | string | yes |  |
+| `resume_error` | string or null | no |  |
+
+Additional properties: extensible JSON.
+
 ### `Deleted`
 
 | Field | Type | Required | Details |
 | --- | --- | --- | --- |
 | `deleted` | string | yes |  |
+
+Additional properties: extensible JSON.
+
+### `EffectView`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `intervention_id` | string | yes |  |
+| `project_id` | string | yes |  |
+| `run_id` | string | yes |  |
+| `attempt_id` | string or null | yes |  |
+| `action` | string | yes |  |
+| `status` | string | yes |  |
+| `observation` | object | yes |  |
+| `error` | string or null | yes |  |
+| `attempts` | integer | yes |  |
+| `retry_after` | number | yes |  |
+| `created_at` | string | yes |  |
+| `updated_at` | string | yes |  |
+| `applied_at` | string or null | yes |  |
 
 Additional properties: extensible JSON.
 
@@ -3044,6 +3263,41 @@ Explicit input binding. File path is relative to the referenced source branch un
 
 Additional properties: extensible JSON.
 
+### `InstructionRequest`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `request_id` | string | yes |  minLength=1, maxLength=160. |
+| `expected_revision` | integer | yes |  minimum=0.0. |
+| `text` | string | yes |  minLength=1, maxLength=100000. |
+| `scope` | string | yes |  Values: `project`, `branch`, `node`, `run`. |
+| `target_id` | string or null | no |  |
+| `boundary` | string | no |  Default: `next_request`. Values: `next_request`, `next_run`. |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
+
+### `InterventionView`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `project_id` | string | yes |  |
+| `request_id` | string | yes |  |
+| `actor` | string | yes |  |
+| `kind` | string | yes |  |
+| `observed_revision` | integer | yes |  |
+| `applied_revision` | integer | yes |  |
+| `intent` | object | yes |  |
+| `impact` | object | yes |  |
+| `status` | string | yes |  |
+| `accepted_at` | string | yes |  |
+| `applied_at` | string or null | yes |  |
+| `created_at` | string | yes |  |
+| `updated_at` | string | yes |  |
+| `effects` | EffectView[] | yes |  |
+
+Additional properties: extensible JSON.
+
 ### `JsonObject`
 
 Extensible JSON object; unknown keys are retained where the endpoint merges this object.
@@ -3466,7 +3720,9 @@ Additional properties: rejected by the existing typed/schema-specific validator.
 | `project_id` | string | yes |  |
 | `allow_paid` | boolean | yes |  |
 | `limits` | JsonObject | yes |  |
-| `estimated_cost_usd` | number | yes |  |
+| `estimated_cost_usd` | number or null | yes |  |
+| `known_cost_usd` | number | yes |  |
+| `unknown_cost_requests` | integer | yes |  |
 | `reserved_usd` | number | yes |  |
 | `remaining_usd` | number or null | yes |  |
 | `cost_source` | string | yes |  |
@@ -3582,7 +3838,9 @@ Additional properties: extensible JSON.
 | --- | --- | --- | --- |
 | `provider_id` | string | yes |  |
 | `limit_usd` | number or null | yes |  |
-| `estimated_cost_usd` | number | yes |  |
+| `estimated_cost_usd` | number or null | yes |  |
+| `known_cost_usd` | number | yes |  |
+| `unknown_cost_requests` | integer | yes |  |
 | `reserved_usd` | number | yes |  |
 | `remaining_usd` | number or null | yes |  |
 | `cost_source` | string | yes |  |
@@ -3702,6 +3960,15 @@ Additional properties: extensible JSON.
 | `data` | JsonObject | yes | Editable kind-specific scientific record. Keys depend on the resource kind and task output. |
 
 Additional properties: extensible JSON.
+
+### `RejectionRequest`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `expected_revision` | integer | yes |  minimum=0.0. |
+| `reason` | string | yes |  minLength=1, maxLength=100000. |
+
+Additional properties: rejected by the existing typed/schema-specific validator.
 
 ### `ReportPage`
 

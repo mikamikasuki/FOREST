@@ -15,6 +15,9 @@ if settings.database_url.startswith('sqlite'):
     def sqlite_setup(conn, record):
         conn.execute('PRAGMA foreign_keys=ON'); conn.execute('PRAGMA journal_mode=WAL'); conn.execute('PRAGMA busy_timeout=10000')
 Session = sessionmaker(engine, expire_on_commit=False)
+from research.execution.transaction_fence import acquire_session_fence, release_session_fence
+event.listen(Session, 'after_begin', acquire_session_fence)
+event.listen(Session, 'after_transaction_end', release_session_fence)
 def begin_sqlite_write(session):
     """Serialize a read/modify/write before reading mutable JSON on SQLite."""
     if session.bind.dialect.name=='sqlite':
@@ -267,16 +270,31 @@ def repair_event_sequences(session):
 
 def migrate():
     from services.observation import models  # Register additive reporting tables.
-    Base.metadata.create_all(engine)
+    from services.interventions import models as intervention_models
     with Session.begin() as s:
         if engine.dialect.name=='sqlite':
             s.connection().exec_driver_sql('BEGIN IMMEDIATE')
         elif engine.dialect.name=='postgresql':
             s.execute(text('SELECT pg_advisory_xact_lock(824721)'))
+        Base.metadata.create_all(s.connection())
         if not s.get(Migration,1): s.add(Migration(version=1))
         if not s.get(Migration,3): s.add(Migration(version=3))
+        if not s.get(Migration,4): s.add(Migration(version=4))
+        # Compound histories and ready-outbox scans stay indexed after upgrades
+        # as well as on fresh databases. Migration shares the schema writer lock.
+        for name,table,columns in (
+            ('ix_interventions_project_created','interventions','project_id, created_at'),
+            ('ix_decisions_project_status_created','action_decisions','project_id, status, created_at'),
+            ('ix_effects_action_status_retry','intervention_effects','action, status, retry_after, lease_until')):
+            s.execute(text(f'CREATE INDEX IF NOT EXISTS {name} ON {table} ({columns})'))
+        if not s.get(Migration,5): s.add(Migration(version=5))
         if not s.get(Migration,2):
             repair_event_sequences(s)
             s.add(Migration(version=2))
         s.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_events_project_sequence ON events (project_id, sequence)'))
-if __name__=='__main__': migrate(); print('FOREST database schema 3 ready')
+if __name__=='__main__':
+    # Additive models import the canonical module. Running -m must migrate that
+    # same metadata rather than a second __main__ Base missing its registrations.
+    from services.api.db import migrate as migrate_schema
+    migrate_schema()
+    print('FOREST database schema 5 ready')

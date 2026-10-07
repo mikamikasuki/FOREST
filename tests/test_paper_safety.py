@@ -46,7 +46,7 @@ def bundle(project_id, name, label):
     (folder / 'forest_test.sty').write_text('\\ProvidesPackage{forest_test}\n')
     return {'source': source, 'bibtex': '% bibliography ' + label,
             'source_dir': str(folder.relative_to(project_dir(project_id))),
-            'source_run_ids': [name], 'bindings': []}
+            'source_run_ids': [], 'bindings': []}
 
 
 def enqueue_generation(project_id, **config):
@@ -347,7 +347,8 @@ def case_explicit_evidence_scope_never_selects_an_unrequested_run(client):
     pid = project(client)
     other_pid = project(client)
     with Session.begin() as session:
-        runs = [TaskRun(project_id=project_id, request_id=uid(), kind='experiment', status=status)
+        runs = [TaskRun(project_id=project_id, request_id=uid(), kind='experiment', status=status,
+                        config={'project_goal': 'Preserve authored text'})
                 for project_id, status in [(pid, 'completed'), (pid, 'completed'), (other_pid, 'completed'), (pid, 'failed')]]
         session.add_all(runs); session.flush()
         selected = latest_experiment(session, pid, [runs[1].id, runs[0].id])
