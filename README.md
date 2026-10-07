@@ -111,6 +111,33 @@ After installing the Web workspace:
 ./scripts/test.sh
 ```
 
+### Project File Uploads and Editor Revisions
+
+Uploads through `POST /api/projects/{id}/upload` publish under the same
+project-file revision protocol as editor saves. Every successful upload,
+including a same-byte replacement, advances that path's revision once and
+returns the compatible `{path, size, origin}` response with
+`origin: "user_import"`. `GET /api/projects/{id}/file` returns bytes, revision,
+and origin from one snapshot. A `PUT` using a stale `expected_revision` returns
+`409 REVISION_CONFLICT` without changing the uploaded file; use the fresh GET
+revision to save, or omit `expected_revision` only for an intentional
+force-save.
+
+For focused backend checks after setup, run:
+
+```bash
+.venv/bin/python -m pytest -q tests/test_file_upload.py tests/test_file_preview.py tests/test_api_contracts.py
+```
+
+The PostgreSQL concurrency and definite-abort checks use a disposable,
+loopback-only test database configured through `FOREST_DATABASE_URL` and are
+run separately with `tests/test_file_revision_postgres.py`. Do not point that
+test at a normal application database. The shared publication guard coordinates
+the supported GET, upload, and PUT endpoints, including compensation after a
+definite database abort. It is not a universal filesystem transaction: process
+death, power loss, ambiguous commit acknowledgements, and writes by workers or
+other programs that bypass these endpoints are outside this guarantee.
+
 ### Research Modes
 
 - **Manual** — edit the research graph and choose tasks to execute.

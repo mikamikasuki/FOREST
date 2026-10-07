@@ -1,24 +1,107 @@
 import io
 import json
 import shutil
+import sqlite3
 import zipfile
 import math
 import warnings
+from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
 from numbers import Integral, Real
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Body, Query, HTTPException
 from fastapi.responses import FileResponse, Response
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 from .common import *
 from .schemas import FileWrite
 from services.observation.files import managed_change, observation_write_lock
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised by native Windows runtimes.
+    fcntl=None
+    import msvcrt
 router=APIRouter()
 
 def validate_project(ident):
     with Session() as s: get(s,Project,ident)
     return project_dir(ident)
+
+@contextmanager
+def file_publication_lock(project_id, relative):
+    """Serialize supported project-file publications across API processes."""
+    lock_dir=settings.data_dir/'.forest-file-publication-locks'
+    lock_dir.mkdir(parents=True,exist_ok=True,mode=0o700)
+    lock_path=lock_dir/f'{project_id}.lock'
+    with lock_path.open('a+b') as lock_file:
+        if fcntl:
+            fcntl.flock(lock_file.fileno(),fcntl.LOCK_EX)
+        else:  # msvcrt locks a byte range, so keep one byte in the lock file.
+            lock_file.seek(0,2)
+            if lock_file.tell()==0:
+                lock_file.write(b'\0'); lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(),msvcrt.LK_LOCK,1)
+        try: yield
+        finally:
+            if fcntl: fcntl.flock(lock_file.fileno(),fcntl.LOCK_UN)
+            else:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(),msvcrt.LK_UNLCK,1)
+
+def _is_definite_commit_abort(exc):
+    original=getattr(exc,'orig',exc)
+    sqlstate=getattr(original,'sqlstate',None) or getattr(original,'pgcode',None)
+    if sqlstate:
+        return sqlstate[:2] in ('22','23') or sqlstate in ('40001','40002','40P01')
+    return isinstance(original,sqlite3.IntegrityError)
+
+def _restore_file_publication(path, backup, existed):
+    if existed: backup.replace(path)
+    else: path.unlink(missing_ok=True)
+
+def _publish_file(ident,relative,path,temporary,backup,origin,expected_revision=None,content=None):
+    from services.worker.scheduler import _lock_project
+    existed=False; published=False; flush_completed=False
+    with file_publication_lock(ident,relative):
+        existed=path.is_file()
+        if existed: shutil.copy2(path,backup)
+        if origin=='user_import' and existed:
+            temporary.chmod(path.stat().st_mode & 0o7777)
+        try:
+            with Session() as s:
+                with s.begin():
+                    observation_write_lock(s,ident)
+                    _lock_project(s,ident)
+                    revision=s.scalar(select(FileRevision).where(
+                        FileRevision.project_id==ident,FileRevision.path==relative
+                    ).with_for_update().execution_options(populate_existing=True))
+                    actual=revision.revision if revision else 0
+                    if expected_revision is not None and expected_revision!=actual:
+                        error('REVISION_CONFLICT','File changed in another editor',409,'Reload and merge changes.')
+                    if revision is None:
+                        revision=FileRevision(project_id=ident,path=relative,revision=0)
+                        s.add(revision)
+                    temporary.replace(path); published=True
+                    revision.revision=actual+1
+                    revision.origin=origin
+                    if origin=='user_edited':
+                        from .paper_state import sync_working_file_edit
+                        sync_working_file_edit(s,ident,relative,content)
+                    touch_dependents(s,ident,relative)
+                    managed_change(s,ident,relative,'owner_editor' if origin=='user_edited' else 'upload')
+                    s.flush()
+                    flush_completed=True
+        except Exception as exc:
+            if published and (not flush_completed or _is_definite_commit_abort(exc)):
+                try: _restore_file_publication(path,backup,existed)
+                except OSError as restore_error:
+                    raise RuntimeError(
+                        'File transaction aborted and file compensation failed'
+                    ) from restore_error
+            raise
+        return {'path':relative,'revision':revision.revision,'origin':origin}
 @router.get('/api/projects/{ident}/files')
 def files(ident:str):
     root=validate_project(ident); items=[]
@@ -29,13 +112,21 @@ def files(ident:str):
     return {'files':sorted(items,key=lambda x:(not x['is_dir'],x['path']))}
 @router.get('/api/projects/{ident}/file')
 def read_file(ident:str,path:str):
+    from services.worker.scheduler import _lock_project
     root=validate_project(ident); p=safe_path(root,path,True)
-    if not p.is_file(): error('NOT_FILE','Select a file')
-    if p.stat().st_size>10_000_000: error('FILE_TOO_LARGE','Use download for files larger than 10 MB',413)
-    try: content=p.read_text()
-    except UnicodeDecodeError: error('BINARY_FILE','This is a binary file. Open its preview or download it.',415)
-    with Session() as s: rev=s.scalar(select(FileRevision).where(FileRevision.project_id==ident,FileRevision.path==path))
-    return {'path':path,'content':content,'revision':rev.revision if rev else 0,'origin':rev.origin if rev else 'executor_or_import'}
+    relative=str(p.relative_to(root.resolve()))
+    with file_publication_lock(ident,relative):
+        with Session.begin() as s:
+            _lock_project(s,ident)
+            if not p.is_file(): error('NOT_FILE','Select a file')
+            if p.stat().st_size>10_000_000: error('FILE_TOO_LARGE','Use download for files larger than 10 MB',413)
+            try: content=p.read_text()
+            except UnicodeDecodeError: error('BINARY_FILE','This is a binary file. Open its preview or download it.',415)
+            rev=s.scalar(select(FileRevision).where(
+                FileRevision.project_id==ident,FileRevision.path==relative
+            ).with_for_update().execution_options(populate_existing=True))
+            return {'path':relative,'content':content,'revision':rev.revision if rev else 0,
+                    'origin':rev.origin if rev else 'executor_or_import'}
 
 @router.get('/api/projects/{ident}/file/preview')
 def preview_file(ident:str,path:str,offset:int=Query(default=0,ge=0,le=10_000_000),limit:int=Query(default=100,ge=1,le=500)):
@@ -140,22 +231,20 @@ def preview_file(ident:str,path:str,offset:int=Query(default=0,ge=0,le=10_000_00
             'truncated_columns':len(columns)>100,'column_count':len(columns),'truncated_cells':clipped}
 @router.put('/api/projects/{ident}/file')
 def write_file(ident:str,body:FileWrite):
-    from services.worker.scheduler import _lock_project
-    from .paper_state import sync_working_file_edit
     root=validate_project(ident); p=safe_path(root,body.path)
     relative=str(p.relative_to(root.resolve()))
-    with Session.begin() as s:
-        _lock_project(s,ident)
-        rev=s.scalar(select(FileRevision).where(FileRevision.project_id==ident,FileRevision.path==relative).with_for_update())
-        actual=rev.revision if rev else 0
-        if body.expected_revision is not None and body.expected_revision!=actual: error('REVISION_CONFLICT','File changed in another editor',409,'Reload and merge changes.')
-        if not rev: rev=FileRevision(project_id=ident,path=relative,revision=0); s.add(rev)
-        p.parent.mkdir(parents=True,exist_ok=True); tmp=p.with_name(p.name+'.forest-tmp'); tmp.write_text(body.content); tmp.replace(p)
-        rev.revision=actual+1; rev.origin='user_edited'
-        sync_working_file_edit(s,ident,relative,body.content)
-        touch_dependents(s,ident,relative)
-        managed_change(s,ident,relative,'owner_editor')
-        return {'path':relative,'revision':rev.revision,'origin':'user_edited'}
+    p.parent.mkdir(parents=True,exist_ok=True)
+    temporary=p.with_name('.forest-edit-'+uid()+'.tmp')
+    backup=p.with_name('.forest-edit-'+uid()+'.backup')
+    try:
+        temporary.write_text(body.content)
+        return _publish_file(
+            ident,relative,p,temporary,backup,'user_edited',
+            expected_revision=body.expected_revision,content=body.content
+        )
+    finally:
+        temporary.unlink(missing_ok=True)
+        backup.unlink(missing_ok=True)
 @router.delete('/api/projects/{ident}/file')
 def delete_file(ident:str,path:str):
     root=validate_project(ident); p=safe_path(root,path,True)
@@ -186,7 +275,9 @@ def download_file(ident:str,path:str):
 @router.post('/api/projects/{ident}/upload')
 async def upload(ident:str,file:UploadFile=File(...),directory:str='uploads'):
     root=validate_project(ident); p=safe_path(root,directory+'/'+Path(file.filename or 'upload').name); p.parent.mkdir(parents=True,exist_ok=True)
+    relative=str(p.relative_to(root.resolve()))
     total=0; temporary=p.with_name('.forest-upload-'+uid()+'.tmp')
+    backup=p.with_name('.forest-upload-'+uid()+'.backup')
     out=temporary.open('xb')
     try:
         with out:
@@ -194,16 +285,13 @@ async def upload(ident:str,file:UploadFile=File(...),directory:str='uploads'):
                 total+=len(chunk)
                 if total>settings.max_upload_mb*1024*1024: error('UPLOAD_TOO_LARGE','Upload exceeds configured limit',413)
                 out.write(chunk)
-        # Publish only complete uploads, keeping existing file permissions.
-        if p.is_file(): temporary.chmod(p.stat().st_mode & 0o7777)
-        temporary.replace(p)
+        await run_in_threadpool(
+            _publish_file,ident,relative,p,temporary,backup,'user_import'
+        )
     finally:
         temporary.unlink(missing_ok=True)
-    with Session.begin() as s:
-        observation_write_lock(s,ident)
-        touch_dependents(s,ident,str(p.relative_to(root)))
-        managed_change(s,ident,str(p.relative_to(root)),'upload')
-    return {'path':str(p.relative_to(root)),'size':total,'origin':'user_import'}
+        backup.unlink(missing_ok=True)
+    return {'path':relative,'size':total,'origin':'user_import'}
 
 def project_export(s,p,selection=None):
     root=project_dir(p.id); out=io.BytesIO(); project=asdict(p); project.pop('graph_meta',None)

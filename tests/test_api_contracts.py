@@ -269,6 +269,16 @@ def case_graph_runs_and_files(client, app):
     assert saved["revision"] == 2 and saved["content"] == "second"
     uploaded = response(client, document, "post", "/api/projects/{ident}/upload", f"/api/projects/{pid}/upload",
                         files={"file": ("source.txt", b"source bytes", "text/plain")})
+    uploaded_read = response(client, document, "get", "/api/projects/{ident}/file", file_path,
+                              params={"path": uploaded["path"]})
+    assert uploaded_read["revision"] == 1 and uploaded_read["origin"] == "user_import"
+    assert uploaded_read["content"] == "source bytes"
+    same_bytes = response(client, document, "post", "/api/projects/{ident}/upload", f"/api/projects/{pid}/upload",
+                          files={"file": ("source.txt", b"source bytes", "text/plain")})
+    assert same_bytes == uploaded
+    same_bytes_read = response(client, document, "get", "/api/projects/{ident}/file", file_path,
+                               params={"path": uploaded["path"]})
+    assert same_bytes_read["revision"] == 2 and same_bytes_read["origin"] == "user_import"
     download = client.get(f"/api/projects/{pid}/download", params={"path": uploaded["path"]})
     assert download.status_code == 200 and download.content == b"source bytes"
     archive = client.post(f"/api/projects/{pid}/export", json={})

@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import pytest
 
@@ -55,7 +60,7 @@ def case_rejected_new_upload_leaves_no_partial_file(client):
 
 
 def case_accepted_overwrite_and_limit_boundary(client):
-    _, root, endpoint = project_files(client)
+    project, root, endpoint = project_files(client)
     ok(client.post(endpoint, files={"file": ("same.txt", b"original")}))
     target = root / "uploads" / "same.txt"
     target.chmod(0o755)
@@ -67,6 +72,29 @@ def case_accepted_overwrite_and_limit_boundary(client):
     result = ok(client.post(endpoint, files={"file": ("same.txt", b"")}))
     assert result == {"path": "uploads/same.txt", "size": 0, "origin": "user_import"}
     assert target.read_bytes() == b""
+
+    binary = b"\x00\xff\x80binary\x00"
+    binary_result = ok(client.post(endpoint, files={"file": ("binary.bin", binary)}))
+    assert binary_result == {
+        "path": "uploads/binary.bin",
+        "size": len(binary),
+        "origin": "user_import",
+    }
+    binary_path = root / binary_result["path"]
+    assert binary_path.read_bytes() == binary
+    download = client.get(
+        f"/api/projects/{project['id']}/download",
+        params={"path": binary_result["path"]},
+    )
+    assert download.status_code == 200 and download.content == binary
+    from services.api.db import FileRevision, Session
+
+    with Session() as session:
+        row = session.query(FileRevision).filter_by(
+            project_id=project["id"],
+            path="uploads/binary.bin",
+        ).one()
+        assert (row.revision, row.origin) == (1, "user_import")
     assert_no_temporary_files(root)
 
 
@@ -108,6 +136,443 @@ def case_failed_replace_cleans_temporary_file(client):
             asyncio.run(upload(project["id"], incoming, "uploads"))
     assert marker.read_bytes() == b"original"
     assert_no_temporary_files(root)
+
+
+def case_upload_replacement_preserves_file_revision_guards(client):
+    project, root, endpoint = project_files(client)
+    file_endpoint = f"/api/projects/{project['id']}/file"
+
+    initial_upload = client.post(
+        endpoint, files={"file": ("observations.txt", b"initial bytes\n")}
+    )
+    initial = client.get(file_endpoint, params={"path": "uploads/observations.txt"})
+    seed_put = client.put(
+        file_endpoint,
+        json={
+            "path": "uploads/observations.txt",
+            "content": "editor baseline\n",
+            "expected_revision": initial.json()["revision"],
+        },
+    )
+    current_put = client.put(
+        file_endpoint,
+        json={
+            "path": "uploads/observations.txt",
+            "content": "replacement bytes\n",
+            "expected_revision": seed_put.json()["revision"],
+        },
+    )
+    normal_stale_put = client.put(
+        file_endpoint,
+        json={
+            "path": "uploads/observations.txt",
+            "content": "ordinary stale write\n",
+            "expected_revision": seed_put.json()["revision"],
+        },
+    )
+    editor_snapshot = client.get(
+        file_endpoint, params={"path": "uploads/observations.txt"}
+    )
+    replacement_upload = client.post(
+        endpoint, files={"file": ("observations.txt", b"replacement bytes\n")}
+    )
+    stale_editor_put = client.put(
+        file_endpoint,
+        json={
+            "path": "uploads/observations.txt",
+            "content": "stale editor overwrote upload\n",
+            "expected_revision": editor_snapshot.json()["revision"],
+        },
+    )
+    after_stale_put = client.get(
+        file_endpoint, params={"path": "uploads/observations.txt"}
+    )
+    new_upload = client.post(
+        endpoint, files={"file": ("new.txt", b"new file bytes\n")}
+    )
+    new_file = client.get(file_endpoint, params={"path": "uploads/new.txt"})
+    fresh_put = client.put(
+        file_endpoint,
+        json={
+            "path": "uploads/observations.txt",
+            "content": "fresh editor save\n",
+            "expected_revision": after_stale_put.json()["revision"],
+        },
+    )
+    force_put = client.put(
+        file_endpoint,
+        json={"path": "uploads/observations.txt", "content": "forced save\n"},
+    )
+
+    legacy_path = root / "uploads" / "legacy.txt"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_bytes(b"legacy bytes\n")
+    legacy_before = client.get(
+        file_endpoint, params={"path": "uploads/legacy.txt"}
+    )
+    legacy_upload = client.post(
+        endpoint, files={"file": ("legacy.txt", b"new legacy bytes\n")}
+    )
+    legacy_after = client.get(
+        file_endpoint, params={"path": "uploads/legacy.txt"}
+    )
+
+    receipt = {
+        "initial_upload": [initial_upload.status_code, initial_upload.json()],
+        "initial_get": [initial.status_code, initial.json()],
+        "seed_put": [seed_put.status_code, seed_put.json()],
+        "current_put": [current_put.status_code, current_put.json()],
+        "normal_stale_put_status": normal_stale_put.status_code,
+        "editor_snapshot": editor_snapshot.json(),
+        "replacement_upload": [replacement_upload.status_code, replacement_upload.json()],
+        "stale_editor_put_status": stale_editor_put.status_code,
+        "after_stale_put": after_stale_put.json(),
+        "new_upload": [new_upload.status_code, new_upload.json()],
+        "new_file": new_file.json(),
+        "fresh_put": [fresh_put.status_code, fresh_put.json()],
+        "force_put": [force_put.status_code, force_put.json()],
+        "legacy_before": legacy_before.json(),
+        "legacy_upload": [legacy_upload.status_code, legacy_upload.json()],
+        "legacy_after": legacy_after.json(),
+    }
+    print("FILE_REVISION_REGRESSION " + json.dumps(receipt, sort_keys=True))
+
+    assert initial_upload.status_code == 200
+    assert initial.json()["revision"] == 1
+    assert seed_put.status_code == 200 and seed_put.json()["revision"] == 2
+    assert current_put.status_code == 200
+    assert normal_stale_put.status_code == 409
+    assert replacement_upload.status_code == 200
+    assert replacement_upload.json() == {
+        "path": "uploads/observations.txt",
+        "size": len(b"replacement bytes\n"),
+        "origin": "user_import",
+    }
+    assert stale_editor_put.status_code == 409
+    assert after_stale_put.status_code == 200
+    assert after_stale_put.json() == {
+        "path": "uploads/observations.txt",
+        "content": "replacement bytes\n",
+        "revision": editor_snapshot.json()["revision"] + 1,
+        "origin": "user_import",
+    }
+    assert new_upload.status_code == 200
+    assert new_file.json()["revision"] == 1
+    assert new_file.json()["origin"] == "user_import"
+    assert fresh_put.status_code == 200
+    assert fresh_put.json()["origin"] == "user_edited"
+    assert force_put.status_code == 200
+    assert force_put.json()["origin"] == "user_edited"
+    assert legacy_before.json()["revision"] == 0
+    assert legacy_upload.status_code == 200
+    assert legacy_after.json()["revision"] == 1
+    assert legacy_after.json()["origin"] == "user_import"
+
+
+def case_definite_upload_failures_restore_published_files(client):
+    from fastapi import UploadFile
+    from sqlalchemy import event
+    import services.api.files as file_api
+    from services.api.db import FileRevision, Session
+
+    project, root, _ = project_files(client)
+    endpoint = f"/api/projects/{project['id']}/upload"
+    file_endpoint = f"/api/projects/{project['id']}/file"
+    path = "uploads/rollback.txt"
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"old bytes\n")
+    target.chmod(0o640)
+    ok(client.put(file_endpoint, json={"path": path, "content": "old bytes\n", "expected_revision": 0}))
+    before = ok(client.get(file_endpoint, params={"path": path}))
+    prior_mode = target.stat().st_mode & 0o7777
+
+    def invoke_upload(name, body=b"new bytes\n"):
+        incoming = UploadFile(file=io.BytesIO(body), filename=name)
+        return asyncio.run(file_api.upload(project["id"], incoming, "uploads"))
+
+    failing_upload = {"enabled": False}
+    original_touch = file_api.touch_dependents
+    failure_kind = {"value": ""}
+
+    def fail_dependency(session, project_id, relative):
+        original_touch(session, project_id, relative)
+        if failure_kind["value"] == "dependency" and failing_upload["enabled"]:
+            failing_upload["enabled"] = False
+            raise RuntimeError("injected dependency invalidation failure")
+
+    def fail_flush(session, flush_context, instances):
+        if failing_upload["enabled"] and failure_kind["value"] == "flush":
+            failing_upload["enabled"] = False
+            raise sqlite3.IntegrityError("injected definite flush abort")
+
+    def fail_commit(session):
+        if failing_upload["enabled"] and failure_kind["value"] == "commit":
+            failing_upload["enabled"] = False
+            raise sqlite3.IntegrityError("injected definite commit abort")
+
+    file_api.touch_dependents = fail_dependency
+    event.listen(Session.class_, "before_flush", fail_flush)
+    event.listen(Session.class_, "before_commit", fail_commit)
+    try:
+        for kind in ("dependency", "flush"):
+            failure_kind["value"] = kind
+            failing_upload["enabled"] = True
+            with pytest.raises((RuntimeError, sqlite3.IntegrityError), match="injected"):
+                invoke_upload("rollback.txt")
+            after = ok(client.get(file_endpoint, params={"path": path}))
+            assert after == before
+            assert target.read_bytes() == b"old bytes\n"
+            assert target.stat().st_mode & 0o7777 == prior_mode
+            with Session() as session:
+                row = session.query(FileRevision).filter_by(
+                    project_id=project["id"], path=path
+                ).one()
+                assert (row.revision, row.origin) == (
+                    before["revision"], before["origin"]
+                )
+
+        restore_arrived = threading.Event()
+        release_restore = threading.Event()
+        waiter_arrived = threading.Event()
+        guard_calls = {"count": 0}
+        original_guard = file_api.file_publication_lock
+        original_restore = file_api._restore_file_publication
+
+        @contextmanager
+        def observed_guard(project_id, relative):
+            guard_calls["count"] += 1
+            if guard_calls["count"] == 2:
+                waiter_arrived.set()
+            with original_guard(project_id, relative):
+                yield
+
+        def paused_restore(path, backup, existed):
+            restore_arrived.set()
+            assert release_restore.wait(10), "test did not release file compensation"
+            original_restore(path, backup, existed)
+
+        def asynchronous_upload(filename):
+            incoming = UploadFile(file=io.BytesIO(b"new bytes\n"), filename=filename)
+            return asyncio.run(file_api.upload(project["id"], incoming, "uploads"))
+
+        file_api.file_publication_lock = observed_guard
+        file_api._restore_file_publication = paused_restore
+        failure_kind["value"] = "commit"
+        failing_upload["enabled"] = True
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            failed_upload = pool.submit(asynchronous_upload, "rollback.txt")
+            assert restore_arrived.wait(5), "commit abort did not reach compensation"
+            later_put = pool.submit(client.put, file_endpoint, json={
+                "path": path, "content": "later SQLite writer\n",
+                "expected_revision": before["revision"],
+            })
+            assert waiter_arrived.wait(5), "later writer did not reach publication guard"
+            assert not later_put.done(), "later writer ran before compensation completed"
+            release_restore.set()
+            with pytest.raises(sqlite3.IntegrityError, match="injected definite commit"):
+                failed_upload.result(timeout=10)
+            later_response = later_put.result(timeout=10)
+        file_api.file_publication_lock = original_guard
+        file_api._restore_file_publication = original_restore
+        assert later_response.status_code == 200
+        later_read = ok(client.get(file_endpoint, params={"path": path}))
+        assert (later_read["content"], later_read["revision"], later_read["origin"]) == (
+            "later SQLite writer\n", before["revision"] + 1, "user_edited"
+        )
+        assert target.read_bytes() == b"later SQLite writer\n"
+
+        failure_kind["value"] = "flush"
+        failing_upload["enabled"] = True
+        with pytest.raises(sqlite3.IntegrityError, match="injected definite flush"):
+            invoke_upload("new-after-abort.txt")
+        new_target = root / "uploads" / "new-after-abort.txt"
+        assert not new_target.exists()
+        with Session() as session:
+            assert session.query(FileRevision).filter_by(
+                project_id=project["id"], path="uploads/new-after-abort.txt"
+            ).one_or_none() is None
+        assert not list(root.rglob(".forest-upload-*.tmp"))
+        assert not list(root.rglob(".forest-upload-*.backup"))
+    finally:
+        event.remove(Session.class_, "before_flush", fail_flush)
+        event.remove(Session.class_, "before_commit", fail_commit)
+        file_api.touch_dependents = original_touch
+        if "original_guard" in locals():
+            file_api.file_publication_lock = original_guard
+            file_api._restore_file_publication = original_restore
+
+
+def case_file_publication_orders_reads_and_writes(client):
+    from fastapi import UploadFile
+    import services.api.files as file_api
+    import services.worker.scheduler as scheduler
+
+    project, root, endpoint = project_files(client)
+    file_endpoint = f"/api/projects/{project['id']}/file"
+    path = "uploads/order.txt"
+    initial = ok(client.put(
+        file_endpoint, json={"path": path, "content": "initial\n", "expected_revision": 0}
+    ))
+    assert initial["revision"] == 1
+
+    real_guard = file_api.file_publication_lock
+    real_project_lock = scheduler._lock_project
+    real_managed_change = file_api.managed_change
+    real_touch_dependents = file_api.touch_dependents
+    block = {"origin": None, "content": None}
+    publication_arrived = threading.Event()
+    release_publication = threading.Event()
+    waiter_arrived = threading.Event()
+    guard_calls = {"count": 0}
+    patch_guard = {"enabled": False}
+    block_get = {"enabled": False}
+    get_arrived = threading.Event()
+    release_get = threading.Event()
+
+    @contextmanager
+    def observed_guard(project_id, relative):
+        if patch_guard["enabled"] and relative == path:
+            guard_calls["count"] += 1
+            if guard_calls["count"] == 2:
+                waiter_arrived.set()
+        with real_guard(project_id, relative):
+            yield
+
+    def pause_after_managed_change(session, project_id, relative, attribution, action_id=None):
+        real_managed_change(session, project_id, relative, attribution, action_id)
+        if relative == path and attribution == block["origin"] and (root / path).read_bytes() == block["content"]:
+            publication_arrived.set()
+            assert release_publication.wait(10), "test did not release the first publication"
+
+    def pause_after_touch(session, project_id, relative):
+        real_touch_dependents(session, project_id, relative)
+        if relative == path and block["origin"] == "owner_editor" and (root / path).read_bytes() == block["content"]:
+            publication_arrived.set()
+            assert release_publication.wait(10), "test did not release the first publication"
+
+    def pause_get_after_project_lock(session, project_id):
+        result = real_project_lock(session, project_id)
+        if block_get["enabled"]:
+            block_get["enabled"] = False
+            get_arrived.set()
+            assert release_get.wait(10), "test did not release the blocked GET"
+        return result
+
+    file_api.file_publication_lock = observed_guard
+    file_api.managed_change = pause_after_managed_change
+    file_api.touch_dependents = pause_after_touch
+    scheduler._lock_project = pause_get_after_project_lock
+
+    def upload(content, name="order.txt"):
+        return client.post(endpoint, files={"file": (name, content, "text/plain")})
+
+    def start_ordered_pair(first, second, expected_revision):
+        publication_arrived.clear()
+        release_publication.clear()
+        waiter_arrived.clear()
+        guard_calls["count"] = 0
+        patch_guard["enabled"] = True
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(first, expected_revision)
+            assert publication_arrived.wait(5), "first writer did not reach the publication barrier"
+            second_future = pool.submit(second, expected_revision)
+            assert waiter_arrived.wait(5), "second writer did not reach the shared file guard"
+            assert not second_future.done(), "second writer escaped the first publication lock"
+            release_publication.set()
+            first_response = first_future.result(timeout=10)
+            second_response = second_future.result(timeout=10)
+        patch_guard["enabled"] = False
+        return first_response, second_response
+
+    try:
+        # GET holds the publication guard after taking the project lock. A
+        # replacement waits until both old bytes and their old revision have
+        # been read, rather than returning a mixed bytes/token pair.
+        block_get["enabled"] = True
+        patch_guard["enabled"] = True
+        guard_calls["count"] = 0
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            get_future = pool.submit(client.get, file_endpoint, params={"path": path})
+            assert get_arrived.wait(5), "GET did not reach the project-lock barrier"
+            upload_future = pool.submit(upload, b"GET-first upload\n")
+            assert waiter_arrived.wait(5), "upload did not reach the shared file guard"
+            assert not upload_future.done(), "upload escaped the GET publication lock"
+            release_get.set()
+            old_read = get_future.result(timeout=10)
+            upload_result = upload_future.result(timeout=10)
+        patch_guard["enabled"] = False
+        assert old_read.status_code == upload_result.status_code == 200
+        assert old_read.json() == {
+            "path": path,
+            "content": "initial\n",
+            "revision": initial["revision"],
+            "origin": "user_edited",
+        }
+        read_after_get_upload = ok(client.get(file_endpoint, params={"path": path}))
+        assert read_after_get_upload == {
+            "path": path,
+            "content": "GET-first upload\n",
+            "revision": initial["revision"] + 1,
+            "origin": "user_import",
+        }
+
+        stale_snapshot = ok(client.get(file_endpoint, params={"path": path}))
+        block.update(origin="upload", content=b"upload first\n")
+        upload_first, stale_put = start_ordered_pair(
+            lambda _revision: upload(b"upload first\n"),
+            lambda revision: client.put(file_endpoint, json={
+                "path": path, "content": "stale put\n", "expected_revision": revision
+            }),
+            stale_snapshot["revision"],
+        )
+        assert upload_first.status_code == 200
+        assert stale_put.status_code == 409
+        read_after_upload = ok(client.get(file_endpoint, params={"path": path}))
+        assert read_after_upload == {
+            "path": path,
+            "content": "upload first\n",
+            "revision": stale_snapshot["revision"] + 1,
+            "origin": "user_import",
+        }
+
+        block.update(origin="owner_editor", content=b"put first\n")
+        put_first, upload_second = start_ordered_pair(
+            lambda revision: client.put(file_endpoint, json={
+                "path": path, "content": "put first\n", "expected_revision": revision
+            }),
+            lambda _revision: upload(b"upload second\n"),
+            read_after_upload["revision"],
+        )
+        assert put_first.status_code == 200
+        assert upload_second.status_code == 200
+        read_after_put_upload = ok(client.get(file_endpoint, params={"path": path}))
+        assert read_after_put_upload["content"] == "upload second\n"
+        assert read_after_put_upload["revision"] == read_after_upload["revision"] + 2
+        assert read_after_put_upload["origin"] == "user_import"
+
+        block.update(origin="upload", content=b"upload A\n")
+        upload_a, upload_b = start_ordered_pair(
+            lambda _revision: upload(b"upload A\n"),
+            lambda _revision: upload(b"upload B\n"),
+            read_after_put_upload["revision"],
+        )
+        assert upload_a.status_code == upload_b.status_code == 200
+        final = ok(client.get(file_endpoint, params={"path": path}))
+        assert final == {
+            "path": path,
+            "content": "upload B\n",
+            "revision": read_after_put_upload["revision"] + 2,
+            "origin": "user_import",
+        }
+    finally:
+        patch_guard["enabled"] = False
+        release_get.set()
+        release_publication.set()
+        file_api.file_publication_lock = real_guard
+        file_api.managed_change = real_managed_change
+        file_api.touch_dependents = real_touch_dependents
+        scheduler._lock_project = real_project_lock
 
 
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]
