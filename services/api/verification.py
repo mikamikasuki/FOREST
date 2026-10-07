@@ -61,7 +61,7 @@ def prepare_verification_enqueue(session, project, kind, config, node, dependenc
     config = deepcopy(config)
     dependencies = list(dependencies or [])
     try:
-        identifiers = _required_ids(config, node.inputs if node else config.get('input_references', []))
+        identifiers = _required_ids(config, config.get('input_references', node.inputs if node else []))
         if kind == 'verification':
             contract = _contract(config)
             producer = get(session, Node, contract['producer_node_id'])
