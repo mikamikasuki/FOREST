@@ -250,7 +250,17 @@ async def import_project(file:UploadFile=File(...)):
             'finished_at':imported_run_timestamp(r.get('finished_at'))
         }
     with Session.begin() as s:
-        orig=manifest['project']; p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),budget=orig.get('budget',{}),config=orig.get('config',{})); root=project_dir(p.id)
+        orig=manifest['project']; config=dict(orig.get('config',{})); controller=config.get('controller')
+        if isinstance(controller,dict):
+            # Runtime references belong to the source project; imported runs are
+            # rekeyed and active ones interrupted, so do not carry them forward.
+            controller={key:value for key,value in controller.items()
+                        if key not in ('last_run','current_node','paused_run_ids','route_review')}
+            if controller.get('status')=='running':
+                # Import is not an instruction to resume a research controller.
+                controller.update(status='paused',phase='PLAN')
+            config['controller']=controller
+        p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),budget=orig.get('budget',{}),config=config); root=project_dir(p.id)
         graph=manifest['graph']; old_id=graph['project_id']; mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(manifest.get('resources',{}).values())+[manifest.get('papers',[]),manifest.get('runs',[])]:
             for item in rows: mapping.setdefault(item['id'],uid())
@@ -263,6 +273,11 @@ async def import_project(file:UploadFile=File(...)):
                 for old,new in mapping.items(): obj=obj.replace(old,new)
                 return obj
             return obj
+        controller=p.config.get('controller')
+        if isinstance(controller,dict) and controller.get('branch_id'):
+            branch_id=controller['branch_id']; remapped_branch=mapping.get(branch_id)
+            if remapped_branch!=branch_id:
+                p.config={**p.config,'controller':{**controller,'branch_id':remapped_branch}}
         graph=remap(graph); graph['project_id']=p.id; graph['revision']=0; graph.pop('_history',None)
         for node in graph['nodes']:
             if node.get('execution_status') in ('queued','running','pausing','paused','waiting_input'):

@@ -345,6 +345,122 @@ def case_sse_replay(client, app):
     asyncio.run(read_frames())
 
 
+def case_sse_cursor_gap_reset(client, app):
+    from sqlalchemy import select
+    from starlette.requests import Request
+    from services.api.common import emit
+    from services.api.db import Event, Session
+    from services.api.main import events
+
+    document = app.openapi()
+    description = document["paths"]["/api/projects/{ident}/events"]["get"]["description"]
+    assert "cursor_reset" in description and "latest_available_sequence" in description
+    p = project(client, document)
+    with Session.begin() as session:
+        for index in range(1200):
+            emit(session, p["id"], "run_changed", {"n": index + 1})
+    with Session() as session:
+        retained = list(session.scalars(
+            select(Event.sequence).where(Event.project_id == p["id"]).order_by(Event.sequence)))
+    assert len(retained) == 501 and retained[0] == 700 and retained[-1] == 1200
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def first_frame(cursor):
+        headers = [] if cursor is None else [(b"last-event-id", str(cursor).encode())]
+        request = Request({"type": "http", "method": "GET", "path": f"/api/projects/{p['id']}/events",
+                           "headers": headers}, receive=receive)
+        stream = await events(p["id"], request)
+        iterator = stream.body_iterator
+        try:
+            assert (await anext(iterator)).startswith("event: connected")
+            return await anext(iterator)
+        finally:
+            await iterator.aclose()
+
+    async def read_controls():
+        stale = await first_frame(1)
+        assert "id: 1200\n" in stale and "event: cursor_reset\n" in stale
+        payload = json.loads(stale.split("data: ", 1)[1].strip())
+        assert payload == {"requested_after_sequence": 1, "oldest_available_sequence": 700,
+                           "latest_available_sequence": 1200, "resume_after_sequence": 1200}
+
+        missing = await first_frame(None)
+        assert "event: cursor_reset\n" in missing
+        missing_payload = json.loads(missing.split("data: ", 1)[1].strip())
+        assert missing_payload["requested_after_sequence"] == 0
+        assert missing_payload["oldest_available_sequence"] == 700
+        assert missing_payload["latest_available_sequence"] == 1200
+        assert missing_payload["resume_after_sequence"] == 1200
+
+        invalid = await first_frame("not-an-integer")
+        assert "event: cursor_reset\n" in invalid
+        invalid_payload = json.loads(invalid.split("data: ", 1)[1].strip())
+        assert invalid_payload["requested_after_sequence"] == 0
+        assert invalid_payload["resume_after_sequence"] == 1200
+
+        with Session.begin() as session:
+            emit(session, p["id"], "run_changed", {"n": 1201})
+        resumed = await first_frame(1200)
+        assert "id: 1201\n" in resumed and "event: run_changed\n" in resumed
+        assert json.loads(resumed.split("data: ", 1)[1].strip()) == {"n": 1201}
+
+        current = await first_frame(1199)
+        assert "id: 1200\n" in current and "event: run_changed\n" in current
+        assert json.loads(current.split("data: ", 1)[1].strip()) == {"n": 1200}
+
+    asyncio.run(read_controls())
+
+    ahead = asyncio.run(first_frame(2000))
+    assert "id: 1201\n" in ahead and "event: cursor_reset\n" in ahead
+    ahead_payload = json.loads(ahead.split("data: ", 1)[1].strip())
+    assert ahead_payload == {"requested_after_sequence": 2000, "oldest_available_sequence": 700,
+                             "latest_available_sequence": 1201, "resume_after_sequence": 1201}
+
+    empty = project(client, document)
+    with Session() as session:
+        assert session.scalar(select(Event.sequence).where(Event.project_id == empty["id"]).limit(1)) is None
+
+    async def first_empty_frame(cursor):
+        request = Request({"type": "http", "method": "GET", "path": f"/api/projects/{empty['id']}/events",
+                           "headers": [(b"last-event-id", str(cursor).encode())]}, receive=receive)
+        stream = await events(empty["id"], request)
+        iterator = stream.body_iterator
+        try:
+            assert (await anext(iterator)).startswith("event: connected")
+            return await anext(iterator)
+        finally:
+            await iterator.aclose()
+
+    empty_reset = asyncio.run(first_empty_frame(500))
+    assert "id: 0\n" in empty_reset and "event: cursor_reset\n" in empty_reset
+    assert json.loads(empty_reset.split("data: ", 1)[1].strip()) == {
+        "requested_after_sequence": 500, "oldest_available_sequence": 0,
+        "latest_available_sequence": 0, "resume_after_sequence": 0}
+    with Session.begin() as session:
+        emit(session, empty["id"], "run_changed", {"n": 1})
+    first_after_empty_reset = asyncio.run(first_empty_frame(0))
+    assert "id: 1\n" in first_after_empty_reset and "event: run_changed\n" in first_after_empty_reset
+
+    async def current_cursor_receives_next_event():
+        request = Request({"type": "http", "method": "GET", "path": f"/api/projects/{empty['id']}/events",
+                           "headers": [(b"last-event-id", b"1")]}, receive=receive)
+        stream = await events(empty["id"], request)
+        iterator = stream.body_iterator
+        try:
+            assert (await anext(iterator)).startswith("event: connected")
+            assert await anext(iterator) == ": heartbeat\n\n"
+            with Session.begin() as session:
+                emit(session, empty["id"], "run_changed", {"n": 2})
+            return await anext(iterator)
+        finally:
+            await iterator.aclose()
+
+    next_event = asyncio.run(current_cursor_receives_next_event())
+    assert "id: 2\n" in next_event and "event: run_changed\n" in next_event
+
+
 def case_sse_cursor_legacy_repair(client, app):
     from sqlalchemy import select, text
     from services.api.common import emit

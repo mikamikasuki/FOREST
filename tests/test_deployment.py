@@ -63,6 +63,56 @@ def test_secrets_are_random_idempotent_and_private_parent(tmp_path):
     assert target.stat().st_mode & 0o777 == 0o700
 
 
+def test_container_resume_starts_created_container(monkeypatch):
+    from runners.container import ContainerRunner
+
+    runner = ContainerRunner({})
+    calls = []
+    monkeypatch.setattr(runner, '_verified', lambda job: {'State': {'Status': 'created', 'Paused': False}})
+    monkeypatch.setattr(runner, 'command', lambda argv, **kwargs: calls.append(argv))
+    monkeypatch.setattr(runner, 'status', lambda job: {'status': 'running'})
+
+    result = runner.resume({'container_id': 'created-job'})
+
+    assert result == {'status': 'running'}
+    assert calls == [['start', 'created-job']]
+
+
+def test_container_reconnect_resumes_only_in_the_admitted_executor(tmp_path, monkeypatch):
+    from runners.container import execute_container
+
+    workspace = tmp_path / 'workspace'
+    output = tmp_path / 'output'
+    workspace.mkdir()
+    output.mkdir()
+    (output / 'container_task.json').write_text(json.dumps({
+        'container_id': 'detached-job', 'workspace': str(workspace.resolve()),
+        'task_id': 'run-a',
+    }))
+    calls = []
+
+    class FakeRunner:
+        def __init__(self, config):
+            pass
+
+        def resume(self, job):
+            calls.append(('resume', job['container_id']))
+
+        def status(self, job):
+            return {'status': 'completed', 'exit_code': 0}
+
+        def output(self, job, cursor):
+            return {'text': '', 'cursor': cursor}
+
+    monkeypatch.setattr('runners.container.ContainerRunner', FakeRunner)
+    result = execute_container({
+        'command': ['true'], 'execution_attempt': {'mode': 'container_reconnect'},
+    }, workspace, output)
+
+    assert result['command_exit_code'] == 0
+    assert calls == [('resume', 'detached-job')]
+
+
 @pytest.mark.parametrize('name', ['forest/CON.txt', 'forest/file?.txt', 'forest/a.', 'forest/../escape', 'C:/escape', 'forest/a\\b'])
 def test_portable_paths_reject_windows_hazards(name):
     with pytest.raises(ValueError):

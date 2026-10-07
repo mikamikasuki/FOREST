@@ -198,6 +198,45 @@ def case_export_import_reference_roundtrip(client, app):
     assert ok(client.get(f"/api/runs/{new_runs[0]['id']}/output"))["text"] == "actual saved output\n"
 
 
+def case_import_running_controller_requires_explicit_start(client, app):
+    p = create(client)
+    source_branch_id = graph(client, p)["branches"][0]["id"]
+    started = ok(client.post(f"/api/projects/{p['id']}/research/start", json={"autonomous": True, "branch_id": source_branch_id}))
+    assert started["status"] == "running" and started["autonomous"] is True
+    from services.worker.controller import advance_projects
+    advance_projects()
+    source_state = ok(client.get(f"/api/projects/{p['id']}/research"))
+    assert source_state["controller"]["status"] == "running"
+    assert source_state["controller"]["last_run"]
+    assert source_state["active_runs"][0]["kind"] == "research_plan"
+
+    archive = client.post(f"/api/projects/{p['id']}/export", json={})
+    assert archive.status_code == 200
+    imported = ok(client.post("/api/projects/import", files={"file": ("running-project.zip", archive.content, "application/zip")}))
+    imported_id = imported["id"]
+    imported_graph = graph(client, imported)
+    imported_branch_id = imported_graph["branches"][0]["id"]
+    before_tick = ok(client.get(f"/api/projects/{imported_id}/research"))
+    imported_runs = ok(client.get(f"/api/projects/{imported_id}/runs"))
+    assert before_tick["controller"]["status"] == "paused"
+    assert before_tick["controller"]["autonomous"] is True
+    assert imported_branch_id != source_branch_id
+    assert before_tick["controller"]["branch_id"] == imported_branch_id
+    assert "last_run" not in before_tick["controller"]
+    assert before_tick["active_runs"] == []
+    assert len(imported_runs) == 1 and imported_runs[0]["status"] == "interrupted"
+
+    advance_projects()
+
+    after_tick = ok(client.get(f"/api/projects/{imported_id}/research"))
+    assert after_tick["controller"]["status"] == "paused"
+    assert after_tick["active_runs"] == []
+    assert ok(client.get(f"/api/projects/{imported_id}/runs")) == imported_runs
+    source_after_tick = ok(client.get(f"/api/projects/{p['id']}/research"))
+    assert source_after_tick["controller"]["status"] == "running"
+    assert source_after_tick["active_runs"] == source_state["active_runs"]
+
+
 def case_export_does_not_follow_config_symlink(client, app):
     p = create(client)
     root = Path(os.environ["FOREST_DATA_DIR"]) / "projects" / p["id"]
@@ -328,6 +367,16 @@ def case_duplicate_retains_bindings_without_following_links(client, app):
     p = create(client)
     n = add_node(client, p, config={"kind": "command", "command": ["python", "-c", "print(1)"]})
     run = ok(client.post(f"/api/nodes/{n['id']}/run", json={"request_id": "to-copy"}))
+    source_times = {
+        "created_at": "2024-05-30T09:00:00+00:00",
+        "started_at": "2024-05-30T09:01:12.125000+00:00",
+        "finished_at": "2024-05-30T09:01:17.750000+00:00",
+    }
+    from services.api.db import Session, TaskRun
+    with Session.begin() as session:
+        source_run = session.get(TaskRun, run["id"])
+        for field, value in source_times.items():
+            setattr(source_run, field, value)
     fig = ok(client.post("/api/figures", json={"project_id": p["id"], "title": "Measured", "data": {"run_ids": [run["id"]]}}))
     root = Path(os.environ["FOREST_DATA_DIR"]) / "projects" / p["id"]
     private = root.parent / "outside.txt"
@@ -338,6 +387,7 @@ def case_duplicate_retains_bindings_without_following_links(client, app):
     copied_fig = ok(client.get("/api/figures", params={"project_id": copied["id"]}))[0]
     assert copied_fig["id"] != fig["id"] and copied_fig["data"]["run_ids"] == [copied_run["id"]]
     assert copied_run["status"] == "interrupted"
+    assert {field: copied_run[field] for field in source_times} == source_times
     assert client.get(f"/api/projects/{copied['id']}/file", params={"path": "secret.txt"}).status_code == 404
 
 
@@ -429,6 +479,284 @@ def case_provider_health_does_not_reuse_old_chat_success(client, app):
     assert report['model_connected'] is False
     assert report['provider_status'][0]['last_chat_test']=='connected'
     assert report['provider_status'][0]['available'] is False
+
+
+def case_project_time_budget_reserves_concurrent_runs(client, app):
+    from services.api.db import Session, TaskRun
+
+    project = ok(client.post('/api/projects', json={
+        'name': 'Concurrent project time reservation',
+        'goal': 'Ensure queued Workspace runs share the remaining project time.',
+        'budget': {'max_runs': 20, 'seconds': 10, 'allow_paid': False},
+    }))
+    nodes = [
+        add_node(client, project,
+                 instructions=f'Concurrent budget node {index}',
+                 config={'kind': 'command', 'command': [sys.executable, '-c', 'pass'], 'timeout': 8})
+        for index in range(2)
+    ]
+    request_ids = [f'budget-reservation-{index}' for index in range(2)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(
+            lambda pair: client.post(f"/api/nodes/{pair[0]['id']}/run", json={'request_id': pair[1]}),
+            zip(nodes, request_ids),
+        ))
+    runs = [ok(response) for response in responses]
+    assert sorted(run['config']['timeout'] for run in runs) == [2.0, 8.0]
+    assert sorted(run['resource']['time_budget']['effective_total_timeout_seconds'] for run in runs) == [2.0, 8.0]
+    assert all(run['resource']['time_budget']['project_budget_seconds_at_enqueue'] == 10 for run in runs)
+
+    duplicate = ok(client.post(f"/api/nodes/{nodes[0]['id']}/run", json={'request_id': request_ids[0]}))
+    assert duplicate['id'] == runs[0]['id']
+    exhausted = client.post(f"/api/nodes/{nodes[0]['id']}/run", json={'request_id': 'budget-reservation-no-capacity'})
+    assert exhausted.status_code == 409
+    assert exhausted.json()['detail']['code'] == 'TIME_BUDGET_EXHAUSTED'
+
+    # Once a reserved run ends early, its unused allocation is available again.
+    longest = next(run for run in runs if run['config']['timeout'] == 8.0)
+    with Session.begin() as session:
+        row = session.get(TaskRun, longest['id'])
+        row.status = 'completed'
+        row.resource = {**row.resource, 'elapsed_seconds': 1.0}
+    released = ok(client.post(f"/api/nodes/{nodes[0]['id']}/run", json={'request_id': 'budget-reservation-released-cap'}))
+    assert released['config']['timeout'] == 7.0
+    assert released['resource']['time_budget']['effective_total_timeout_seconds'] == 7.0
+
+
+def case_selected_dependency_runs_defer_time_reservation(client, app):
+    project = ok(client.post('/api/projects', json={
+        'name': 'Deferred project time reservation',
+        'goal': 'Reserve compute time when a selected dependency becomes runnable.',
+        'budget': {'max_runs': 20, 'seconds': 10, 'allow_paid': False},
+    }))
+    config = {'kind': 'command', 'command': [sys.executable, '-c', 'pass'], 'timeout': 8}
+    producer = add_node(client, project, instructions='Producer', config=config)
+    consumer = add_node(client, project, instructions='Consumer', config=config)
+    ok(command(client, project, 'add_dependency', source=producer['id'], target=consumer['id']))
+
+    queued = ok(client.post(f"/api/nodes/{consumer['id']}/run", json={
+        'request_id': 'deferred-budget-chain', 'scope': 'ancestors',
+    }))
+    runs = {run['node_id']: run for run in queued['runs']}
+    first = runs[producer['id']]
+    second = runs[consumer['id']]
+    assert first['config']['timeout'] == 8.0
+    assert first['resource']['time_budget']['reservation_state'] == 'held'
+    assert second['config']['timeout'] == 8.0
+    assert second['resource']['time_budget']['reservation_state'] == 'deferred'
+    assert second['resource']['time_budget']['effective_total_timeout_seconds'] is None
+
+
+def case_verifier_linked_to_active_producer_defers_when_budget_is_reserved(client, app):
+    project = ok(client.post('/api/projects', json={
+        'name': 'Verification dependency waits for reserved project time',
+        'goal': 'Keep an automatically linked verifier queued until its producer completes.',
+        'budget': {'max_runs': 20, 'seconds': 8, 'allow_paid': False},
+    }))
+    producer = ok(command(client, project, 'add_node', title='Producer', type='experiment', config={
+        'kind': 'command', 'command': [sys.executable, '-c', 'pass'], 'timeout': 8,
+    }))['graph']['nodes'][-1]
+    verifier = ok(command(client, project, 'add_node', title='Check producer', type='verification', config={
+        'kind': 'verification',
+        'verification': {
+            'producer_node_id': producer['id'],
+            'checks': [{
+                'id': 'rows', 'kind': 'csv_integrity', 'source': 'observations.csv',
+                'required_columns': ['unit', 'value'], 'unique_by': ['unit'],
+                'numeric_columns': ['value'],
+            }],
+        },
+    }))['graph']['nodes'][-1]
+
+    source = ok(client.post(f"/api/nodes/{producer['id']}/run", json={
+        'request_id': 'verification-budget-producer',
+    }))
+    assert source['resource']['time_budget']['reservation_state'] == 'held'
+    assert source['resource']['time_budget']['effective_total_timeout_seconds'] == 8
+
+    dependent = ok(client.post('/api/verification/run', json={
+        'project_id': project['id'], 'node_id': verifier['id'],
+        'request_id': 'verification-budget-dependent',
+    }))
+    assert source['id'] in dependent['dependencies']
+    assert dependent['status'] == 'queued'
+    assert dependent['resource']['time_budget']['reservation_state'] == 'deferred'
+    assert dependent['resource']['time_budget']['effective_total_timeout_seconds'] is None
+
+
+def case_paused_container_resume_persists_elapsed_before_reconnect(client, app):
+    import time
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
+    from services.api.db import Session, TaskRun
+
+    project = create(client)
+    ok(client.patch(f"/api/projects/{project['id']}", json={
+        'budget': {'max_runs': 20, 'seconds': 3, 'allow_paid': False},
+    }))
+    node = add_node(client, project, config={
+        'kind': 'command', 'command': [sys.executable, '-c', 'pass'], 'timeout': 10,
+        'execution_backend': 'container',
+    })
+    run = ok(client.post(f"/api/nodes/{node['id']}/run", json={
+        'request_id': 'container-pause-resume-accounting',
+    }))
+    with Session.begin() as session:
+        row = session.get(TaskRun, run['id'])
+        row.status = 'running'
+        row.pid = 2**30  # The host executor is absent; the container adapter owns pause/resume.
+        row.process_created = 1.0
+        row.started_at = (datetime.now(timezone.utc) - timedelta(seconds=0.3)).isoformat()
+        row.resource = {**row.resource, 'elapsed_seconds': 0.2, 'elapsed_before_attempt': 0.0}
+
+    actions = []
+
+    def container_control(config, output, action):
+        actions.append(action)
+        return {'status': 'paused' if action == 'pause' else 'running'}
+
+    with patch('runners.container.control_container', side_effect=container_control):
+        paused = ok(client.post(f"/api/runs/{run['id']}/pause", json={}))
+        assert paused['status'] == 'paused' and paused['pid'] is None
+        assert paused['resource']['paused_live_attempt'] is True
+        time.sleep(0.15)
+        resumed = ok(client.post(f"/api/runs/{run['id']}/resume", json={}))
+
+    assert resumed['status'] == 'queued'
+    assert resumed['resource']['elapsed_seconds'] >= 0.4
+    assert 'paused_live_attempt' not in resumed['resource']
+    assert resumed['resource']['container_reconnect_pending_dispatch'] is True
+    # The external container stays paused until worker budget admission.
+    assert actions == ['pause']
+    time.sleep(0.15)
+    from services.worker.scheduler import _elapsed_seconds_at
+    with Session() as session:
+        waiting_for_worker = session.get(TaskRun, run['id'])
+        effective_elapsed = _elapsed_seconds_at(waiting_for_worker)
+    assert effective_elapsed >= resumed['resource']['elapsed_seconds'] + 0.1
+
+
+def case_paused_waiting_child_resume_defers_continue_until_worker_dispatch(client, app):
+    import signal
+    import time
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
+    from services.api.db import Session, TaskRun
+    from services.worker.scheduler import _elapsed_seconds_at
+
+    project = create(client)
+    ok(client.patch(f"/api/projects/{project['id']}", json={
+        'budget': {'max_runs': 20, 'seconds': 8, 'allow_paid': False},
+    }))
+    node = add_node(client, project, config={
+        'kind': 'command', 'command': [sys.executable, '-c', 'pass'], 'timeout': 10,
+    })
+    run = ok(client.post(f"/api/nodes/{node['id']}/run", json={
+        'request_id': 'waiting-live-child-pause-resume',
+    }))
+    with Session.begin() as session:
+        row = session.get(TaskRun, run['id'])
+        row.status = 'waiting'
+        row.pid = None
+        row.started_at = (datetime.now(timezone.utc) - timedelta(seconds=0.3)).isoformat()
+        row.resource = {
+            **row.resource,
+            'elapsed_seconds': 0.1,
+            'elapsed_before_attempt': 0.0,
+            'elapsed_before_wait': 0.1,
+            'waiting_started_at': time.time() - 0.2,
+            'time_budget': {
+                'requested_task_timeout_seconds': 10,
+                'effective_total_timeout_seconds': 8,
+                'reservation_state': 'held',
+            },
+        }
+
+    class FakeManager:
+        def __init__(self):
+            self.status = 'running'
+            self.signals = []
+
+        def all(self):
+            return [{'status': self.status}]
+
+        def signal_all(self, signum):
+            self.signals.append(signum)
+            self.status = 'paused' if signum == signal.SIGSTOP else 'running'
+
+    manager = FakeManager()
+    with patch('research.execution.process_manager.process_manager', return_value=manager):
+        paused = ok(client.post(f"/api/runs/{run['id']}/pause", json={}))
+        assert paused['status'] == 'paused'
+        assert paused['resource']['paused_live_attempt'] is True
+        time.sleep(0.1)
+        resumed = ok(client.post(f"/api/runs/{run['id']}/resume", json={}))
+
+    assert resumed['status'] == 'queued'
+    assert resumed['resource']['live_process_pending_dispatch'] is True
+    assert 'paused_live_attempt' not in resumed['resource']
+    assert manager.signals == [signal.SIGSTOP]
+    time.sleep(0.1)
+    with Session() as session:
+        waiting_for_worker = session.get(TaskRun, run['id'])
+        effective_elapsed = _elapsed_seconds_at(waiting_for_worker)
+    assert effective_elapsed >= resumed['resource']['elapsed_seconds'] + 0.08
+
+
+def case_retry_restores_requested_timeout_when_project_budget_is_removed(client, app):
+    from services.api.db import Session, TaskRun
+
+    project = ok(client.post('/api/projects', json={
+        'name': 'Retry timeout after budget removal',
+        'goal': 'Keep the requested task timeout when a project cap is removed.',
+        'budget': {'max_runs': 20, 'seconds': 4, 'allow_paid': False},
+    }))
+    node = add_node(client, project, config={
+        'kind': 'command', 'command': [sys.executable, '-c', 'pass'], 'timeout': 30,
+    })
+    run = ok(client.post(f"/api/nodes/{node['id']}/run", json={
+        'request_id': 'budgeted-timeout-before-retry',
+    }))
+    assert run['config']['timeout'] == 4
+    assert run['resource']['time_budget']['requested_task_timeout_seconds'] == 30
+    with Session.begin() as session:
+        session.get(TaskRun, run['id']).status = 'completed'
+
+    ok(client.patch(f"/api/projects/{project['id']}", json={
+        'budget': {'max_runs': 20, 'allow_paid': False},
+    }))
+    retried = ok(client.post(f"/api/runs/{run['id']}/retry", json={
+        'request_id': 'budget-removed-retry',
+    }))
+    assert retried['id'] != run['id']
+    assert retried['status'] == 'queued'
+    assert retried['config']['timeout'] == 30
+
+
+def case_retry_refreshes_node_after_project_lock(client, app):
+    from services.api.db import Session, Node
+    from services.worker.scheduler import enqueue
+    project = create(client)
+    node = add_node(client, project, config={'kind': 'command', 'command': [sys.executable, '-c', 'pass']})
+    with Session() as stale:
+        old = stale.get(Node, node['id'])
+        revision = old.revision
+        with Session.begin() as editor:
+            current = editor.get(Node, node['id'])
+            current.revision += 1
+            current.extra = {**current.extra, 'latest_run_id': 'current-run'}
+            current.execution_status = 'completed'
+        assert old.revision == revision
+        retry = enqueue(stale, project['id'], 'command', old.config, 'stale-retry', old,
+                        node_revision=revision)
+        stale.commit()
+        assert retry.node_revision == revision
+    with Session() as session:
+        current = session.get(Node, node['id'])
+        assert current.revision == revision + 1
+        assert current.extra['latest_run_id'] == 'current-run'
+        assert current.execution_status == 'completed'
+
 
 
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]

@@ -172,6 +172,16 @@ Provider summaries marked `scope: "all_projects"` describe the provider's shared
 allowance; do not present that amount as an independent allowance for each
 project. The project budget and the provider budget are separate controls.
 
+The project `budget.seconds` value is a cumulative wall-elapsed allowance across
+project runs. The scheduler reserves time at admission, checks it again before
+dispatch and Resume, and includes elapsed time since the last worker checkpoint
+for running, live-paused, or yielded-wait runs. Local task deadlines are checked
+every 0.4 seconds;
+the worker allows 0.1 seconds for graceful process shutdown before force-stopping
+it. The measured stop time is charged to the project, so a task can pass its
+individual deadline by roughly one check interval plus shutdown grace; host
+scheduling and external-runner cancellation can add delay.
+
 Generate one `request_id` for one intended operation and retain it until the
 acceptance is known. Graph commands/batches and supported enqueue operations
 store receipts or reuse run identities. This is not a global idempotency promise

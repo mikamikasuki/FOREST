@@ -158,6 +158,46 @@ test("graph updates remain stable and persist a node created through the inspect
   expect(graph.nodes[0].title).toBe("Edited through inspector");
   expect(errors).toEqual([]);
 });
+
+test("Overview reload and continue preserve the saved autonomous-planning setting", async ({
+  page,
+  request,
+}) => {
+  await page.goto(`/projects/${projectId}/overview`);
+  const autonomous = page.getByRole("checkbox", {
+    name: "Autonomous planning",
+  });
+  await expect(autonomous).toBeChecked();
+  await autonomous.uncheck();
+  await page.getByRole("button", { name: "Start / continue" }).click();
+  await expect
+    .poll(
+      async () =>
+        (await (await request.get(`/api/projects/${projectId}/research`)).json())
+          .controller.autonomous,
+    )
+    .toBe(false);
+
+  await page.reload();
+  await expect(autonomous).not.toBeChecked();
+  await page.getByRole("button", { name: "Start / continue" }).click();
+  await expect
+    .poll(
+      async () =>
+        (await (await request.get(`/api/projects/${projectId}/research`)).json())
+          .controller.autonomous,
+    )
+    .toBe(false);
+  await expect
+    .poll(async () => {
+      const state = await (
+        await request.get(`/api/projects/${projectId}/research`)
+      ).json();
+      return { autonomous: state.controller.autonomous, runs: state.counts.runs };
+    })
+    .toEqual({ autonomous: false, runs: 0 });
+});
+
 test("another editor changing the node presents a conflict without overwriting server content", async ({
   page,
   request,

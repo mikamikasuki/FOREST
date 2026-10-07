@@ -23,6 +23,10 @@ REVIEW_ROLES = {
 }
 
 
+class CandidateReviewRejected(ValueError):
+    """All candidates received valid reviews, but none met the visual contract."""
+
+
 def register_candidates(output_dir, candidates, kind='image'):
     """Admit real externally generated images to the same review contract.
 
@@ -254,7 +258,7 @@ def review_requests(bundle, context=None):
             'unless the provider actually received those pixels. Distinguish supplied SVG/report inspection '
             'from pixel inspection. Return JSON only with role, reviews, placement. reviews must cover every '
             'candidate exactly once, with candidate_id, verdict (accept, revise or reject), scores for '
-            + ', '.join(dimensions) + ' (finite numbers 0 to 5), and nonempty reasons citing actual features. '
+            + ', '.join(dimensions) + ' (finite numbers 0 to 5), and reasons as a nonempty JSON array of strings citing actual features. '
             'Visual Editor additionally chooses a section_role and after paragraph ID from the supplied '
             'manuscript context, and explains its argumentative duty; all roles return placement:null when '
             'no valid paragraph context exists. Candidate selection reviews the asset; paragraph selection '
@@ -353,7 +357,7 @@ def select_candidate(bundle, reviews, *, require_alternatives=True, raster_finis
                       for identifier, values in scores.items()), key=lambda item: (-item['score'], item['candidate_id']))
     eligible = [item for item in ranking if item['eligible']]
     if not eligible:
-        raise ValueError('No figure candidate satisfies every independent reviewer; revise and rerender: ' + json.dumps(ranking))
+        raise CandidateReviewRejected('No figure candidate satisfies every independent reviewer; revise and rerender: ' + json.dumps(ranking))
     placement = by_role['Visual Editor'].get('placement')
     if placement is not None and (not isinstance(placement, dict) or not all(isinstance(placement.get(key), str) and placement[key].strip() for key in ('section_role', 'after', 'reason'))):
         raise ValueError('Visual Editor placement must identify an actual section and paragraph with a reason')

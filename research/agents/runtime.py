@@ -1,6 +1,7 @@
 """Persistent research sessions and actual, separately supervised tool processes."""
 from __future__ import annotations
 from copy import deepcopy
+import hashlib
 import json
 import sys
 import time
@@ -499,6 +500,58 @@ def budget_reason(state, config):
     return None
 
 
+def request_has_goal_field(messages, goal):
+    """Observe the complete task goal field, independently of paging metadata."""
+    for message in messages:
+        if message.get('role') != 'user':
+            continue
+        try:
+            value = json.loads(message.get('content', ''))
+        except (ValueError, TypeError):
+            continue
+        context = value.get('context') if isinstance(value, dict) else None
+        if isinstance(context, dict):
+            controls = context.get('controls')
+            source = controls if isinstance(controls, dict) else context
+            if 'goal' in source and source['goal'] == goal:
+                return True
+    return False
+
+
+def execution_context_receipts(state):
+    """Keep authoritative snapshots distinct from observed request delivery."""
+    history, requests, unrecorded = [], [], []
+    contexts = state.get('context_history', [])
+    for turn in state.get('transcript', []):
+        index = turn.get('context_history_index')
+        requests.append({'step': turn['step'], 'status': turn.get('status', 'response'),
+                         'context_history_index': index,
+                         **deepcopy(turn.get('request_context') or {'task_delivery': 'unrecorded'})})
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(contexts):
+            unrecorded.append(turn['step'])
+            continue
+        context = contexts[index].get('project_context')
+        if not context:
+            unrecorded.append(turn['step'])
+            continue
+        request_context = turn.get('request_context') or {}
+        attempt_id = (request_context.get('execution_attempt_id')
+                      if 'execution_attempt_id' in request_context else context.get('attempt_id'))
+        if (history and history[-1]['context_history_index'] == index
+                and history[-1].get('attempt_id') == attempt_id
+                and history[-1]['last_step'] + 1 == turn['step']):
+            history[-1]['last_step'] = turn['step']
+        else:
+            entry = deepcopy(context)
+            entry.pop('attempt_id', None)
+            entry.update(context_history_index=index, first_step=turn['step'], last_step=turn['step'])
+            if attempt_id is not None:
+                entry['attempt_id'] = attempt_id
+            history.append(entry)
+    return {'history_scope': 'authoritative_project_context', 'history': history,
+            'requests': requests, 'unrecorded_steps': unrecorded}
+
+
 def run_agent(run_id, workspace, config):
     workspace = Path(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
@@ -522,6 +575,11 @@ def run_agent(run_id, workspace, config):
             packet = ContextBuilder(graph, project_dir(p.id)).build(run.node_id, role, context_overrides)
         else:
             packet = {'goal': p.goal, 'instructions': config.get('instructions', config.get('prompt', ''))}
+        project_context = {'project_id': p.id, 'project_revision': p.revision,
+                           'project_goal': p.goal, 'goal': packet.get('controls', {}).get('goal', packet.get('goal')),
+                           'run_id': run_id, 'node_id': run.node_id, 'graph_revision': graph.get('revision'),
+                           'node_revision': packet.get('node_revision')}
+        execution_attempt_id = run.config.get('execution_attempt', {}).get('id')
     provider = config.get('provider_snapshot')
     if not provider:
         raise ValueError('No model configured. Connect a real provider in Settings.')
@@ -562,9 +620,14 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
         if state.get('status') == 'completed':
             return state['result']
     context_record = {'version': CONTEXT_POLICY_VERSION, 'system': system, 'task': task, 'enabled_tools': list(tool.allowed),
+                      'project_context': project_context,
                       'context_char_budget': context_char_budget(config), 'static_context_char_budget': packet.get('capacity', {}).get('max_chars')}
     context_history = state.setdefault('context_history', [])
-    if not context_history or any(context_history[-1].get(key) != value for key, value in context_record.items()):
+    previous_context_record = deepcopy(context_history[-1]) if context_history else None
+    if previous_context_record and isinstance(previous_context_record.get('project_context'), dict):
+        # Older snapshots included attempt IDs, which are now recorded per request.
+        previous_context_record['project_context'].pop('attempt_id', None)
+    if not context_history or any(previous_context_record.get(key) != value for key, value in context_record.items()):
         context_history.append({**context_record, 'before_step': len(state['transcript']) + 1, 'recorded_at': time.time()})
     def save():
         state['updated_at'] = time.time()
@@ -610,17 +673,30 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
             save()  # Persist the exact context/retrieval decision before transport.
             if not request_tools:
                 raise ValueError('Output recovery requires the existing file-write permission; no enabled continuation tool remains')
+            request_definitions = tool_definitions(request_tools) if client.native_tools else None
+            request_path, request_payload = client.build_request(request_messages, tools=request_definitions)
+            original_task_present = any(message.get('role') == task['role'] and message.get('content') == task['content']
+                                        for message in request_messages)
+            request_context = {'task_delivery': 'original_message' if original_task_present else 'managed_context',
+                               'original_task_message_present': original_task_present,
+                               'execution_attempt_id': execution_attempt_id,
+                               'goal_field_present': request_has_goal_field(request_messages, project_context['goal']),
+                               'payload_sha256': hashlib.sha256(json.dumps(request_payload, ensure_ascii=False,
+                                                                          sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
+                               'request_path': request_path,
+                               'required_context_page': deepcopy(state.get('context_management', {}).get('next_required'))}
             started = time.monotonic()
             try:
                 response = client.complete(request_messages,
-                                           tools=tool_definitions(request_tools) if client.native_tools else None)
+                                           tools=request_definitions)
             except BudgetExceeded as exc:
                 state['active_seconds'] += time.monotonic() - started
                 state.update(status='budget_exhausted', budget_reason=str(exc))
                 save()
                 raise AgentYield(status='budget_exhausted', reason=str(exc)) from exc
             except ProviderError as exc:
-                record_provider_failure(state, exc, time.monotonic() - started, provider['model'])
+                failed_turn = record_provider_failure(state, exc, time.monotonic() - started, provider['model'])
+                failed_turn.update(context_history_index=len(context_history) - 1, request_context=request_context)
                 save()  # Account for every received failure before considering another request.
                 recover = recover_context_rejection(state, exc) or prepare_output_recovery(state, exc, config, tool.allowed)
                 save()
@@ -631,6 +707,8 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
             account_usage(state, response['usage'], time.monotonic() - started)
             response = checkpoint(run_id, 'after_model', response, debug_points)
             state['transcript'].append({'step': len(state['transcript']) + 1, 'model': response['model'], 'content': response['text'], 'usage': response['usage'],
+                                        'context_history_index': len(context_history) - 1,
+                                        'request_context': request_context,
                                         'request_id': response.get('request_id'), 'response_id': response.get('response_id'), 'tool_calls': response.get('tool_calls', [])})
             state['messages'].append({'role': 'assistant', 'content': response['text'],
                                       **({'native_output': response['output']} if client.native_tools else {})})
@@ -693,7 +771,7 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
                 state['pending_action'] = None
                 save()
                 continue
-            result = {'summary': args.get('summary', ''), 'artifacts': artifacts, 'usage': state['totals'], 'steps': len(state['transcript']), 'model': state['transcript'][-1]['model'], 'evidence_label': 'model_summary_with_tool_outputs', 'session_path': 'agent_session.json', 'executions': [{key: value for key, value in process.items() if key in ('process_id', 'command', 'status', 'exit_code', 'elapsed_seconds', 'error')} for process in tool.processes.all()]}
+            result = {'summary': args.get('summary', ''), 'artifacts': artifacts, 'usage': state['totals'], 'steps': len(state['transcript']), 'model': state['transcript'][-1]['model'], 'evidence_label': 'model_summary_with_tool_outputs', 'session_path': 'agent_session.json', 'execution_context': execution_context_receipts(state), 'executions': [{key: value for key, value in process.items() if key in ('process_id', 'command', 'status', 'exit_code', 'elapsed_seconds', 'error')} for process in tool.processes.all()]}
             try:
                 result.update(collect_agent_metrics(workspace, config, tool.processes))
             except (ValueError, OSError) as exc:

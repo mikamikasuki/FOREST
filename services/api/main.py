@@ -21,7 +21,7 @@ from sqlalchemy import select, delete, func, text as sql_text
 from .common import *
 from .schemas import *
 from .files import router as files_router
-from services.worker.scheduler import enqueue,enqueue_nodes,enqueue_selected,ACTIVE,TERMINAL,requested_task_timeout,_bounded_timeout
+from services.worker.scheduler import enqueue,enqueue_nodes,enqueue_selected,ACTIVE,TERMINAL,requested_task_timeout,reserve_project_time,finalize_cancelled_run_elapsed,_elapsed_seconds_at
 from research.agents.policy import ROLES,TOOLS
 from research.agents.defaults import default_config, upgrade_default_tools, explicit_agent_config
 from research.agents.budget import interrupt_run_reservations
@@ -177,6 +177,7 @@ def duplicate_project(ident:str):
             s.add(TaskRun(id=run_id,project_id=new.id,node_id=remap(row.get('node_id')),branch_id=remap(row.get('branch_id')),
                 request_id='copy:'+run_id,kind=row['kind'],status=row['status'] if row['status'] in TERMINAL else 'interrupted',
                 config={**remap(row['config']),'origin':'copied_run','original_run_id':row['id']},node_revision=row['node_revision'],
+                created_at=row['created_at'],started_at=row.get('started_at'),finished_at=row.get('finished_at'),
                 output_path=remap(row['output_path']),dependencies=remap(row.get('dependencies',[])),metrics=remap(row['metrics']),resource=row['resource'],exit_code=row['exit_code']))
         s.flush(); return asdict(new)
 @app.get('/api/projects/{ident}/graph')
@@ -205,7 +206,8 @@ def command(ident:str,body:GraphCommand):
         result=GraphCommandService(graph_from_db(s,p),project_dir(ident)).apply(cmd); save_graph(s,p,result['graph'])
         for action in result['impact'].get('actions',[]):
             if action['action']=='cancel_current_run':
-                for active in s.scalars(select(TaskRun).where(TaskRun.node_id==action['node_id'],TaskRun.status.in_(ACTIVE))):
+                for active in s.scalars(select(TaskRun).where(TaskRun.node_id==action['node_id'],TaskRun.status.in_(ACTIVE))
+                                        .with_for_update().execution_options(populate_existing=True)):
                     from research.execution.process_manager import process_manager
                     process_manager(safe_path(project_dir(active.project_id),active.output_path+'/workspace'),active.config).cancel_all()
                     if active.config.get('execution_backend')=='container':
@@ -217,6 +219,7 @@ def command(ident:str,body:GraphCommand):
                     if active.pid:
                         from runners.local import stop_group
                         stop_group(active.pid,active.process_created)
+                    finalize_cancelled_run_elapsed(active)
                     active.status='cancelled'; active.finished_at=now(); active.error='Stopped to apply owner edits'
                     interrupt_run_reservations(active.id,session=s)
                     edited=s.get(Node,action['node_id'])
@@ -283,6 +286,9 @@ def run_action(ident:str,action:str,body:dict=Body(default={})):
         if action in ('cancel','pause','resume') and s.bind.dialect.name=='sqlite': s.execute(sql_text('BEGIN IMMEDIATE'))
         r=get(s,TaskRun,ident)
         if action=='retry':
+            from services.worker.scheduler import _lock_project
+            _lock_project(s,r.project_id)
+            r=s.scalar(select(TaskRun).where(TaskRun.id==ident).with_for_update().execution_options(populate_existing=True))
             if r.status not in TERMINAL: error('RUN_ACTIVE','Only stopped runs can be restarted',409)
             requested_timeout,_=requested_task_timeout(s,r)
             return asdict(enqueue(s,r.project_id,r.kind,r.config,body.get('request_id'),s.get(Node,r.node_id) if r.node_id else None,r.dependencies,
@@ -308,22 +314,35 @@ def run_action(ident:str,action:str,body:dict=Body(default={})):
                 from runners.remote import cancel_remote
                 cancel_remote(r.config,safe_path(project_dir(r.project_id),r.output_path))
             if r.pid: stop_group(r.pid,r.process_created)
+            finalize_cancelled_run_elapsed(r)
             r.status='cancelled'; r.finished_at=now(); r.error='Stopped by owner'
             interrupt_run_reservations(r.id,session=s)
         elif action=='pause':
             if r.status not in ('queued','waiting','budget_exhausted','running'): error('INVALID_RUN_STATE','Run is not running or queued',409)
             container_state=None
             from research.execution.process_manager import process_manager
-            process_manager(safe_path(project_dir(r.project_id),r.output_path+'/workspace'),r.config).signal_all(signal.SIGSTOP)
+            manager=process_manager(safe_path(project_dir(r.project_id),r.output_path+'/workspace'),r.config)
+            managed_before=manager.all()
+            manager.signal_all(signal.SIGSTOP)
             if r.config.get('execution_backend')=='container':
                 from runners.container import control_container
                 container_state=control_container(r.config,safe_path(project_dir(r.project_id),r.output_path),'pause')
-            if r.status in ('queued','waiting','budget_exhausted'): r.status='paused'
+            if r.status in ('queued','waiting','budget_exhausted'):
+                if r.status in ('waiting','budget_exhausted'):
+                    resource={**(r.resource or {}),'elapsed_seconds':_elapsed_seconds_at(r)}
+                    resource.pop('waiting_started_at',None); resource.pop('elapsed_before_wait',None)
+                    r.resource=resource
+                r.status='paused'
+                live_managed=any(item['status'] not in ('completed','failed','cancelled','lost') for item in managed_before)
+                live_container=container_state and container_state.get('status') in ('running','paused','starting')
+                if live_managed or live_container:
+                    r.resource={**(r.resource or {}),'paused_live_attempt':True}
             elif r.status=='running':
                 r.status='pausing'
                 if r.pid and signal_group(r.pid,r.process_created,signal.SIGSTOP): r.status='paused'
                 elif container_state and container_state['status']=='paused': r.status='paused'; r.pid=None; r.process_created=None
                 else: error('PROCESS_UNAVAILABLE','Cannot pause a process that is no longer running',409)
+                r.resource={**(r.resource or {}),'paused_live_attempt':True}
         elif action=='resume':
             legacy_context_failure = (r.kind=='agent' and r.status=='failed' and
                 str(r.error or '').startswith(('Task controls exceed the configured context_char_budget;',
@@ -332,26 +351,30 @@ def run_action(ident:str,action:str,body:dict=Body(default={})):
             requested_timeout,timeout_source=requested_task_timeout(s,r)
             project_budget=project.budget or {}
             other_runs=s.scalars(select(TaskRun).where(TaskRun.project_id==r.project_id,TaskRun.id!=r.id))
-            other_elapsed=sum(float(item.resource.get('elapsed_seconds',0)) for item in other_runs)
-            project_limit=(max(0,float(project_budget['seconds'])-other_elapsed)
-                           if project_budget.get('seconds') is not None else None)
-            effective_timeout=_bounded_timeout(requested_timeout,project_limit)
-            elapsed=float((r.resource or {}).get('elapsed_seconds',0))
-            if effective_timeout is not None and elapsed>=effective_timeout:
-                error('TIME_BUDGET_EXHAUSTED','No project or task time budget remains for this run',409)
+            other_elapsed=sum(_elapsed_seconds_at(item) for item in other_runs)
+            elapsed=_elapsed_seconds_at(r)
+            time_budget=dict((r.resource or {}).get('time_budget') or {})
+            time_budget['requested_task_timeout_seconds']=requested_timeout
+            r.resource={**(r.resource or {}),'elapsed_seconds':elapsed,'time_budget':time_budget}
+            reserved,held_by_other=reserve_project_time(s,project,r)
+            if not reserved: error('TIME_BUDGET_EXHAUSTED','No project or task time budget remains for this run',409)
+            effective_timeout=(r.resource.get('time_budget') or {}).get('effective_total_timeout_seconds')
+            resource=dict(r.resource or {})
+            resource.pop('paused_live_attempt',None)
+            resource.pop('live_process_pending_dispatch',None)
+            if r.status in ('waiting','budget_exhausted'):
+                resource.pop('waiting_started_at',None); resource.pop('elapsed_before_wait',None)
+            r.resource=resource
             time_budget=dict((r.resource or {}).get('time_budget') or {})
             resume_record={'resumed_at':now(),'requested_task_timeout_seconds':requested_timeout,
                            'requested_timeout_source':timeout_source,'effective_total_timeout_seconds':effective_timeout,
                            'project_budget_seconds':project_budget.get('seconds'),
                            'project_revision':project.revision,'other_run_elapsed_seconds':other_elapsed,
-                           'run_elapsed_seconds':elapsed}
-            time_budget.update(requested_task_timeout_seconds=requested_timeout,
-                               effective_total_timeout_seconds=effective_timeout,
-                               project_budget_seconds_at_resume=project_budget.get('seconds'),
+                           'other_run_reserved_seconds':held_by_other,'run_elapsed_seconds':elapsed}
+            time_budget.update(project_budget_seconds_at_resume=project_budget.get('seconds'),
                                project_revision_at_resume=project.revision,
                                resume_history=[*time_budget.get('resume_history',[]),resume_record])
-            r.resource={**(r.resource or {}),'time_budget':time_budget}
-            r.config={**(r.config or {}),'timeout':effective_timeout}
+            r.resource={**r.resource,'time_budget':time_budget}
             emit(s,r.project_id,'run_time_budget_recalculated',{'run_id':r.id,**resume_record})
             if r.kind=='agent' and (legacy_context_failure or r.config.get('context_policy')!='automatic'):
                 change={'changed_at':now(),'previous':r.config.get('context_policy','legacy'),
@@ -381,19 +404,30 @@ def run_action(ident:str,action:str,body:dict=Body(default={})):
                     r.config={**r.config,'agent_budget':updated,'agent_budget_changes':[*r.config.get('agent_budget_changes',[]),change]}
                     emit(s,r.project_id,'agent_budget_changed',{'run_id':r.id,**change})
             from research.execution.process_manager import process_manager
-            process_manager(safe_path(project_dir(r.project_id),r.output_path+'/workspace'),r.config).signal_all(signal.SIGCONT)
-            if r.config.get('execution_backend')=='container':
-                from runners.container import control_container
-                control_container(r.config,safe_path(project_dir(r.project_id),r.output_path),'resume')
+            manager=process_manager(safe_path(project_dir(r.project_id),r.output_path+'/workspace'),r.config)
+            managed_before=manager.all()
             if r.pid:
-                if signal_group(r.pid,r.process_created,signal.SIGCONT): r.status='running'
+                manager.signal_all(signal.SIGCONT)
+                if signal_group(r.pid,r.process_created,signal.SIGCONT):
+                    if r.config.get('execution_backend')=='container':
+                        from runners.container import control_container
+                        control_container(r.config,safe_path(project_dir(r.project_id),r.output_path),'resume')
+                    r.status='running'
                 elif legacy_context_failure:
                     r.pid=None; r.process_created=None; r.status='queued'; r.config={**r.config,'_next_attempt':{'mode':'continue'}}
                 elif r.config.get('execution_backend')=='container':
                     r.pid=None; r.process_created=None; r.status='queued'; r.config={**r.config,'_next_attempt':{'mode':'container_reconnect'}}
+                    r.resource={**r.resource,'container_reconnect_pending_dispatch':True}
                 else: error('PROCESS_UNAVAILABLE','Paused process was lost; restart the run',409)
             else:
-                r.status='queued'; r.config={**r.config,'_next_attempt':{'mode':'continue'}}
+                next_mode='container_reconnect' if r.config.get('execution_backend')=='container' else 'continue'
+                r.status='queued'; r.config={**r.config,'_next_attempt':{'mode':next_mode}}
+                if r.config.get('execution_backend')=='container':
+                    r.resource={**r.resource,'container_reconnect_pending_dispatch':True}
+                elif any(item['status'] not in ('completed','failed','cancelled','lost') for item in managed_before):
+                    # Keep a paused managed child stopped until the worker has
+                    # reacquired project budget and records the queue interval.
+                    r.resource={**r.resource,'live_process_pending_dispatch':True}
         elif action=='skip':
             if r.status!='queued': error('INVALID_RUN_STATE','Only queued steps may be skipped',409)
             r.status='skipped'; r.finished_at=now()
@@ -416,13 +450,34 @@ async def events(ident:str,request:Request):
     async def stream():
         cursor=request.headers.get('last-event-id',''); last=0
         if cursor:
-            try: last=int(cursor)
+            try: last=max(int(cursor),0)
             except ValueError: pass
         yield 'event: connected\ndata: {}\n\n'
+        first_poll=True
         while not await request.is_disconnected():
             with Session() as s:
+                gap=None
+                if first_poll:
+                    first_poll=False
+                    oldest,latest=s.execute(select(func.min(Event.sequence),func.max(Event.sequence)).where(Event.project_id==ident)).one()
+                    latest=latest or 0
+                    if last>latest:
+                        oldest=oldest or 0
+                        gap={'requested_after_sequence':last,'oldest_available_sequence':oldest,
+                             'latest_available_sequence':latest,'resume_after_sequence':latest}
+                        last=latest
                 rows=list(s.scalars(select(Event).where(Event.project_id==ident,Event.sequence>last).order_by(Event.sequence).limit(100)))
-                for e in rows: last=e.sequence; yield f'id: {last}\nevent: {e.type}\ndata: {json.dumps(e.data)}\n\n'
+                if rows and rows[0].sequence>last+1:
+                    first=rows[0].sequence
+                    latest=s.scalar(select(func.max(Event.sequence)).where(Event.project_id==ident)) or rows[-1].sequence
+                    latest=max(latest,rows[-1].sequence)
+                    gap={'requested_after_sequence':last,'oldest_available_sequence':first,
+                         'latest_available_sequence':latest,'resume_after_sequence':latest}
+                    last=latest
+            if gap:
+                yield f'id: {last}\nevent: cursor_reset\ndata: {json.dumps(gap)}\n\n'
+                continue
+            for e in rows: last=e.sequence; yield f'id: {last}\nevent: {e.type}\ndata: {json.dumps(e.data)}\n\n'
             yield ': heartbeat\n\n'; await asyncio.sleep(1)
     return StreamingResponse(stream(),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
 _provider_health_cache={}

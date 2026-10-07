@@ -503,7 +503,7 @@ operation("post", "/api/runs/{ident}/{action}", "Runs", "Control a saved run",
 operation("get", "/api/runs/{ident}/output", "Runs", "Read a byte-cursor output page",
     "Read stdout.txt at max(offset,0), at most min(limit,1000000) bytes, decode with replacement and return the next byte offset. Optional case-insensitive search filters lines AFTER the cursor advances. A missing output file returns empty text at the requested nonnegative offset.", ref("OutputPage"), errors={404: "NOT_FOUND"}, parameters={"offset": "Byte offset, not line number.", "limit": "Maximum bytes; default 100000, capped at 1000000.", "search": "Case-insensitive literal filter on the already-read lines."})
 operation("get", "/api/projects/{ident}/events", "Events", "Subscribe to project change events",
-    "Server-Sent Events, not JSON. Begin with event: connected and data: {}. Persisted events include id: sequence, event: event.type and JSON data: event.data. Reconnect with Last-Event-ID to replay later sequences in batches of 100. Invalid/missing cursor starts at zero. Send a comment heartbeat roughly once per second; the stream ends on disconnect. Headers Cache-Control:no-cache and X-Accel-Buffering:no.", S, media=("text/event-stream",), errors={404: "NOT_FOUND"})
+    "Server-Sent Events, not JSON. Begin with event: connected and data: {}. Persisted events include id: sequence, event: event.type and JSON data: event.data. Reconnect with Last-Event-ID to replay later sequences in batches of 100. If retained history starts after the requested cursor or the cursor exceeds the latest saved event, emit cursor_reset with id: resume_after_sequence and JSON requested_after_sequence, oldest_available_sequence, latest_available_sequence and resume_after_sequence; reread authoritative REST state, then continue from that ID. With no saved events, an ahead cursor resets to checkpoint 0. Invalid/missing cursor starts at zero and can also require this reset. Send a comment heartbeat roughly once per second; the stream ends on disconnect. Headers Cache-Control:no-cache and X-Accel-Buffering:no.", S, media=("text/event-stream",), errors={404: "NOT_FOUND"})
 operation("get", "/api/system", "System", "Read runtime and provider availability",
     "Return CPU/memory/disk/GPU and worker heartbeat views. GPU counters are strings from nvidia-smi; latex is an executable path or null. Provider availability checks model-list transport (15-second cache), distinct from the saved chat test. No scientific run is launched.", ref("SystemState"))
 operation("get", "/api/settings", "Configuration", "Read application preferences",
@@ -679,7 +679,7 @@ operation("post", "/api/projects/{ident}/graph/batch", "Graph", "Apply a batch o
 operation("post", "/api/projects/{ident}/statistics/review", "Experiments", "Enqueue an independent statistics review",
     "Merge the extensible body, force review_scope=statistics and return queued Run. Optional request_id controls scheduler reuse; review findings arrive through saved run/resource output.", ref("Run"), body="JsonObject", errors={404: "NOT_FOUND"})
 operation("post", "/api/projects/{ident}/statistics/paired", "Experiments", "Enqueue paired real-data inference",
-    "Require project-relative existing path and unit_column/baseline_column/candidate_column. Worker analysis_type=paired uses independent unit clusters; optional direction lower/higher, confidence, bootstrap_samples, seed and meaningful_effect configure the analysis. Return Run, not a confidence interval immediately.", ref("Run"), body="PairedStatisticsRequest", errors={403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 422: "MISSING_FIELD"})
+    "Require project-relative existing path and unit_column/baseline_column/candidate_column. Worker analysis_type=paired uses independent unit clusters; optional direction lower/higher, confidence, bootstrap_samples, seed and meaningful_effect configure the analysis. When required policy or an explicit verifier guard applies, path must select the uniquely admitted source-bound checked artifact or its verified graph input copy. Optional unguarded requests remain available. Return Run, not a confidence interval immediately.", ref("Run"), body="PairedStatisticsRequest", errors={403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 422: "MISSING_FIELD"})
 operation("patch", "/api/projects/{ident}/objective", "Research", "Replace the editable comparison objective",
     "Trim metric; blank/omitted metric clears the objective. direction defaults min and must be min/max. comparison_fields defaults dataset/protocol_version. Increment PROJECT revision and return the objective object only. No expected_revision guard.", J, body="ObjectiveRequest", errors={404: "NOT_FOUND", 422: "INVALID_OBJECTIVE"})
 operation("post", "/api/projects/{ident}/repositories/clone", "Repositories", "Validate and enqueue a Git checkout",
@@ -793,7 +793,7 @@ def enhance_openapi(schema: dict[str, Any]) -> dict[str, Any]:
             parameters = current.setdefault("parameters", [])
             if not any(item.get("name", "").lower() == "last-event-id" and item.get("in") == "header" for item in parameters):
                 parameters.append({"name": "Last-Event-ID", "in": "header", "required": False,
-                    "schema": {"type": "string"}, "description": "Last delivered integer sequence, encoded as a string. Missing/invalid values replay from zero."})
+                    "schema": {"type": "string"}, "description": "Last delivered integer sequence, encoded as a string. Missing/invalid values replay from zero; if retained events begin later or the cursor is ahead of the latest event, the stream emits cursor_reset and a resynchronization cursor."})
     return result
 
 
@@ -1066,7 +1066,15 @@ SSE endpoint `/api/projects/{id}/events` returns `text/event-stream`. It starts
 with `event: connected` and `data: {}`. Persisted events use an integer sequence
 as `id`, their saved type as the named event, and JSON `data`. Replay later
 sequences with the `Last-Event-ID` header; invalid strings fall back to zero.
-Heartbeats are SSE comments, not data events. Use EventSource with same-origin
+If the requested cursor predates retained history or is ahead of the latest
+saved event, the stream emits a synthetic
+`cursor_reset` control event with `id` set to `resume_after_sequence` and JSON
+fields `requested_after_sequence`, `oldest_available_sequence`,
+`latest_available_sequence`, and `resume_after_sequence`. Reread authoritative
+REST state after this event; the stream then continues after the resume cursor.
+With no saved events, an ahead cursor resets to checkpoint `0`.
+Heartbeats are SSE comments, not
+data events. Use EventSource with same-origin
 cookies or a fetch-based streaming client capable of setting authentication and
 cursor headers. Do not put owner tokens into query strings.
 

@@ -150,9 +150,15 @@ def execute(run_id):
                 target=workspace/f.relative_to(source_workspace); target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(f,target)
     for binding in (config.get('resolved_inputs',[]) if config.get('execution_attempt',{}).get('number',1)==1 else []):
         origin=safe_path(root,binding['source_path'],True); destination=safe_path(workspace,binding['destination']); destination.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(origin,destination)
+    paired_input=None
     if kind!='verification':
         with Session() as s:
-            gate=verification_gate(s,get(s,TaskRun,run_id),copied_workspace=workspace)
+            live=get(s,TaskRun,run_id)
+            gate=verification_gate(s,live,copied_workspace=workspace)
+            if gate['ready'] and kind=='analysis' and config.get('analysis_type')=='paired':
+                from services.api.verification import admitted_paired_input
+                paired_input=admitted_paired_input(s,live,copied_workspace=workspace,
+                    guarded=bool(gate.get('guarded')))
         if not gate['ready']:
             from research.agents.runtime import AgentYield
             with Session.begin() as s:
@@ -296,10 +302,16 @@ def execute(run_id):
         return result
     if kind=='analysis' and config.get('analysis_type')=='paired':
         from research.validation.statistics import paired_csv
-        data=safe_path(root,config['path'],True)
+        data=paired_input['path'] if paired_input else safe_path(root,config['path'],True)
         result=paired_csv(data,unit_column=config['unit_column'],baseline_column=config['baseline_column'],candidate_column=config['candidate_column'],direction=config.get('direction','lower'),confidence=float(config.get('confidence',.95)),bootstrap_samples=int(config.get('bootstrap_samples',5000)),seed=int(config.get('seed',0)),meaningful_effect=float(config.get('meaningful_effect',0)),output=output/'metrics.json')
         with Session.begin() as s:
-            item=Analysis(project_id=pid,title=config.get('title','Paired statistical analysis'),data={**result,'run_ids':config.get('run_ids',[]),'path':str(data.relative_to(root))},status='ready_for_review');s.add(item)
+            provenance={}
+            run_ids=list(config.get('run_ids',[]))
+            if paired_input:
+                run_ids=list(dict.fromkeys([*run_ids,paired_input['source_run_id']]))
+                provenance={'source_run_id':paired_input['source_run_id'],
+                    'source_path':paired_input['source_path'],'checked_path':paired_input['checked_path']}
+            item=Analysis(project_id=pid,title=config.get('title','Paired statistical analysis'),data={**result,'run_ids':run_ids,'path':str(data.relative_to(root)),**({'verification_input':provenance} if provenance else {})},status='ready_for_review');s.add(item)
         return result
     if kind=='review' and config.get('review_scope')=='statistics':
         from research.validation.review import statistical_review_prompt,validate_statistical_review

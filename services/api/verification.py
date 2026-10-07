@@ -26,8 +26,8 @@ def _contract(config):
 
 
 def latest_node_run(session, node):
-    """A newer queued or failed attempt supersedes older successful evidence."""
-    return session.scalar(select(TaskRun).where(TaskRun.node_id == node.id)
+    """Only attempts of the current revision can supersede current evidence."""
+    return session.scalar(select(TaskRun).where(TaskRun.node_id == node.id, TaskRun.node_revision == node.revision)
                           .order_by(TaskRun.created_at.desc(), TaskRun.id.desc()).limit(1))
 
 
@@ -342,6 +342,90 @@ def _same_file(left, right):
                 return True
 
 
+def admitted_paired_input(session, run, *, copied_workspace=None, guarded=False):
+    """Resolve a guarded paired consumer to the artifact its checks admitted.
+
+    Returns None for unguarded work or when the selected path has no unique
+    source-bound accepted artifact. A graph-bound copy is preferred after the
+    worker has copied and checked it into the consumer workspace.
+    """
+    if (not guarded or run.kind != 'analysis' or
+            run.config.get('analysis_type') != 'paired'):
+        return None
+    requested_path = run.config.get('path')
+    if not isinstance(requested_path, str) or not requested_path:
+        return None
+    try:
+        requested_file = safe_path(project_dir(run.project_id), requested_path)
+    except HTTPException:
+        requested_file = None
+
+    sources = [session.get(TaskRun, identifier) for identifier in list(dict.fromkeys(
+        [*run.dependencies, *(run.config.get('run_ids') or [])]))]
+    sources = [source for source in sources if source and source.project_id == run.project_id
+               and source.kind != 'verification']
+
+    def accepted_artifacts(source):
+        current = verification_for_run(session, source)
+        for verdict in current.get('verifications', []):
+            if verdict.get('verification_status') != 'accepted':
+                continue
+            root = _producer_workspace(source, verdict)
+            for relative in verdict.get('check_scope_paths', []):
+                if relative:
+                    yield verdict, root, relative
+
+    candidates = []
+    for binding in run.config.get('resolved_inputs', []):
+        source = next((item for item in sources
+                       if item.node_id == binding.get('source_node_id')), None)
+        if source is None:
+            continue
+        source_file = safe_path(project_dir(run.project_id), binding.get('source_path', ''))
+        for verdict, root, relative in accepted_artifacts(source):
+            checked = safe_path(root, relative)
+            bound_relative = binding.get('reference_path')
+            if bound_relative not in verdict.get('check_scope_paths', []):
+                if source_file.is_relative_to(root):
+                    bound_relative = source_file.relative_to(root).as_posix()
+                else:
+                    continue
+            if bound_relative != relative or not _same_file(source_file, checked):
+                continue
+            destination = binding.get('destination')
+            accepted_names = {binding.get('reference_path'), binding.get('source_path'), destination}
+            if requested_path not in accepted_names and requested_file != checked:
+                continue
+            consumed = checked
+            if copied_workspace is not None and destination:
+                copied = safe_path(copied_workspace, destination)
+                if not copied.is_file() or not _same_file(copied, checked):
+                    continue
+                consumed = copied
+            candidates.append({'path': consumed, 'source_path': binding.get('source_path'),
+                               'source_run_id': source.id, 'checked_path': relative})
+
+    # A standalone API request can point directly at an admitted producer
+    # artifact instead of creating an input copy first.
+    if requested_file is not None:
+        for source in sources:
+            for verdict, root, relative in accepted_artifacts(source):
+                if not requested_file.is_relative_to(root):
+                    continue
+                selected = requested_file.relative_to(root).as_posix()
+                if selected != relative or selected not in verdict.get('check_scope_paths', []):
+                    continue
+                checked = safe_path(root, relative)
+                if requested_file.is_file() and _same_file(requested_file, checked):
+                    candidates.append({'path': checked,
+                                       'source_path': checked.relative_to(project_dir(run.project_id)).as_posix(),
+                                       'source_run_id': source.id, 'checked_path': relative})
+
+    unique = {(item['source_run_id'], item['source_path'], item['checked_path']): item
+              for item in candidates}
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
+
 def verification_gate(session, run, *, resolved_inputs=None, copied_workspace=None):
     """Gate configured consumers using current source-bound, path-scoped checks."""
     if run.kind == 'verification':
@@ -431,7 +515,13 @@ def verification_gate(session, run, *, resolved_inputs=None, copied_workspace=No
             actual = safe_path(copied_workspace, binding['destination']) if copied_workspace is not None else safe_path(project_dir(run.project_id), binding['source_path'])
             if not _same_file(actual, verified):
                 return {'ready': False, 'blocked_reason': 'verification_input_changed', 'message': 'Resolved input differs from the checked producer artifact: ' + str(path), 'requirements': requirements}
-    return {'ready': True, 'requirements': requirements}
+        if run.kind == 'analysis' and run.config.get('analysis_type') == 'paired':
+            admitted = admitted_paired_input(session, run, copied_workspace=copied_workspace, guarded=True)
+            if admitted is None:
+                return {'ready': False, 'blocked_reason': 'verification_scope',
+                        'message': 'Guarded paired analysis must select one uniquely admitted, source-bound input artifact',
+                        'requirements': requirements}
+    return {'ready': True, 'requirements': requirements, 'guarded': guarded}
 
 
 def dispatch_verification(session, run, *, resolved_inputs=None):

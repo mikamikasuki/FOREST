@@ -32,6 +32,33 @@ def execute_child(folder):
     os.execvpe(request['command'][0], request['command'], env)
 
 
+def process_group_exists(process_group_id):
+    """Return whether a live process remains in the command's owned group.
+
+    ``killpg(pgid, 0)`` also succeeds for groups containing only zombies.
+    Those processes cannot write more output and no signal can make them exit,
+    so waiting for the group would leave the durable receipt nonterminal.
+    """
+    process_group_id = int(process_group_id)
+    for process in psutil.process_iter():
+        try:
+            if os.getpgid(process.pid) != process_group_id:
+                continue
+        except (ProcessLookupError, psutil.NoSuchProcess):
+            continue
+        except (PermissionError, psutil.AccessDenied):
+            # We cannot safely conclude that an inaccessible member is gone.
+            return True
+        try:
+            if process.status() != psutil.STATUS_ZOMBIE:
+                return True
+        except (ProcessLookupError, psutil.NoSuchProcess):
+            continue
+        except psutil.AccessDenied:
+            return True
+    return False
+
+
 def supervise(folder):
     with (folder / 'supervisor.lease').open('a') as lease:
         try:
@@ -47,11 +74,14 @@ def supervise(folder):
             process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), str(folder), '--child'],
                                        cwd=request['cwd'], stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
                                        start_new_session=True, close_fds=True)
-            state.update(status='running')
+            state.update(status='running', process_group_id=process.pid)
             atomic_json(folder / 'state.json', state)
             cancelled_at = None
             timed_out = False
-            while process.poll() is None:
+            # The command owns its process group. A shell or script may exit
+            # while a descendant is still writing to the task workspace, so
+            # keep this receipt nonterminal until the complete group is gone.
+            while process.poll() is None or process_group_exists(process.pid):
                 cancel = (folder / 'cancel.json').exists()
                 timed_out = bool(request.get('timeout') and time.time() - state['started_at'] >= float(request['timeout']))
                 if cancel or timed_out:

@@ -15,7 +15,7 @@ from services.api.db import *
 from services.api.common import get,project_dir,safe_path,emit
 from services.api.config import ROOT,settings
 from runners.local import process_matches,stop_group,process_tree_resources
-from services.worker.scheduler import ACTIVE
+from services.worker.scheduler import ACTIVE, _lock_project, reserve_project_time, freeze_budget_exhausted_elapsed
 
 from research.execution.recovery import recovery_decision, resource_request, admission
 from research.execution.process_manager import process_manager
@@ -23,6 +23,8 @@ from research.agents.budget import interrupt_run_reservations
 from runners.container import cancel_container, control_container, ContainerRunner
 
 PROCESS_STATES=('running','paused','pausing')
+WORKER_POLL_INTERVAL_SECONDS=0.4
+TIMEOUT_STOP_GRACE_SECONDS=0.1
 
 def capacity():
     return {'cpu': float(os.environ.get('FOREST_WORKER_CPU_SLOTS', os.cpu_count() or 1)),
@@ -76,6 +78,65 @@ def reservation_for(run):
     if run.config.get('execution_backend')!='container': request['cpu']=max(request['cpu'],len(managed))
     return request
 
+
+def pause_container_for_reconnect(config, output):
+    """Keep a detached live container stopped until its next run is admitted."""
+    handle = Path(output) / 'container_task.json'
+    if not handle.is_file():
+        return None
+    runner = ContainerRunner(config.get('container'))
+    job = json.loads(handle.read_text())
+    state = runner.status(job)
+    if state['status'] == 'running':
+        state = runner.pause(job)
+        if state['status'] == 'running':
+            raise RuntimeError('Container remained live while its executor was interrupted')
+    return state
+
+
+def _claim_queued_candidate(session, candidate):
+    """Claim a run using the shared project -> task lock order."""
+    project = _lock_project(session, candidate.project_id)
+    run = session.scalar(select(TaskRun).where(
+        TaskRun.id == candidate.id, TaskRun.status == 'queued'
+    ).with_for_update(skip_locked=True).execution_options(populate_existing=True))
+    return run, project
+
+
+def _lock_waiting_snapshot(session, value):
+    """Refresh a yielded run after taking the API's project -> run locks."""
+    _lock_project(session, value['project_id'])
+    run = session.scalar(select(TaskRun).where(TaskRun.id == value['id'])
+        .with_for_update().execution_options(populate_existing=True))
+    if not run or run.status != value['status']:
+        return None
+    current = run.resource or {}
+    observed = value.get('resource') or {}
+    if current.get('waiting_started_at') != observed.get('waiting_started_at'):
+        return None
+    return run
+
+
+def resume_live_process_for_dispatch(config, workspace, resource):
+    """Continue a yielded local child only after its run passes admission."""
+    if (config.get('execution_backend') != 'container' and
+            (resource or {}).get('live_process_pending_dispatch')):
+        process_manager(workspace, config).signal_all(signal.SIGCONT)
+
+
+def _waiting_outcome_resource(resource, outcome, observed_at=None):
+    """Persist a live wait clock only while work is actually waiting to resume."""
+    value = {**(resource or {}), 'wait_for': outcome.get('wait_for', {}),
+             'resume_after': outcome.get('resume_after')}
+    if outcome.get('status') == 'waiting':
+        value['waiting_started_at'] = time.time() if observed_at is None else observed_at
+        value['elapsed_before_wait'] = value.get('elapsed_seconds', 0)
+    else:
+        value.pop('waiting_started_at', None)
+        value.pop('elapsed_before_wait', None)
+    return value
+
+
 class WorkerLoop:
     def __init__(self):
         self.id=uid(); self.stopping=False; self.processes={}; self.log_offsets={}; self.last_heartbeat=0
@@ -127,11 +188,19 @@ class WorkerLoop:
             elif engine.dialect.name=='postgresql':
                 if not s.scalar(text('SELECT pg_try_advisory_xact_lock(824713)')): return
             reservations=[(x.id,request) for x in s.scalars(select(TaskRun).where(TaskRun.status.in_((*PROCESS_STATES,'queued','waiting','waiting_input','budget_exhausted')))) if (request:=reservation_for(x)) is not None]
-            candidates=list(s.scalars(select(TaskRun).where(TaskRun.status=='queued').order_by(TaskRun.priority.desc(),TaskRun.created_at).with_for_update(skip_locked=True)))
+            # Read candidate identities without row locks. Claim each run only
+            # after locking its project, matching API run-control's
+            # project -> run order and avoiding a PostgreSQL lock inversion.
+            candidates=list(s.execute(select(
+                TaskRun.id.label('id'), TaskRun.project_id.label('project_id'),
+                TaskRun.priority.label('priority'), TaskRun.created_at.label('created_at'),
+            ).where(TaskRun.status=='queued')))
             age_seconds=max(1,float(os.environ.get('FOREST_PRIORITY_AGING_SECONDS',300)))
             now_epoch=time.time()
             candidates.sort(key=lambda item: -(item.priority+(now_epoch-dt.datetime.fromisoformat(item.created_at).timestamp())/age_seconds))
-            for r in candidates:
+            for candidate in candidates:
+                r,p=_claim_queued_candidate(s,candidate)
+                if not r: continue
                 try: request=task_request(r.config)
                 except (ValueError,TypeError) as exc:
                     r.status='waiting_input'; r.error='Invalid task resource request: '+str(exc)
@@ -148,7 +217,7 @@ class WorkerLoop:
                 # Check the exact queued inputs after prerequisite runs finish.
                 from services.api.common import graph_from_db
                 from research.kernel import ArtifactResolver
-                project=get(s,Project,r.project_id); resolver=ArtifactResolver(project_dir(r.project_id),graph_from_db(s,project)); bound=[]; missing=[]
+                resolver=ArtifactResolver(project_dir(r.project_id),graph_from_db(s,p)); bound=[]; missing=[]
                 for reference in r.config.get('input_references',[]):
                     ref={'path':reference} if isinstance(reference,str) else dict(reference)
                     if not ref.get('path') and not ref.get('node_id'): continue
@@ -175,12 +244,21 @@ class WorkerLoop:
                 r.resource={**r.resource,'verification_gate':gate}
                 b=s.get(Branch,r.branch_id) if r.branch_id else None
                 if b and b.status in ('pruned','archived','disabled'): r.status='waiting_input'; r.error='Branch is paused/pruned/archived'; continue
-                p=get(s,Project,r.project_id)
                 if p.archived: r.status='waiting_input'; r.error='Project archived'; continue
-                consumed=sum(float(x.resource.get('elapsed_seconds',0)) for x in s.scalars(select(TaskRun).where(TaskRun.project_id==p.id)))
-                if p.budget.get('seconds') is not None and consumed>=float(p.budget['seconds']): r.status='waiting_input'; r.error='Project time budget exhausted'; continue
                 if r.config.get('breakpoint') and not r.config.get('breakpoint_passed'):
                     r.status='waiting_input'; r.error='Paused at configured before-node breakpoint'; r.config={**r.config,'breakpoint_passed':True}; continue
+                reserved, held_by_other = reserve_project_time(s,p,r)
+                if not reserved:
+                    if held_by_other > 0:
+                        # Another active run currently owns the remaining
+                        # project allowance. Retry this queued run after that
+                        # reservation is released or reduced.
+                        continue
+                    r.status='waiting_input'; r.resource={**r.resource,'blocked_reason':'time_budget_exhausted'}
+                    r.error='Project time budget exhausted before this run could start'
+                    emit(s,r.project_id,'run_changed',{'run_id':r.id,'status':r.status,'error':r.error,
+                        'blocked_reason':'time_budget_exhausted'})
+                    continue
                 output=safe_path(project_dir(r.project_id),r.output_path); output.mkdir(parents=True,exist_ok=True)
                 old_attempt=r.config.get('execution_attempt',{})
                 attempt={'id':uid(),'number':int(old_attempt.get('number',0))+1,'mode':r.config.get('_next_attempt',{}).get('mode','initial' if not old_attempt else 'continue'), 'started_at':now()}
@@ -188,8 +266,14 @@ class WorkerLoop:
                 if (output/'result.json').exists():
                     archive=output/'attempts'/str(old_attempt.get('number',0)); archive.mkdir(parents=True,exist_ok=True)
                     (output/'result.json').replace(archive/'result.json')
+                resume_live_process=bool((r.resource or {}).get('live_process_pending_dispatch'))
                 r.config={**r.config,'execution_attempt':attempt}; r.config.pop('_next_attempt',None)
-                r.resource={**r.resource,'elapsed_before_attempt':r.resource.get('elapsed_seconds',0)}
+                resource={**r.resource,'elapsed_before_attempt':r.resource.get('elapsed_seconds',0)}
+                resource.pop('container_reconnect_pending_dispatch',None)
+                resource.pop('live_process_pending_dispatch',None)
+                r.resource=resource
+                if resume_live_process:
+                    resume_live_process_for_dispatch(r.config,output/'workspace',{'live_process_pending_dispatch':True})
                 log=(output/'stdout.txt').open('ab',buffering=0)
                 env={**os.environ,'PYTHONUNBUFFERED':'1','PYTHONPATH':str(ROOT),'PATH':os.environ.get('PATH','')+':/opt/homebrew/bin','FOREST_RUN_ID':r.id,'FOREST_ATTEMPT_ID':attempt['id']}
                 recovery=r.config.get('recovery') or {}
@@ -208,13 +292,21 @@ class WorkerLoop:
             folder=safe_path(project_dir(value['project_id']),value['output_path'])
             managed=process_manager(folder/'workspace',value['config']).all()
             child_active=any(item['status'] not in ('completed','failed','cancelled','lost') for item in managed)
-            if value['status']=='budget_exhausted' and not child_active: continue
-            waiting_seconds=max(0,time.time()-float(value['resource'].get('waiting_started_at') or time.time()))
-            total=float(value['resource'].get('elapsed_before_wait',value['resource'].get('elapsed_seconds',0)))+waiting_seconds
-            timeout=value['config'].get('timeout')
+            if value['status']=='budget_exhausted' and not child_active:
+                with Session.begin() as s:
+                    live=_lock_waiting_snapshot(s,value)
+                    if live:
+                        freeze_budget_exhausted_elapsed(live)
+                continue
             with Session.begin() as s:
-                live=s.get(TaskRun,value['id'])
-                if live and live.status==value['status']: live.resource={**live.resource,'elapsed_seconds':total,'rss_bytes':sum(int(item.get('rss_bytes') or 0) for item in managed)}
+                live=_lock_waiting_snapshot(s,value)
+                if not live: continue
+                resource=live.resource or {}
+                waiting_seconds=max(0,time.time()-float(resource.get('waiting_started_at') or time.time()))
+                total=float(resource.get('elapsed_before_wait',resource.get('elapsed_seconds',0)))+waiting_seconds
+                timeout=(live.config or {}).get('timeout')
+                live.resource={**resource,'elapsed_seconds':total,
+                    'rss_bytes':sum(int(item.get('rss_bytes') or 0) for item in managed)}
             if timeout is not None and total>float(timeout):
                 folder=safe_path(project_dir(value['project_id']),value['output_path'])
                 process_manager(folder/'workspace',value['config']).cancel_all()
@@ -223,8 +315,9 @@ class WorkerLoop:
                     from runners.remote import cancel_remote
                     cancel_remote(value['config'],folder)
                 with Session.begin() as s:
-                    live=s.get(TaskRun,value['id'])
-                    if live and live.status==value['status']:
+                    live=_lock_waiting_snapshot(s,value)
+                    if live:
+                        freeze_budget_exhausted_elapsed(live)
                         live.status='budget_exhausted'; live.error='Configured task time budget exhausted while waiting for a process'
                         interrupt_run_reservations(live.id,session=s)
                         node=s.get(Node,live.node_id) if live.node_id else None
@@ -240,15 +333,15 @@ class WorkerLoop:
                     due=process.get('status') in ('completed','failed','cancelled','lost')
                 except (OSError,ValueError,KeyError,RuntimeError) as exc:
                     with Session.begin() as s:
-                        item=s.get(TaskRun,value['id'])
-                        if item and item.status=='waiting':
+                        item=_lock_waiting_snapshot(s,value)
+                        if item:
                             item.status='waiting_input'; item.error='Cannot inspect awaited process: '+str(exc)
                             emit(s,item.project_id,'run_changed',{'run_id':item.id,'status':item.status,'error':item.error})
                     continue
             if not due: continue
             with Session.begin() as s:
-                r=s.scalar(select(TaskRun).where(TaskRun.id==value['id']).with_for_update())
-                if r and r.status=='waiting':
+                r=_lock_waiting_snapshot(s,value)
+                if r:
                     r.status='queued'; r.pid=None; r.process_created=None
                     r.config={**r.config,'_next_attempt':{'mode':'continue'}}
                     emit(s,r.project_id,'run_resumed',{'run_id':r.id,'reason':'Awaited work is ready'})
@@ -291,6 +384,7 @@ class WorkerLoop:
             except (psutil.NoSuchProcess,psutil.AccessDenied): pass
         if value['status']=='paused' and alive: return
         timeout=value['config'].get('timeout')
+        timeout=float(timeout) if timeout is not None else None
         outcome=None
         if receipt.exists():
             try: candidate=json.loads(receipt.read_text())
@@ -302,14 +396,29 @@ class WorkerLoop:
                 # Never accept a receipt from a superseded attempt.
                 stale=output/'attempts'/'stale'; stale.mkdir(parents=True,exist_ok=True)
                 receipt.replace(stale/(str(time.time_ns())+'.json'))
-        if outcome is None and timeout is not None and before+elapsed>float(timeout):
+        overdue_elapsed=None
+        if timeout is not None:
+            if outcome is not None:
+                try: receipt_elapsed=max(0.0,float(outcome.get('elapsed_seconds',elapsed)))
+                except (TypeError,ValueError): receipt_elapsed=elapsed
+                if before+receipt_elapsed>timeout:
+                    overdue_elapsed=receipt_elapsed
+            elif before+elapsed>timeout:
+                overdue_elapsed=elapsed
+        if overdue_elapsed is not None:
             if value['config'].get('remote'):
                 from runners.remote import cancel_remote
                 cancel_remote(value['config'],output)
             process_manager(output/'workspace',value['config']).cancel_all()
             if value['config'].get('execution_backend')=='container': cancel_container(value['config'],output)
-            if alive: stop_group(value['pid'],value['process_created'])
-            outcome={'status':'failed','exit_code':124,'error':f'Task exceeded its {float(timeout):g}s budget','budget_exhausted':True}
+            if alive: stop_group(value['pid'],value['process_created'],grace=TIMEOUT_STOP_GRACE_SECONDS)
+            if value.get('started_at'):
+                started=dt.datetime.fromisoformat(value['started_at'])
+                if started.tzinfo is None: started=started.replace(tzinfo=dt.timezone.utc)
+                overdue_elapsed=max(overdue_elapsed,(dt.datetime.now(dt.timezone.utc)-started).total_seconds())
+            elapsed=max(elapsed,overdue_elapsed)
+            outcome={'status':'failed','exit_code':124,'error':f'Task exceeded its {timeout:g}s budget',
+                     'budget_exhausted':True,'elapsed_seconds':elapsed}
         elif outcome is None and not alive:
             outcome={'status':'interrupted','exit_code':proc.returncode if proc else None,'error':'Task process ended without a current completion receipt.'}
         with Session.begin() as s:
@@ -330,22 +439,25 @@ class WorkerLoop:
                 attempts=[*r.resource.get('attempts',[]),attempt]
                 r.resource={**r.resource,'attempts':attempts,'elapsed_seconds':before+float(outcome.get('elapsed_seconds',elapsed))}
                 decision=None
+                container_reconnect_pending=False
                 if outcome['status'] in ('interrupted','failed') and not outcome.get('budget_exhausted'):
                     decision=recovery_decision(r.config,output,kind=r.kind,failed=outcome['status']=='failed')
                     if r.config.get('execution_backend')=='container' and r.kind in ('command','experiment') and (not decision or decision.get('mode')!='checkpoint'):
                         decision=None  # Recreate work only from an explicitly configured, present task checkpoint.
                     if r.config.get('execution_backend')=='container' and outcome['status']=='interrupted' and (output/'container_task.json').exists():
-                        job=json.loads((output/'container_task.json').read_text())
-                        state=ContainerRunner(r.config.get('container')).status(job)
+                        state=pause_container_for_reconnect(r.config,output)
+                        container_reconnect_pending=state['status']=='paused'
                         if state['status'] in ('running','paused','starting','completed') or (state['status']=='failed' and not decision):
                             decision={'mode':'container_reconnect'}
                 if decision:
                     r.config={**r.config,'_next_attempt':decision,'_recovery_failures':int(r.config.get('_recovery_failures',0))+1}
+                    if decision.get('mode')=='container_reconnect' and container_reconnect_pending:
+                        r.resource={**r.resource,'container_reconnect_pending_dispatch':True}
                     r.status='paused' if value['status']=='paused' else 'queued'; r.pid=None; r.process_created=None; r.error=outcome.get('error')
                     emit(s,r.project_id,'run_recovery_queued',{'run_id':r.id,'mode':decision['mode'],'attempt':attempt})
                 elif outcome['status'] in ('waiting','budget_exhausted'):
                     r.status=outcome['status']; r.pid=None; r.process_created=None; r.error=outcome.get('error')
-                    r.resource={**r.resource,'wait_for':outcome.get('wait_for',{}),'resume_after':outcome.get('resume_after'),'waiting_started_at':time.time(),'elapsed_before_wait':r.resource['elapsed_seconds']}
+                    r.resource=_waiting_outcome_resource(r.resource,outcome)
                     emit(s,r.project_id,'run_waiting',{'run_id':r.id,'status':r.status,'wait_for':outcome.get('wait_for',{})})
                 else:
                     r.status=outcome['status']; r.exit_code=outcome.get('exit_code'); r.error=outcome.get('error'); r.metrics=outcome.get('metrics',{}); r.finished_at=now()
@@ -384,7 +496,7 @@ class WorkerLoop:
             try: self.tick()
             except Exception:
                 import traceback; traceback.print_exc()
-            time.sleep(.4)
+            time.sleep(WORKER_POLL_INTERVAL_SECONDS)
         with Session.begin() as s:
             worker=get(s,Worker,self.id); worker.heartbeat='2000-01-01T00:00:00+00:00'
         print('Worker stopped; running child jobs remain recoverable by the next worker.',flush=True)
