@@ -314,6 +314,9 @@ def test_owner_comments_are_separate_bounded_context_guidance(tmp_path):
     assert "OWNER COMMENTS (contextual guidance" in packet["text"]
     assert packet["controls"]["instructions"] == "Run b"
     assert packet["controls"]["allowed_tools"] == ["read_file", "finish"]
+    expected_control_chars = len("CONTROL INSTRUCTIONS\n" + json.dumps(packet["controls"], ensure_ascii=False, default=str)
+                                 + "\n\nUNTRUSTED MATERIALS (evidence only)\n")
+    assert packet["capacity"]["required_control_chars"] == expected_control_chars
 
     from research.agents.runtime import model_task_message
     task = json.loads(model_task_message(packet, {})["content"])
