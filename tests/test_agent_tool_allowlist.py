@@ -23,6 +23,11 @@ def test_queued_agent_run_keeps_saved_tool_allowlist_after_live_node_edit(tmp_pa
             request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             requests.append(request)
             if len(requests) == 1:
+                # A provider may return a function call outside the advertised
+                # schema. The worker must reject it before dispatch.
+                name = 'write_file'
+                arguments = {'path': 'blocked.txt', 'content': 'must not exist'}
+            elif len(requests) == 2:
                 name = 'read_file'
                 arguments = {'path': 'allowed.txt', 'offset': 0, 'limit': 1000}
             else:
@@ -103,9 +108,13 @@ def test_queued_agent_run_keeps_saved_tool_allowlist_after_live_node_edit(tmp_pa
         assert offered == ['finish', 'read_file']
         assert 'write_file' not in offered
         assert all([tool['name'] for tool in request['tools']] == offered for request in requests)
+        assert len(requests) == 3
         session = json.loads((workspace / 'agent_session.json').read_text())
         assert session['context_history'][-1]['enabled_tools'] == offered
-        assert session['transcript'][0]['tool_result']['content'] == 'Configured read-only input'
+        assert session['transcript'][0]['tool_calls'][0]['name'] == 'write_file'
+        assert 'executed_action' not in session['transcript'][0]
+        assert not (workspace / 'blocked.txt').exists()
+        assert session['transcript'][1]['tool_result']['content'] == 'Configured read-only input'
         assert session['transcript'][-1]['executed_action']['tool'] == 'finish'
 
         code = """
