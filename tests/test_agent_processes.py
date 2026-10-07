@@ -95,6 +95,40 @@ Path('late-marker.txt').write_text('child finished')
     assert (tmp_path / 'late-marker.txt').read_text() == 'child finished'
 
 
+def test_signal_all_reaches_child_after_parent_exit(tmp_path):
+    manager = ManagedProcesses(tmp_path)
+    child = """from pathlib import Path
+import os
+import time
+Path('child.started').write_text(str(os.getpid()))
+ticks = Path('ticks')
+while not Path('release').exists():
+    ticks.write_text(ticks.read_text() + 'x' if ticks.exists() else 'x')
+    time.sleep(.03)
+Path('child.finished').write_text('done')
+"""
+    state = manager.start(parent_starting_same_group_child(child))
+    process_id = state['process_id']
+    assert wait_for_file(tmp_path / 'child.started')
+    state = manager.inspect(process_id)
+    deadline = time.monotonic() + 4
+    while is_alive(state.get('pid'), state.get('process_created')) and time.monotonic() < deadline:
+        time.sleep(.01)
+        state = manager.inspect(process_id)
+    assert not is_alive(state.get('pid'), state.get('process_created'))
+
+    manager.signal_all(signal.SIGSTOP)
+    ticks_while_stopped = (tmp_path / 'ticks').read_text()
+    time.sleep(.12)
+    assert (tmp_path / 'ticks').read_text() == ticks_while_stopped
+
+    manager.signal_all(signal.SIGCONT)
+    (tmp_path / 'release').write_text('release')
+    result = completed(manager, process_id)
+    assert result['status'] == 'completed'
+    assert (tmp_path / 'child.finished').read_text() == 'done'
+
+
 def test_cancel_stops_child_after_parent_exit(tmp_path):
     manager = ManagedProcesses(tmp_path)
     child = """from pathlib import Path
