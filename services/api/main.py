@@ -148,7 +148,7 @@ def duplicate_project(ident:str):
         mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(resources.values())+[papers,runs]:
             for item in rows: mapping.setdefault(item['id'],uid())
-        new=make_project(s,p.name+' · Copy',p.goal,p.description,budget=copy.deepcopy(p.budget),config=copy.deepcopy(p.config))
+        new=make_project(s,p.name+' · Copy',p.goal,p.description,mode=p.mode,budget=copy.deepcopy(p.budget),config=copy.deepcopy(p.config))
         def remap(value):
             if isinstance(value,dict): return {k:remap(v) for k,v in value.items()}
             if isinstance(value,list): return [remap(v) for v in value]

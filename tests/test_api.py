@@ -341,6 +341,57 @@ def case_duplicate_retains_bindings_without_following_links(client, app):
     assert client.get(f"/api/projects/{copied['id']}/file", params={"path": "secret.txt"}).status_code == 404
 
 
+def case_project_copy_preserves_run_mode(client, app):
+    for mode in ("auto", "assisted", "manual"):
+        source = ok(client.post("/api/projects", json={
+            "name": f"{mode} mode copy",
+            "goal": "Preserve the selected run mode",
+            "mode": mode,
+            "budget": {"allow_paid": False},
+        }))
+
+        duplicate = ok(client.post(f"/api/projects/{source['id']}/duplicate", json={}))
+        assert duplicate["mode"] == mode
+        assert ok(client.get(f"/api/projects/{duplicate['id']}"))["mode"] == mode
+
+        archive = client.post(f"/api/projects/{source['id']}/export", json={})
+        assert archive.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as zipped:
+            manifest = json.loads(zipped.read("forest-project.json"))
+        assert manifest["project"]["mode"] == mode
+
+        imported = client.post(
+            "/api/projects/import",
+            files={"file": ("forest-project.zip", archive.content, "application/zip")},
+        )
+        imported_project = ok(imported)
+        assert imported_project["mode"] == mode
+        assert ok(client.get(f"/api/projects/{imported_project['id']}"))["mode"] == mode
+
+    legacy_source = ok(client.post("/api/projects", json={
+        "name": "legacy archive mode",
+        "goal": "Keep old archives compatible",
+        "mode": "manual",
+        "budget": {"allow_paid": False},
+    }))
+    archive = client.post(f"/api/projects/{legacy_source['id']}/export", json={})
+    assert archive.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(archive.content)) as zipped:
+        contents = {item.filename: zipped.read(item.filename) for item in zipped.infolist()}
+    manifest = json.loads(contents["forest-project.json"])
+    manifest["project"].pop("mode")
+    contents["forest-project.json"] = json.dumps(manifest).encode()
+    legacy_archive = io.BytesIO()
+    with zipfile.ZipFile(legacy_archive, "w", zipfile.ZIP_DEFLATED) as zipped:
+        for name, content in contents.items():
+            zipped.writestr(name, content)
+    imported_legacy = ok(client.post(
+        "/api/projects/import",
+        files={"file": ("legacy-project.zip", legacy_archive.getvalue(), "application/zip")},
+    ))
+    assert imported_legacy["mode"] == "assisted"
+
+
 def case_actual_terminal(client, app):
     p = create(client)
     with client.websocket_connect(f"/ws/projects/{p['id']}/terminal") as terminal:

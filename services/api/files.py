@@ -250,7 +250,7 @@ async def import_project(file:UploadFile=File(...)):
             'finished_at':imported_run_timestamp(r.get('finished_at'))
         }
     with Session.begin() as s:
-        orig=manifest['project']; p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),budget=orig.get('budget',{}),config=orig.get('config',{})); root=project_dir(p.id)
+        orig=manifest['project']; p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),mode=orig.get('mode','assisted'),budget=orig.get('budget',{}),config=orig.get('config',{})); root=project_dir(p.id)
         graph=manifest['graph']; old_id=graph['project_id']; mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(manifest.get('resources',{}).values())+[manifest.get('papers',[]),manifest.get('runs',[])]:
             for item in rows: mapping.setdefault(item['id'],uid())
