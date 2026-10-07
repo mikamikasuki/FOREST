@@ -412,6 +412,54 @@ def case_sse_cursor_gap_reset(client, app):
 
     asyncio.run(read_controls())
 
+    ahead = asyncio.run(first_frame(2000))
+    assert "id: 1201\n" in ahead and "event: cursor_reset\n" in ahead
+    ahead_payload = json.loads(ahead.split("data: ", 1)[1].strip())
+    assert ahead_payload == {"requested_after_sequence": 2000, "oldest_available_sequence": 700,
+                             "latest_available_sequence": 1201, "resume_after_sequence": 1201}
+
+    empty = project(client, document)
+    with Session() as session:
+        assert session.scalar(select(Event.sequence).where(Event.project_id == empty["id"]).limit(1)) is None
+
+    async def first_empty_frame(cursor):
+        request = Request({"type": "http", "method": "GET", "path": f"/api/projects/{empty['id']}/events",
+                           "headers": [(b"last-event-id", str(cursor).encode())]}, receive=receive)
+        stream = await events(empty["id"], request)
+        iterator = stream.body_iterator
+        try:
+            assert (await anext(iterator)).startswith("event: connected")
+            return await anext(iterator)
+        finally:
+            await iterator.aclose()
+
+    empty_reset = asyncio.run(first_empty_frame(500))
+    assert "id: 0\n" in empty_reset and "event: cursor_reset\n" in empty_reset
+    assert json.loads(empty_reset.split("data: ", 1)[1].strip()) == {
+        "requested_after_sequence": 500, "oldest_available_sequence": 0,
+        "latest_available_sequence": 0, "resume_after_sequence": 0}
+    with Session.begin() as session:
+        emit(session, empty["id"], "run_changed", {"n": 1})
+    first_after_empty_reset = asyncio.run(first_empty_frame(0))
+    assert "id: 1\n" in first_after_empty_reset and "event: run_changed\n" in first_after_empty_reset
+
+    async def current_cursor_receives_next_event():
+        request = Request({"type": "http", "method": "GET", "path": f"/api/projects/{empty['id']}/events",
+                           "headers": [(b"last-event-id", b"1")]}, receive=receive)
+        stream = await events(empty["id"], request)
+        iterator = stream.body_iterator
+        try:
+            assert (await anext(iterator)).startswith("event: connected")
+            assert await anext(iterator) == ": heartbeat\n\n"
+            with Session.begin() as session:
+                emit(session, empty["id"], "run_changed", {"n": 2})
+            return await anext(iterator)
+        finally:
+            await iterator.aclose()
+
+    next_event = asyncio.run(current_cursor_receives_next_event())
+    assert "id: 2\n" in next_event and "event: run_changed\n" in next_event
+
 
 def case_sse_cursor_legacy_repair(client, app):
     from sqlalchemy import select, text
