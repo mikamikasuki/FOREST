@@ -267,7 +267,13 @@ SSE endpoint `/api/projects/{id}/events` returns `text/event-stream`. It starts
 with `event: connected` and `data: {}`. Persisted events use an integer sequence
 as `id`, their saved type as the named event, and JSON `data`. Replay later
 sequences with the `Last-Event-ID` header; invalid strings fall back to zero.
-Heartbeats are SSE comments, not data events. Use EventSource with same-origin
+If the requested cursor predates retained history, the stream emits a synthetic
+`cursor_reset` control event with `id` set to `resume_after_sequence` and JSON
+fields `requested_after_sequence`, `oldest_available_sequence`,
+`latest_available_sequence`, and `resume_after_sequence`. Reread authoritative
+REST state after this event; the stream then continues after the resume cursor.
+Heartbeats are SSE comments, not
+data events. Use EventSource with same-origin
 cookies or a fetch-based streaming client capable of setting authentication and
 cursor headers. Do not put owner tokens into query strings.
 
@@ -470,12 +476,12 @@ Success `200`: `application/json`: `CleanupResult`.
 
 #### `GET /api/projects/{ident}/events`
 
-Server-Sent Events, not JSON. Begin with event: connected and data: {}. Persisted events include id: sequence, event: event.type and JSON data: event.data. Reconnect with Last-Event-ID to replay later sequences in batches of 100. Invalid/missing cursor starts at zero. Send a comment heartbeat roughly once per second; the stream ends on disconnect. Headers Cache-Control:no-cache and X-Accel-Buffering:no.
+Server-Sent Events, not JSON. Begin with event: connected and data: {}. Persisted events include id: sequence, event: event.type and JSON data: event.data. Reconnect with Last-Event-ID to replay later sequences in batches of 100. If retained history starts after the requested cursor, emit cursor_reset with id: resume_after_sequence and JSON requested_after_sequence, oldest_available_sequence, latest_available_sequence and resume_after_sequence; reread authoritative REST state, then continue from that ID. Invalid/missing cursor starts at zero and can also require this reset. Send a comment heartbeat roughly once per second; the stream ends on disconnect. Headers Cache-Control:no-cache and X-Accel-Buffering:no.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
 | `ident` | path | string | yes |  |
-| `Last-Event-ID` | header | string | no | Last delivered integer sequence, encoded as a string. Missing/invalid values replay from zero. |
+| `Last-Event-ID` | header | string | no | Last delivered integer sequence, encoded as a string. Missing/invalid values replay from zero; if retained events begin later, the stream emits cursor_reset and a resynchronization cursor. |
 
 Success `200`: `text/event-stream`: `string`.
 
