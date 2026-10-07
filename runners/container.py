@@ -35,6 +35,27 @@ def _relative(root, name):
     return target
 
 
+def _current_task_timeout(config):
+    """Read the persisted budget for worker-managed runs; standalone runs use config."""
+    run_id = os.environ.get('FOREST_RUN_ID')
+    if not run_id:
+        return config.get('timeout')
+    from services.api.db import Session, TaskRun
+    with Session() as session:
+        task = session.get(TaskRun, run_id)
+        if task is None:
+            raise RuntimeError('Cannot verify the current task time budget: run no longer exists')
+        if task.status in ('paused', 'pausing'):
+            return None
+        if task.status == 'queued':
+            # The worker starts this executor before committing its running
+            # transition. The queued snapshot still has the same timeout.
+            return config.get('timeout')
+        if task.status != 'running':
+            raise RuntimeError('Cannot enforce the current task time budget for a run that is no longer active')
+        return task.config.get('timeout')
+
+
 class ContainerRunner:
     def __init__(self, config=None):
         self.config = config or {}
@@ -269,7 +290,6 @@ def execute_container(config, workspace, output, env=None, require_metrics=False
             forwarded['FOREST_RESUME_PATH'] = resume_path
         job = runner.start(argv, workspace, task_id=task_id, env={**config.get('env', {}), **(env or {}), **forwarded}, receipt_path=handle_path)
     cursor = json.loads(cursor_path.read_text()) if cursor_path.exists() else None
-    timeout = config.get('timeout')
     while True:
         status = runner.status(job)
         chunk = runner.output(job, cursor) if status['status'] != 'lost' else {'text': '', 'cursor': cursor}
@@ -282,7 +302,15 @@ def execute_container(config, workspace, output, env=None, require_metrics=False
             if chunk['text']:
                 continue
             break
-        if timeout and status.get('started_at'):
+        try:
+            timeout = _current_task_timeout(config)
+        except Exception as exc:
+            try:
+                runner.stop(job)
+            except Exception as stop_exc:
+                raise RuntimeError('Cannot verify the current task time budget or stop its container') from stop_exc
+            raise RuntimeError('Cannot verify the current task time budget; its container was stopped') from exc
+        if timeout is not None and status.get('started_at'):
             from datetime import datetime, timezone
             started = datetime.fromisoformat(status['started_at'].replace('Z', '+00:00'))
             if (datetime.now(timezone.utc) - started).total_seconds() >= float(timeout):
