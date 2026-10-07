@@ -8,7 +8,7 @@ class Contract(BaseModel):
 class SourceRef(Contract):
     project_id: str
     epoch: str|None = None
-    kind: Literal['project', 'node', 'run', 'paper', 'file']
+    kind: Literal['project', 'node', 'run', 'paper', 'figure', 'file']
     object_id: str
     revision: int|None = None
     scope_id: str|None = None
@@ -16,6 +16,7 @@ class SourceRef(Contract):
     file_generation: int|None = None
     segment_id: str|None = None
     attempt_id: str|None = None
+    record_updated_at: str|None = None
 
 class ProgressFact(Contract):
     id: str

@@ -4199,7 +4199,7 @@ Additional properties: extensible JSON.
 | --- | --- | --- | --- |
 | `project_id` | string | yes |  |
 | `epoch` | string or null | no |  |
-| `kind` | string | yes |  Values: `project`, `node`, `run`, `paper`, `file`. |
+| `kind` | string | yes |  Values: `project`, `node`, `run`, `paper`, `figure`, `file`. |
 | `object_id` | string | yes |  |
 | `revision` | integer or null | no |  |
 | `scope_id` | string or null | no |  |
@@ -4207,6 +4207,7 @@ Additional properties: extensible JSON.
 | `file_generation` | integer or null | no |  |
 | `segment_id` | string or null | no |  |
 | `attempt_id` | string or null | no |  |
+| `record_updated_at` | string or null | no |  |
 
 Additional properties: rejected by the existing typed/schema-specific validator.
 

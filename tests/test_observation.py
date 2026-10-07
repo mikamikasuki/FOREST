@@ -36,7 +36,7 @@ def scenario():
     from fastapi.testclient import TestClient
     from sqlalchemy import select,func,update
     from services.api.main import app
-    from services.api.db import migrate,Session,Project,Branch,TaskRun,Node,PaperDocument,ModelRequest,Provider,uid
+    from services.api.db import migrate,Session,Project,Branch,TaskRun,Node,PaperDocument,Figure,ModelRequest,Provider,uid
     from services.api.common import project_dir,emit
     from services.observation.models import ObservationState,ObservationScope,ObservedFile,ReportJob,ReporterPolicy
     from services.observation.files import sync_scopes,reconcile,reference,resolve,observe
@@ -61,6 +61,9 @@ def scenario():
         new=TaskRun(id=uid(),project_id=pid,node_id=nid,branch_id=bid,request_id='new',status='failed',output_path='runs/new',node_revision=0)
         s.add_all([old,new]);n.extra={'latest_run_id':new.id};s.flush();sync_scopes(s,pid)
         paper=PaperDocument(project_id=pid,title='Unchanged',revision=7,status='compiled',data={'compiled_revision':6});s.add(paper);s.flush();paperid=paper.id
+        figure=Figure(project_id=pid,title='Historical source figure',status='ready_for_review',
+            data={'source_run_ids':[old.id],'visual_review_status':'selected'});s.add(figure);s.flush();figureid=figure.id
+        s.get(Project,pid).config={'controller':{'submission_quality':{'status':'ready','gaps':[]}}}
         before=(s.get(Project,pid).revision,s.get(Node,nid).revision,dict(paper.data),paper.status,s.scalar(select(func.count()).select_from(TaskRun)))
         scopes=list(s.scalars(select(ObservationScope).where(ObservationScope.project_id==pid)))
         ids={scope.kind+':'+scope.object_id:scope.id for scope in scopes}
@@ -70,6 +73,18 @@ def scenario():
     assert facts['run:'+old.id]['applicability']=='historical'
     assert facts['run:'+new.id]['applicability']=='current' and facts['run:'+new.id]['value']=='failed'
     assert 'compiled revision 6' in facts['paper:'+paperid]['value']
+    assert facts['figure:'+figureid]['applicability']=='historical'
+    assert 'visual review selected' in facts['figure:'+figureid]['value']
+    assert facts['delivery:'+pid]['applicability']=='not_checked'
+    figure_ref=SourceRef.model_validate(facts['figure:'+figureid]['sources'][0])
+    delivery_ref=SourceRef.model_validate(facts['delivery:'+pid]['sources'][0])
+    assert json.loads(resolve(figure_ref).content)['source_run_ids']==[old.id]
+    assert json.loads(resolve(delivery_ref).content)['last_recorded_delivery_audit']['current_applicability']=='not_checked'
+    with Session.begin() as s:
+        # Rendering updates data without incrementing the editable figure revision.
+        s.get(Figure,figureid).data={'source_run_ids':[new.id],'visual_review_status':'rejected'}
+    assert resolve(figure_ref).availability=='changed'
+    assert client.post(f'/api/projects/{pid}/progress/source',json={**figure_ref.model_dump(),'project_id':uid()}).status_code==422
     for status,section in [('queued','next'),('waiting','blocked'),('waiting_input','attention'),('paused','now'),('budget_exhausted','attention')]:
         with Session.begin() as s:
             run=s.get(TaskRun,new.id);run.status=status;run.resource={'blocked_reason':'dependency_failed'}

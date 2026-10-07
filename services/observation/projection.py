@@ -100,6 +100,9 @@ def project_snapshot(project_id, *, epoch, generation, previous_cursor=0):
             value=f'{status}; source revision {paper.revision}; compiled revision {compiled if compiled is not None else "unavailable"}'
             fact('paper:'+paper.id,'evidence','Manuscript '+paper.id[:8],value,SourceRef(epoch=epoch,project_id=project_id,kind='paper',object_id=paper.id,revision=paper.revision), 'not_checked',paper.updated_at)
             dependencies['paper:'+paper.id]=paper.updated_at
+        from .scientific import project_scientific_facts
+        extra,bindings=project_scientific_facts(s,p,epoch)
+        facts.extend(extra); dependencies.update(bindings)
         coverage=dict(s.execute(select(ObservationScope.coverage,func.count()).where(ObservationScope.project_id==project_id).group_by(ObservationScope.coverage)).all())
         file_state='pending' if not coverage else 'partial' if any(k!='complete' for k in coverage) else 'complete inventories; content bounds apply'
         node_count=s.scalar(select(func.count()).select_from(Node).where(Node.project_id==project_id))

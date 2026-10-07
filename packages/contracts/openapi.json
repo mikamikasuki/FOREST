@@ -5281,6 +5281,7 @@
               "node",
               "run",
               "paper",
+              "figure",
               "file"
             ],
             "title": "Kind",
@@ -5304,6 +5305,17 @@
           "project_id": {
             "title": "Project Id",
             "type": "string"
+          },
+          "record_updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Updated At"
           },
           "revision": {
             "anyOf": [

@@ -15,6 +15,13 @@ attempt or node revision exists. The evidence panel reports the last recorded
 check and its time; it does not recalculate scientific acceptance. Use **Run
 evidence** or **Inspect checked comparisons** to request the existing checks.
 
+The evidence panel also shows up to 20 saved figure records and the last saved
+controller delivery audit. Figure rendering, visual review and producer
+applicability remain separate. Superseded producers are historical; source bytes
+and delivery readiness are not rechecked by dashboard reads. Figure links bind
+the saved update time as well as revision, since a render can update outputs
+without advancing the editable figure revision.
+
 The browser shares one project event stream and reconciles every two seconds.
 The observer normally advances once per second for a small installation. Its age,
 coverage, unavailable native hints and event-history gaps are shown explicitly.

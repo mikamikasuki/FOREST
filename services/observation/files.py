@@ -11,7 +11,7 @@ import time
 import heapq
 from pathlib import Path, PurePosixPath
 from sqlalchemy import select, func, update, tuple_, or_, literal
-from services.api.db import Session, Project, Branch, Node, TaskRun, PaperDocument, now, uid
+from services.api.db import Session, Project, Branch, Node, TaskRun, PaperDocument, Figure, now, uid
 from services.api.common import project_dir, get, error
 from .models import ObservationState, ObservationScope, ObservedFile
 from .segments import index
@@ -276,18 +276,25 @@ def resolve(source):
         if not state or source.epoch!=state.epoch:
             return SourceView(source=source,availability='changed',parse_state='unavailable',note='Data epoch changed; resolve a fresh source reference.')
         if source.kind!='file':
-            model={'project':Project,'node':Node,'run':TaskRun,'paper':PaperDocument}[source.kind]
+            model={'project':Project,'node':Node,'run':TaskRun,'paper':PaperDocument,'figure':Figure}[source.kind]
             obj=get(s,model,source.object_id)
             owner=obj.id if source.kind=='project' else obj.project_id
             if owner!=source.project_id: error('SOURCE_SCOPE','Source does not belong to this project',404)
             revision=obj.node_revision if source.kind=='run' else obj.revision
             attempt=(obj.config.get('execution_attempt') or {}).get('id') if source.kind=='run' else None
-            if source.revision!=revision or source.attempt_id!=attempt:
+            if (source.revision!=revision or source.attempt_id!=attempt
+                    or source.record_updated_at is not None and source.record_updated_at!=obj.updated_at):
                 return SourceView(source=source,availability='changed',parse_state='record',note='Referenced record revision or attempt changed.')
             fields={'project':['id','revision','mode'], 'node':['id','revision','execution_status','research_status','deliverable_status'],
                     'run':['id','node_id','branch_id','node_revision','status','started_at','finished_at','exit_code'],
-                    'paper':['id','revision','status']}[source.kind]
+                    'paper':['id','revision','status'], 'figure':['id','revision','status']}[source.kind]
             value={field:getattr(obj,field) for field in fields}
+            if source.kind=='figure':
+                from .scientific import figure_record
+                value.update(figure_record(obj))
+            elif source.kind=='project':
+                from .scientific import delivery_record
+                value['last_recorded_delivery_audit']=delivery_record(obj)
             return SourceView(source=source,availability='available',content=json.dumps(value,indent=2),parse_state='record',
                               observed_at=obj.updated_at,note='Persisted source record. Execution completion is separate from scientific verification.')
         row=s.get(ObservedFile,source.object_id)
