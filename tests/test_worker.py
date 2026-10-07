@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
+from types import SimpleNamespace
 
 import httpx
 import psutil
@@ -239,6 +240,32 @@ def actual_worker(tmp_path_factory):
         harness.cleanup()
 
 
+def test_worker_claim_locks_project_before_task_run(monkeypatch):
+    from services.worker import main
+    from sqlalchemy.dialects import postgresql
+    events = []
+    project = object()
+    run = SimpleNamespace(status="queued")
+
+    class Session:
+        def scalar(self, statement):
+            events.append("run")
+            assert "FOR UPDATE SKIP LOCKED" in str(statement.compile(dialect=postgresql.dialect()))
+            return run
+
+    def lock_project(session, project_id):
+        events.append(("project", project_id))
+        return project
+
+    monkeypatch.setattr(main, "_lock_project", lock_project)
+    claimed, locked_project = main._claim_queued_candidate(
+        Session(), SimpleNamespace(id="run-id", project_id="project-id")
+    )
+    assert claimed is run
+    assert locked_project is project
+    assert events == [("project", "project-id"), "run"]
+
+
 def test_real_process_survives_client_close_and_api_restart(actual_worker):
     h = actual_worker
     _, node = h.project_node(seconds=3)
@@ -340,6 +367,404 @@ def test_cancel_terminates_executor_and_descendant(actual_worker):
     assert h.worker.poll() is None
 
 
+def test_cancel_records_consumed_time_before_releasing_project_reservation(actual_worker):
+    h = actual_worker
+    _, node = h.project_node(seconds=25, timeout=25,
+                            budget={"max_runs": 20, "seconds": 8, "allow_paid": False})
+    first = h.launch(node)
+    h.running(first)
+    time.sleep(0.25)
+    cancelled = h.request("POST", f"/api/runs/{first['id']}/cancel", json={})
+    assert cancelled["status"] == "cancelled"
+    consumed = cancelled["resource"]["elapsed_seconds"]
+    assert consumed >= 0.2
+
+    second = h.launch(node)
+    assert 0 < second["config"]["timeout"] < 8
+    assert abs(second["config"]["timeout"] - (8 - consumed)) < 0.4
+
+
+def test_cancel_while_paused_records_wall_elapsed_before_releasing_reservation(actual_worker):
+    h = actual_worker
+    _, node = h.project_node(seconds=25, timeout=25,
+                            budget={"max_runs": 20, "seconds": 8, "allow_paid": False})
+    first = h.launch(node)
+    h.running(first)
+    time.sleep(0.25)
+    paused = h.request("POST", f"/api/runs/{first['id']}/pause", json={})
+    assert paused["status"] == "paused"
+    time.sleep(0.3)
+    cancelled = h.request("POST", f"/api/runs/{first['id']}/cancel", json={})
+    assert cancelled["status"] == "cancelled"
+    consumed = cancelled["resource"]["elapsed_seconds"]
+    assert consumed >= 0.45
+
+    second = h.launch(node)
+    assert 0 < second["config"]["timeout"] < 8
+    assert abs(second["config"]["timeout"] - (8 - consumed)) < 0.4
+
+
+def test_resume_recalculates_against_current_project_time_budget(actual_worker):
+    h = actual_worker
+    project, node = h.project_node(seconds=25, timeout=25,
+                                   budget={"max_runs": 20, "seconds": 8, "allow_paid": False})
+    run = h.launch(node)
+    h.running(run)
+    time.sleep(0.25)
+    paused = h.request("POST", f"/api/runs/{run['id']}/pause", json={})
+    assert paused["status"] == "paused"
+
+    h.request("PATCH", f"/api/projects/{project['id']}", json={
+        "budget": {"max_runs": 20, "seconds": 4, "allow_paid": False},
+    })
+    resumed = h.request("POST", f"/api/runs/{run['id']}/resume", json={})
+    assert resumed["status"] == "running"
+    assert resumed["config"]["timeout"] == 4
+    assert resumed["resource"]["time_budget"]["effective_total_timeout_seconds"] == 4
+    cancelled = h.request("POST", f"/api/runs/{run['id']}/cancel", json={})
+    assert cancelled["status"] == "cancelled"
+
+
+def test_resume_restores_requested_timeout_when_project_time_budget_is_removed(actual_worker):
+    h = actual_worker
+    project, node = h.project_node(seconds=25, timeout=30,
+                                   budget={"max_runs": 20, "seconds": 4, "allow_paid": False})
+    run = h.launch(node)
+    assert run["config"]["timeout"] == 4
+    h.running(run)
+    time.sleep(0.25)
+    paused = h.request("POST", f"/api/runs/{run['id']}/pause", json={})
+    assert paused["status"] == "paused"
+
+    h.request("PATCH", f"/api/projects/{project['id']}", json={
+        "budget": {"max_runs": 20, "allow_paid": False},
+    })
+    resumed = h.request("POST", f"/api/runs/{run['id']}/resume", json={})
+    assert resumed["status"] == "running"
+    assert resumed["config"]["timeout"] == 30
+    assert resumed["resource"]["time_budget"]["effective_total_timeout_seconds"] == 30
+    assert resumed["resource"]["elapsed_seconds"] >= 0.2
+
+    cancelled = h.request("POST", f"/api/runs/{run['id']}/cancel", json={})
+    assert cancelled["status"] == "cancelled"
+
+
+def test_resume_rejects_live_paused_run_after_wall_clock_budget_is_spent(actual_worker):
+    h = actual_worker
+    _, node = h.project_node(seconds=25, timeout=25,
+                            budget={"max_runs": 20, "seconds": 1, "allow_paid": False})
+    run = h.launch(node)
+    h.running(run)
+    time.sleep(0.15)
+    paused = h.request("POST", f"/api/runs/{run['id']}/pause", json={})
+    assert paused["status"] == "paused" and paused["pid"] is not None
+
+    # A live paused executor still consumes the wall-clock project budget.
+    time.sleep(1.1)
+    resumed = h.client.post(f"/api/runs/{run['id']}/resume", json={})
+    assert resumed.status_code == 409, resumed.text
+    assert resumed.json()["detail"]["code"] == "TIME_BUDGET_EXHAUSTED"
+    current = h.run(run)
+    assert current["status"] == "paused"
+    cancelled = h.request("POST", f"/api/runs/{run['id']}/cancel", json={})
+    assert cancelled["status"] == "cancelled"
+
+
+def test_waiting_resume_admission_charges_time_since_worker_checkpoint():
+    from services.worker.scheduler import reserve_project_time
+
+    waiting_since = time.time() - 1.25
+    run = SimpleNamespace(
+        id="waiting-run",
+        status="waiting",
+        pid=None,
+        started_at=None,
+        config={"timeout": 10},
+        resource={
+            "elapsed_seconds": 1.0,
+            "elapsed_before_wait": 1.0,
+            "waiting_started_at": waiting_since,
+            "time_budget": {
+                "requested_task_timeout_seconds": 10,
+                "effective_total_timeout_seconds": 10,
+                "reservation_state": "held",
+            },
+        },
+    )
+
+    class Session:
+        def scalars(self, statement):
+            return [run]
+
+    project = SimpleNamespace(id="project", budget={"seconds": 2}, revision=4)
+    reserved, held_by_other = reserve_project_time(Session(), project, run)
+    assert not reserved
+    assert held_by_other == 0
+    assert run.resource["elapsed_seconds"] >= 2
+    assert run.resource["time_budget"]["reservation_state"] == "deferred"
+
+
+def test_paused_container_elapsed_limits_the_next_run_reservation():
+    from datetime import datetime, timedelta, timezone
+    from services.worker.scheduler import reserve_project_time
+
+    paused = SimpleNamespace(
+        id="paused-container-run",
+        status="paused",
+        pid=None,
+        started_at=(datetime.now(timezone.utc) - timedelta(seconds=1.5)).isoformat(),
+        config={"timeout": 0.6},
+        resource={
+            "elapsed_seconds": 0.2,
+            "elapsed_before_attempt": 0.0,
+            "paused_live_attempt": True,
+            "time_budget": {
+                "requested_task_timeout_seconds": 0.6,
+                "effective_total_timeout_seconds": 0.6,
+                "reservation_state": "held",
+            },
+        },
+    )
+    next_run = SimpleNamespace(
+        id="next-run",
+        status="queued",
+        pid=None,
+        started_at=None,
+        config={"timeout": 10},
+        resource={
+            "time_budget": {
+                "requested_task_timeout_seconds": 10,
+                "effective_total_timeout_seconds": 10,
+                "reservation_state": "held",
+            },
+        },
+    )
+
+    class Session:
+        def scalars(self, statement):
+            return [paused, next_run]
+
+    project = SimpleNamespace(id="project", budget={"seconds": 2.5}, revision=4)
+    reserved, held_by_other = reserve_project_time(Session(), project, next_run)
+    assert reserved
+    assert held_by_other == 0
+    # The paused container used about 1.5 seconds, leaving about 1 second.
+    # A checkpoint-only calculation would incorrectly leave about 1.9 seconds.
+    assert 0.8 < next_run.config["timeout"] < 1.1
+
+
+@pytest.mark.parametrize("pending_marker", [
+    "container_reconnect_pending_dispatch",
+    "live_process_pending_dispatch",
+])
+def test_resumed_live_attempt_queue_interval_is_included_before_worker_dispatch(pending_marker):
+    from datetime import datetime, timedelta, timezone
+    from services.worker.scheduler import reserve_project_time
+
+    resumed = SimpleNamespace(
+        id="resumed-container-run",
+        status="queued",
+        pid=None,
+        started_at=(datetime.now(timezone.utc) - timedelta(seconds=1.5)).isoformat(),
+        config={"timeout": 10},
+        resource={
+            "elapsed_seconds": 0.2,
+            "elapsed_before_attempt": 0.0,
+            pending_marker: True,
+            "time_budget": {
+                "requested_task_timeout_seconds": 10,
+                "effective_total_timeout_seconds": 10,
+                "reservation_state": "held",
+            },
+        },
+    )
+
+    class Session:
+        def scalars(self, statement):
+            return [resumed]
+
+    project = SimpleNamespace(id="project", budget={"seconds": 8}, revision=5)
+    reserved, held_by_other = reserve_project_time(Session(), project, resumed)
+    assert reserved
+    assert held_by_other == 0
+    assert resumed.resource["elapsed_seconds"] >= 1.4
+    assert resumed.resource[pending_marker] is True
+
+
+def test_live_child_continues_only_when_worker_dispatches_after_admission(tmp_path, monkeypatch):
+    import signal
+    from services.worker.main import resume_live_process_for_dispatch
+
+    events = []
+
+    class FakeManager:
+        def signal_all(self, signum):
+            events.append(signum)
+
+    monkeypatch.setattr("services.worker.main.process_manager", lambda workspace, config: FakeManager())
+    resume_live_process_for_dispatch(
+        {"execution_backend": "local"}, tmp_path,
+        {"live_process_pending_dispatch": True},
+    )
+    assert events == [signal.SIGCONT]
+    events.clear()
+    resume_live_process_for_dispatch(
+        {"execution_backend": "container"}, tmp_path,
+        {"live_process_pending_dispatch": True},
+    )
+    assert events == []
+
+
+def test_waiting_snapshot_refresh_does_not_overwrite_concurrent_resume():
+    from services.api.db import Project, TaskRun
+    from services.worker.main import _lock_waiting_snapshot
+
+    resumed = SimpleNamespace(
+        id="waiting-run",
+        status="queued",
+        resource={
+            "live_process_pending_dispatch": True,
+            "time_budget": {"effective_total_timeout_seconds": 12, "reservation_state": "held"},
+        },
+    )
+    project = SimpleNamespace(id="project")
+    statements = []
+
+    class Session:
+        bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        def scalar(self, statement):
+            statements.append(statement)
+            entity = statement.column_descriptions[0]["entity"]
+            return project if entity is Project else resumed
+
+    stale_waiting_snapshot = {
+        "id": resumed.id,
+        "project_id": project.id,
+        "status": "waiting",
+        "resource": {"waiting_started_at": 1234.0, "elapsed_before_wait": 4.0},
+    }
+    original_resource = dict(resumed.resource)
+
+    assert _lock_waiting_snapshot(Session(), stale_waiting_snapshot) is None
+    assert resumed.resource == original_resource
+    assert len(statements) == 2
+    assert all(statement._for_update_arg is not None for statement in statements)
+    assert statements[-1]._execution_options["populate_existing"] is True
+
+
+def test_budget_exhausted_elapsed_freezes_when_awaited_child_stops():
+    from datetime import datetime, timezone
+    from services.worker.scheduler import _elapsed_seconds_at, freeze_budget_exhausted_elapsed
+
+    exhausted = SimpleNamespace(status="budget_exhausted", resource={
+        "elapsed_seconds": 60,
+        "elapsed_before_wait": 40,
+        "waiting_started_at": 100.0,
+        "time_budget": {"effective_total_timeout_seconds": 80},
+    })
+    frozen_at = datetime.fromtimestamp(150.0, timezone.utc)
+
+    assert freeze_budget_exhausted_elapsed(exhausted, frozen_at) == 90
+    assert exhausted.resource["elapsed_seconds"] == 90
+    assert "waiting_started_at" not in exhausted.resource
+    assert "elapsed_before_wait" not in exhausted.resource
+    later = datetime.fromtimestamp(900.0, timezone.utc)
+    assert _elapsed_seconds_at(exhausted, later) == 90
+
+
+def test_budget_exhausted_receipt_does_not_start_an_idle_wait_clock():
+    from services.worker.main import _waiting_outcome_resource
+
+    resource = {
+        "elapsed_seconds": 75,
+        "waiting_started_at": 100.0,
+        "elapsed_before_wait": 60,
+    }
+    exhausted = _waiting_outcome_resource(
+        resource, {"status": "budget_exhausted", "wait_for": {"process_id": "p1"}},
+        observed_at=200.0,
+    )
+    assert exhausted["elapsed_seconds"] == 75
+    assert "waiting_started_at" not in exhausted
+    assert "elapsed_before_wait" not in exhausted
+
+    waiting = _waiting_outcome_resource(
+        {"elapsed_seconds": 75}, {"status": "waiting", "wait_for": {"process_id": "p1"}},
+        observed_at=200.0,
+    )
+    assert waiting["waiting_started_at"] == 200
+    assert waiting["elapsed_before_wait"] == 75
+
+
+def test_recovery_pauses_detached_running_container_before_queueing_reconnect(tmp_path, monkeypatch):
+    from services.worker.main import pause_container_for_reconnect
+
+    (tmp_path / "container_task.json").write_text('{"container_id":"detached"}')
+    events = []
+
+    class FakeRunner:
+        def __init__(self, config):
+            assert config == {"memory": "512m"}
+
+        def status(self, job):
+            events.append(("status", job["container_id"]))
+            return {"status": "running"}
+
+        def pause(self, job):
+            events.append(("pause", job["container_id"]))
+            return {"status": "paused"}
+
+    monkeypatch.setattr("services.worker.main.ContainerRunner", FakeRunner)
+    state = pause_container_for_reconnect({"container": {"memory": "512m"}}, tmp_path)
+
+    assert state == {"status": "paused"}
+    assert events == [("status", "detached"), ("pause", "detached")]
+
+
+def test_late_completion_receipt_fails_and_charges_actual_project_time(actual_worker):
+    h = actual_worker
+    h.stop(h.worker)
+    _, node = h.project_node(seconds=0.25, timeout=10,
+                            budget={"max_runs": 20, "seconds": 0.1, "allow_paid": False})
+    run = h.launch(node)
+    assert run["status"] == "queued"
+    # The first worker tick dispatches the job and then sleeps for 0.4s. The
+    # command finishes after its 0.1s reservation but before the next poll,
+    # exercising the completed-receipt path that previously bypassed timeout.
+    h.start_worker()
+    stopped = h.terminal(run, timeout=10)
+    assert stopped["status"] == "failed"
+    assert "budget" in stopped["error"].lower()
+    consumed = stopped["resource"]["elapsed_seconds"]
+    assert consumed > 0.1
+    assert consumed <= 0.85
+
+    exhausted = h.client.post(f"/api/nodes/{node['id']}/run", json={"request_id": str(uuid.uuid4())})
+    assert exhausted.status_code == 409
+    assert exhausted.json()["detail"]["code"] == "TIME_BUDGET_EXHAUSTED"
+
+
+def test_edit_triggered_cancel_records_consumed_time(actual_worker):
+    h = actual_worker
+    project, node = h.project_node(seconds=25, timeout=25,
+                                   budget={"max_runs": 20, "seconds": 8, "allow_paid": False})
+    run = h.launch(node)
+    h.running(run)
+    time.sleep(0.25)
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": graph["revision"],
+        "operation": "edit_node",
+        "targets": [node["id"]],
+        "params": {"instructions": "Updated while cancelling the active execution", "stop_current_run": True},
+    })
+    cancelled = h.terminal(run)
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["resource"]["elapsed_seconds"] >= 0.2
+
+
 def test_worker_restart_recovers_running_job_without_duplicate_execution(actual_worker):
     h = actual_worker
     _, node = h.project_node(seconds=4)
@@ -399,6 +824,52 @@ def test_exhausted_time_budget_blocks_actual_job_creation(actual_worker):
     response = h.client.post(f"/api/nodes/{node['id']}/run", json={"request_id": str(uuid.uuid4())})
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "TIME_BUDGET_EXHAUSTED"
+
+
+def test_dependent_run_reserves_only_remaining_project_time(actual_worker):
+    h = actual_worker
+    project, producer = h.project_node(seconds=0.6, budget={"max_runs": 20, "seconds": 2, "allow_paid": False}, timeout=20)
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    consumer_id = str(uuid.uuid4())
+    created = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": graph["revision"],
+        "operation": "add_node",
+        "targets": [],
+        "params": {
+            "id": consumer_id,
+            "branch_id": producer["branch_id"],
+            "type": "experiment",
+            "title": "Consumer runs after its producer",
+            "config": {"kind": "command", "command": [sys.executable, "-c", "import time; time.sleep(5)"], "timeout": 10},
+        },
+    })
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": created["graph"]["revision"],
+        "operation": "add_dependency",
+        "targets": [],
+        "params": {"source": producer["id"], "target": consumer_id},
+    })
+
+    queued = h.request("POST", f"/api/nodes/{consumer_id}/run", json={"request_id": str(uuid.uuid4()), "scope": "ancestors"})
+    producer_run = next(run for run in queued["runs"] if run["node_id"] == producer["id"])
+    consumer_run = next(run for run in queued["runs"] if run["node_id"] == consumer_id)
+    assert consumer_run["resource"]["time_budget"]["reservation_state"] == "deferred"
+    assert consumer_run["config"]["timeout"] == 10
+
+    h.running(producer_run)
+    completed_producer = h.terminal(producer_run)
+    assert completed_producer["status"] == "completed"
+    started_consumer = wait_until(lambda: (r if (r := h.run(consumer_run)).get("resource", {}).get("time_budget", {}).get("reservation_state") == "held" else None))
+    assert 0 < started_consumer["config"]["timeout"] < 2
+    assert started_consumer["resource"]["time_budget"]["effective_total_timeout_seconds"] == started_consumer["config"]["timeout"]
+    stopped_consumer = h.terminal(consumer_run, timeout=15)
+    assert stopped_consumer["status"] == "failed"
+    assert "budget" in stopped_consumer["error"].lower() or "timed out" in stopped_consumer["error"].lower()
+    aggregate_elapsed = (completed_producer["resource"]["elapsed_seconds"] +
+                         stopped_consumer["resource"]["elapsed_seconds"])
+    assert aggregate_elapsed <= 2.75
 
 
 def test_paused_queued_job_stays_pending_and_does_not_occupy_process_slot(actual_worker):
