@@ -34,8 +34,24 @@ assert not {'interventions', 'intervention_effects', 'action_decisions'} & table
     for process in processes:
         output,error=process.communicate(timeout=30)
         assert process.returncode==0,output+error
-    inspect="from services.api.db import Session,Project,Migration,engine;from sqlalchemy import inspect;\nwith Session() as s:\n assert s.get(Project,'legacy-retained-project').goal=='Preserve actual stored data';assert s.get(Migration,5);\n assert {'interventions','intervention_effects','action_decisions'}<=set(inspect(engine).get_table_names());print('PASS concurrent legacy upgrade')"
-    checked=subprocess.run([sys.executable,'-c',inspect],cwd=ROOT,env=env,capture_output=True,text=True,timeout=30)
+    check="""from services.api.db import Session, Project, Migration, engine
+from sqlalchemy import inspect
+with Session() as s:
+    assert s.get(Project, 'legacy-retained-project').goal == 'Preserve actual stored data'
+    assert s.get(Migration, 5)
+schema = inspect(engine)
+assert {'interventions', 'intervention_effects', 'action_decisions'} <= set(schema.get_table_names())
+expected_indexes = {
+    'interventions': {'ix_interventions_project_created'},
+    'action_decisions': {'ix_decisions_project_status_created'},
+    'intervention_effects': {'ix_effects_action_status_retry'},
+}
+for table, names in expected_indexes.items():
+    actual = {index['name'] for index in schema.get_indexes(table)}
+    assert names <= actual, f'{table} missing indexes: {names - actual}'
+print('PASS concurrent legacy upgrade')
+"""
+    checked=subprocess.run([sys.executable,'-c',check],cwd=ROOT,env=env,capture_output=True,text=True,timeout=30)
     assert checked.returncode==0,checked.stdout+checked.stderr
     (tmp_path/'migration_result.txt').write_text(checked.stdout)
 
