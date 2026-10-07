@@ -21,7 +21,7 @@ from sqlalchemy import select, delete, func, text as sql_text
 from .common import *
 from .schemas import *
 from .files import router as files_router
-from services.worker.scheduler import enqueue,enqueue_nodes,enqueue_selected,ACTIVE,TERMINAL
+from services.worker.scheduler import enqueue,enqueue_nodes,enqueue_selected,ACTIVE,TERMINAL,requested_task_timeout,_bounded_timeout
 from research.agents.policy import ROLES,TOOLS
 from research.agents.defaults import default_config, upgrade_default_tools, explicit_agent_config
 from research.agents.budget import interrupt_run_reservations
@@ -284,11 +284,14 @@ def run_action(ident:str,action:str,body:dict=Body(default={})):
         r=get(s,TaskRun,ident)
         if action=='retry':
             if r.status not in TERMINAL: error('RUN_ACTIVE','Only stopped runs can be restarted',409)
-            return asdict(enqueue(s,r.project_id,r.kind,r.config,body.get('request_id'),s.get(Node,r.node_id) if r.node_id else None,r.dependencies))
+            requested_timeout,_=requested_task_timeout(s,r)
+            return asdict(enqueue(s,r.project_id,r.kind,r.config,body.get('request_id'),s.get(Node,r.node_id) if r.node_id else None,r.dependencies,
+                                  requested_timeout_override=requested_timeout))
         if action in ('cancel','pause','resume'):
             # Validate control actions against locked current state before
             # signaling anything, using the request guard's project -> run order.
-            s.scalar(select(Project).where(Project.id==r.project_id).with_for_update())
+            project=s.scalar(select(Project).where(Project.id==r.project_id).with_for_update())
+            if not project: error('NOT_FOUND','Project does not exist',404)
             r=s.scalar(select(TaskRun).where(TaskRun.id==ident).with_for_update().execution_options(populate_existing=True))
             if not r: error('NOT_FOUND','Run missing',404)
         if action=='cancel':
@@ -325,6 +328,30 @@ def run_action(ident:str,action:str,body:dict=Body(default={})):
                 str(r.error or '').startswith(('Task controls exceed the configured context_char_budget;',
                     'The latest complete native tool exchange exceeds context_char_budget;')))
             if r.status not in ('paused','waiting_input','waiting','budget_exhausted') and not legacy_context_failure: error('INVALID_RUN_STATE','Run is not paused or waiting',409)
+            requested_timeout,timeout_source=requested_task_timeout(s,r)
+            project_budget=project.budget or {}
+            other_runs=s.scalars(select(TaskRun).where(TaskRun.project_id==r.project_id,TaskRun.id!=r.id))
+            other_elapsed=sum(float(item.resource.get('elapsed_seconds',0)) for item in other_runs)
+            project_limit=(max(0,float(project_budget['seconds'])-other_elapsed)
+                           if project_budget.get('seconds') is not None else None)
+            effective_timeout=_bounded_timeout(requested_timeout,project_limit)
+            elapsed=float((r.resource or {}).get('elapsed_seconds',0))
+            if effective_timeout is not None and elapsed>=effective_timeout:
+                error('TIME_BUDGET_EXHAUSTED','No project or task time budget remains for this run',409)
+            time_budget=dict((r.resource or {}).get('time_budget') or {})
+            resume_record={'resumed_at':now(),'requested_task_timeout_seconds':requested_timeout,
+                           'requested_timeout_source':timeout_source,'effective_total_timeout_seconds':effective_timeout,
+                           'project_budget_seconds':project_budget.get('seconds'),
+                           'project_revision':project.revision,'other_run_elapsed_seconds':other_elapsed,
+                           'run_elapsed_seconds':elapsed}
+            time_budget.update(requested_task_timeout_seconds=requested_timeout,
+                               effective_total_timeout_seconds=effective_timeout,
+                               project_budget_seconds_at_resume=project_budget.get('seconds'),
+                               project_revision_at_resume=project.revision,
+                               resume_history=[*time_budget.get('resume_history',[]),resume_record])
+            r.resource={**(r.resource or {}),'time_budget':time_budget}
+            r.config={**(r.config or {}),'timeout':effective_timeout}
+            emit(s,r.project_id,'run_time_budget_recalculated',{'run_id':r.id,**resume_record})
             if r.kind=='agent' and (legacy_context_failure or r.config.get('context_policy')!='automatic'):
                 change={'changed_at':now(),'previous':r.config.get('context_policy','legacy'),
                         'updated':'automatic','previous_status':r.status,'previous_error':r.error}

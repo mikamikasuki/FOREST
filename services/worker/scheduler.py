@@ -1,11 +1,88 @@
 """Database-backed scheduling with one dependency map per selected research DAG."""
 from copy import deepcopy
+from datetime import datetime
 from sqlalchemy import select, func
 from services.api.db import *
 from services.api.common import get, error, project_dir, graph_from_db, emit
 
 ACTIVE = ('queued', 'running', 'pausing', 'paused', 'waiting_input', 'waiting', 'budget_exhausted')
 TERMINAL = ('completed', 'failed', 'cancelled', 'interrupted', 'skipped')
+_TIMEOUT_UNSET = object()
+
+
+def _node_created_before_run(node, run):
+    created_at = node.get('created_at') if isinstance(node, dict) else getattr(node, 'created_at', None)
+    if not created_at or not run.created_at:
+        return False
+    try:
+        return datetime.fromisoformat(created_at) <= datetime.fromisoformat(run.created_at)
+    except (TypeError, ValueError):
+        return False
+
+
+def _node_config_at_revision(s, run):
+    node = s.get(Node, run.node_id)
+    if (node and node.revision == run.node_revision and
+            _node_created_before_run(node, run)):
+        return node.config or {}, 'unchanged_node_revision'
+    project = s.get(Project, run.project_id)
+    history = ((project.graph_meta or {}).get('_history') or {}) if project else {}
+    for stack in ('undo', 'redo'):
+        snapshots = history.get(stack) or []
+        for snapshot in reversed(snapshots):
+            old = next((item for item in snapshot.get('nodes', [])
+                        if item.get('id') == run.node_id and
+                        item.get('revision', 0) == run.node_revision and
+                        _node_created_before_run(item, run)), None)
+            if old is not None:
+                return old.get('config') or {}, 'historical_node_revision'
+    return None, None
+
+
+def requested_task_timeout(s, run):
+    """Return the user task cap separately from the effective project cap."""
+    resource = run.resource or {}
+    policy = resource.get('time_budget') or {}
+    config = run.config or {}
+    source = 'legacy_effective_timeout'
+    if 'requested_task_timeout_seconds' in policy:
+        value = policy['requested_task_timeout_seconds']
+        source = 'recorded_request'
+    elif 'seconds' in (config.get('budget') or {}):
+        value = config['budget']['seconds']
+        source = 'legacy_saved_task_budget'
+    elif run.node_id:
+        node_config, node_source = _node_config_at_revision(s, run)
+        if node_config is not None:
+            value = node_config.get('timeout', (node_config.get('budget') or {}).get('seconds'))
+            source = node_source
+        else:
+            # Older rows stored the effective project-clipped timeout in config.
+            # Without a node snapshot or separate request cap, it is ambiguous.
+            value = None
+            source = 'legacy_timeout_not_recoverable'
+    else:
+        # Non-node legacy rows have no graph history from which to recover the
+        # caller's original timeout; use the current project allowance instead.
+        value = None
+        source = 'legacy_timeout_not_recoverable'
+    if value is None:
+        return None, source
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        error('INVALID_TIMEOUT', 'Task timeout must be positive or omitted', 422)
+    if value <= 0:
+        error('INVALID_TIMEOUT', 'Task timeout must be positive or omitted', 422)
+    return value, source
+
+
+def _bounded_timeout(requested_timeout, project_limit):
+    if project_limit is None:
+        return requested_timeout
+    if requested_timeout is None:
+        return project_limit
+    return min(requested_timeout, project_limit)
 
 
 def _lock_project(s, project_id):
@@ -25,7 +102,8 @@ def _lock_project(s, project_id):
     return p
 
 
-def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencies=None):
+def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencies=None,
+            requested_timeout_override=_TIMEOUT_UNSET):
     p = _lock_project(s, project_id)
     request_id = request_id or uid()
     old = s.scalar(select(TaskRun).where(TaskRun.project_id == project_id, TaskRun.request_id == request_id))
@@ -54,12 +132,12 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     from research.execution.recovery import resource_request
     try: resource_request(config)
     except (ValueError,TypeError) as exc: error('INVALID_RESOURCES',str(exc),422)
-    requested_timeout = config.get('timeout', (config.get('budget') or {}).get('seconds'))
-    timeout = float(requested_timeout) if requested_timeout is not None else None
-    if timeout is not None and timeout <= 0:
+    requested_timeout = (config.get('timeout', (config.get('budget') or {}).get('seconds'))
+                         if requested_timeout_override is _TIMEOUT_UNSET else requested_timeout_override)
+    requested_timeout = float(requested_timeout) if requested_timeout is not None else None
+    if requested_timeout is not None and requested_timeout <= 0:
         error('INVALID_TIMEOUT', 'Task timeout must be positive or omitted', 422)
-    if remaining is not None:
-        timeout = min(timeout, remaining) if timeout is not None else remaining
+    timeout = _bounded_timeout(requested_timeout, remaining)
     merged = {**config, 'timeout': timeout, 'project_goal': p.goal, 'allow_paid': bool(budget.get('allow_paid', False))}
     from research.publication.profile import publication_profile
     try:
@@ -89,7 +167,14 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
         merged['paper_snapshot'] = generation_snapshot(s, project_id)
     run = TaskRun(project_id=project_id, node_id=node.id if node else None, branch_id=node.branch_id if node else merged.get('branch_id'),
                   request_id=request_id, kind=kind, config=merged, node_revision=node.revision if node else 0,
-                  dependencies=dependencies or [], priority=int(config.get('priority', 0)))
+                  dependencies=dependencies or [], priority=int(config.get('priority', 0)),
+                  resource={'time_budget': {
+                      'requested_task_timeout_seconds': requested_timeout,
+                      'effective_total_timeout_seconds': timeout,
+                      'project_budget_seconds_at_enqueue': budget.get('seconds'),
+                      'project_revision_at_enqueue': p.revision,
+                      'resume_history': [],
+                  }})
     s.add(run)
     s.flush()
     run.resource = {**run.resource, 'verification_status': 'unverified'}
