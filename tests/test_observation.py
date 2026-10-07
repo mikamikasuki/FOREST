@@ -85,6 +85,16 @@ def scenario():
         s.get(Figure,figureid).data={'source_run_ids':[new.id],'visual_review_status':'rejected'}
     assert resolve(figure_ref).availability=='changed'
     assert client.post(f'/api/projects/{pid}/progress/source',json={**figure_ref.model_dump(),'project_id':uid()}).status_code==422
+    # A busy background observer cannot hold an event-invalidated API cache
+    # stale while rotating unrelated projects/scopes.
+    from datetime import datetime,timezone,timedelta
+    with Session.begin() as s:
+        cached=s.get(ObservationState,pid);cached.lease_owner='busy-background';cached.lease_until=time.time()+30
+        cached.observed_at=(datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat()
+        project=s.get(Project,pid);project.config={**project.config,'controller':{**project.config['controller'],'status':'paused'}}
+        emit(s,pid,'controller_changed',{})
+    invalidated=ok(client.get(f'/api/projects/{pid}/progress'))
+    assert invalidated['controller_status']=='paused' and invalidated['cursor']>snap['cursor']
     for status,section in [('queued','next'),('waiting','blocked'),('waiting_input','attention'),('paused','now'),('budget_exhausted','attention')]:
         with Session.begin() as s:
             run=s.get(TaskRun,new.id);run.status=status;run.resource={'blocked_reason':'dependency_failed'}
@@ -348,6 +358,37 @@ def scenario():
             for connection in connections: connection.close()
             await stream.aclose()
     asyncio.run(pool_contention())
+    # Actual monitor and verification writers contend on the same mutable
+    # resource JSON. Inject only the check computation to pause the finisher;
+    # persistence and WorkerLoop.monitor run against the real SQLite/PG DB.
+    from services.worker.main import WorkerLoop
+    from services.api.verification import finish_verification
+    from services.api.db import asdict,now
+    worker=WorkerLoop();race_project=ok(client.post('/api/projects',json={'name':'Verification writer race'}))['id']
+    with Session.begin() as s:
+        race=TaskRun(id=uid(),project_id=race_project,request_id=uid(),kind='verification',status='running',
+            worker_id=worker.id,pid=os.getpid(),started_at=now(),output_path='runs/verification-race',config={})
+        s.add(race);s.flush();race_id=race.id;value=asdict(race)
+    (project_dir(race_project)/value['output_path']).mkdir(parents=True,exist_ok=True)
+    entered=threading.Event();allow_finish=threading.Event();monitor_started=threading.Event()
+    def paused_check(session,run,execution=False):
+        assert execution;entered.set();assert allow_finish.wait(10)
+        return {'verification_status':'accepted','artifact_observations':[]}
+    def monitor_writer():
+        monitor_started.set();worker.monitor(value)
+    with patch('services.api.verification._evaluate',paused_check),patch('services.worker.main.process_matches',return_value=True),patch('services.worker.main.process_tree_resources',return_value={'rss_bytes':1}),ThreadPoolExecutor(2) as pool:
+        finisher=pool.submit(finish_verification,race_id)
+        assert entered.wait(5)
+        monitor=pool.submit(monitor_writer);assert monitor_started.wait(5)
+        try:
+            time.sleep(.2)
+            assert not monitor.done()  # Without writer coordination it commits stale JSON here.
+        finally:allow_finish.set()
+        finisher.result(timeout=5);monitor.result(timeout=5)
+    with Session.begin() as s:
+        saved=s.get(TaskRun,race_id)
+        assert saved.resource['verification_receipt']['checked_at'] and saved.resource['elapsed_seconds']>=0
+        saved.status='completed';saved.pid=None
     # Normal competing observers must advance a real inventory despite an
     # unavailable branch sorting ahead of it. This exercises scheduler fairness.
     fresh_project=ok(client.post('/api/projects',json={'name':'Competing observers'}))['id']

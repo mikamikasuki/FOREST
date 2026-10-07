@@ -17,11 +17,18 @@ from .files import sync_scopes, reconcile
 
 log=logging.getLogger(__name__)
 
-def refresh_projection(project_id, owner, *, release=False, file_hints=True):
+def refresh_projection(project_id, owner, *, release=False, file_hints=True, invalidate=False):
     with Session.begin() as s:
         write_lock(s); state=ensure_state(s,project_id)
-        if state.lease_owner!=owner and state.lease_until>time.time(): return False
-        state.lease_owner=owner; state.lease_until=time.time()+30
+        if invalidate:
+            # Event-driven reads can refresh a stale cache without waiting for
+            # every other project's file pass. Coalesce concurrent API readers,
+            # and bound projection construction to four per second per project.
+            observed=datetime.fromisoformat(state.observed_at) if state.observed_at else None
+            if observed and (datetime.now(timezone.utc)-observed).total_seconds()<.25: return False
+            if state.lease_owner and state.lease_owner.startswith('api:') and state.lease_until>time.time(): return False
+        elif state.lease_owner!=owner and state.lease_until>time.time(): return False
+        state.lease_owner=owner; state.lease_until=time.time()+(3 if invalidate else 30)
         epoch=state.epoch; generation=state.generation+1; cursor=state.cursor
         previous_gap=(state.snapshot.get('health') or {}).get('history_gap',False)
     snapshot=project_snapshot(project_id,epoch=epoch,generation=generation,previous_cursor=cursor)

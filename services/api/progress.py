@@ -4,7 +4,7 @@ from fastapi.responses import Response
 import mimetypes
 from typing import Literal
 from sqlalchemy import select
-from .db import Session, Project, uid
+from .db import Session, Project, EventSequence, uid
 from .common import get, error
 from services.observation.models import ObservationState, ObservationScope, ObservedFile, ReportJob
 from services.observation.contracts import (ProjectProgressSnapshot, ScopePage, FilePage, SourceRef, SourceView,
@@ -20,7 +20,9 @@ def progress(ident:str):
     with Session() as s:
         get(s,Project,ident); state=s.get(ObservationState,ident)
         empty=not state or not state.snapshot
-    if empty: refresh_projection(ident,uid(),release=True)
+        cursor=s.scalar(select(EventSequence.sequence).where(EventSequence.project_id==ident)) or 0
+        dirty=bool(state and state.snapshot and state.cursor<cursor)
+    if empty or dirty: refresh_projection(ident,'api:'+uid(),release=True,invalidate=dirty)
     with Session() as s:
         state=s.get(ObservationState,ident)
         if not state or not state.snapshot: error('PROGRESS_REBUILDING','Progress is rebuilding; retry shortly',503,retryable=True)

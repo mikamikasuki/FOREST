@@ -23,6 +23,9 @@ the saved update time as well as revision, since a render can update outputs
 without advancing the editable figure revision.
 
 The browser shares one project event stream and reconciles every two seconds.
+An event-invalidated progress read can rebuild its bounded database projection
+without waiting for unrelated projects' file scans. Concurrent refreshes coalesce,
+and projection construction is limited to four per second per project.
 The observer normally advances once per second for a small installation. Its age,
 coverage, unavailable native hints and event-history gaps are shown explicitly.
 Large installations rotate projects and scopes fairly, so displayed age is the

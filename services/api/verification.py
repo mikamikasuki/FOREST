@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, HTTPException
 from sqlalchemy import select
 
 from services.api.common import error, get, project_dir, safe_path
-from services.api.db import Node, Project, Session, TaskRun, asdict, now
+from services.api.db import Node, Project, Session, TaskRun, asdict, now, begin_sqlite_write
 
 router = APIRouter()
 RESERVED_CONFIG = {'_verification_binding', '_verification_contract', '_verification_sources',
@@ -560,7 +560,8 @@ def dispatch_verification(session, run, *, resolved_inputs=None):
 def finish_verification(run_id):
     """Called by the service executor after actual independent computation."""
     with Session.begin() as session:
-        run = get(session, TaskRun, run_id)
+        begin_sqlite_write(session)
+        run = get(session, TaskRun, run_id, for_update=True)
         verdict = _evaluate(session, run, execution=True)
         observations = verdict.pop('artifact_observations', [])
         run.resource = {**run.resource, 'verification_receipt': {'checked_at': now(), 'artifact_observations': observations},

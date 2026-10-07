@@ -15,6 +15,13 @@ if settings.database_url.startswith('sqlite'):
     def sqlite_setup(conn, record):
         conn.execute('PRAGMA foreign_keys=ON'); conn.execute('PRAGMA journal_mode=WAL'); conn.execute('PRAGMA busy_timeout=10000')
 Session = sessionmaker(engine, expire_on_commit=False)
+def begin_sqlite_write(session):
+    """Serialize a read/modify/write before reading mutable JSON on SQLite."""
+    if session.bind.dialect.name=='sqlite':
+        connection=session.connection()
+        if not connection.connection.driver_connection.in_transaction:
+            with session.no_autoflush: session.execute(text('BEGIN IMMEDIATE'))
+
 class Identity:
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uid)
     created_at: Mapped[str] = mapped_column(String(40), default=now)
