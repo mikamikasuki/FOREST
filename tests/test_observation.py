@@ -136,8 +136,8 @@ def scenario():
     with Session.begin() as s:
         scope=s.get(ObservationScope,ref.scope_id);observe(s,scope,'race.md',scope.scan_generation)
     first_read=threading.Event();second_write=threading.Event();references={};errors=[]
-    def interleaved_read(folder,path,limit=262144):
-        result=regular_read(folder,path,limit)
+    def interleaved_read(folder,path,limit=262144,**kwargs):
+        result=regular_read(folder,path,limit,**kwargs)
         if path=='race.md' and threading.current_thread().name=='observer-a':
             first_read.set();assert second_write.wait(5)
         return result
@@ -167,6 +167,24 @@ def scenario():
         scope=s.get(ObservationScope,ref.scope_id);f=observe(s,scope,'escape',scope.scan_generation)
         escape=reference(f,scope)
     assert resolve(escape).availability=='unavailable'
+    # Replace a scope ancestor after validation but before opening its root.
+    # The observed bytes must not follow the raced link into another directory.
+    from services.observation.files import scope_root as original_scope_root
+    ancestor=root/Path(workspace).parts[0];held=root/'.held-scope-ancestor'
+    external=root.parent/'outside-scope-directory'
+    external_root=external.joinpath(*Path(workspace).parts[1:]);external_root.mkdir(parents=True)
+    (external_root/'ancestor.md').write_text('outside-scope-canary')
+    def swap_ancestor(scope):
+        resolved=original_scope_root(scope)
+        ancestor.rename(held);ancestor.symlink_to(external,target_is_directory=True)
+        return resolved
+    try:
+        with patch('services.observation.files.scope_root',swap_ancestor),Session.begin() as s:
+            scope=s.get(ObservationScope,ref.scope_id);saved=observe(s,scope,'ancestor.md',scope.scan_generation)
+            assert saved.state=='unavailable' and saved.content is None
+    finally:
+        if ancestor.is_symlink():ancestor.unlink()
+        if held.exists():held.rename(ancestor)
     # Binary previews are epoch/generation-bound, never a current-path shortcut.
     from PIL import Image
     image=root/workspace/'preview.png';Image.new('RGB',(8,9)).save(image)

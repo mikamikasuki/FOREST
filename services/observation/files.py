@@ -45,15 +45,24 @@ def allowed(path):
         v not in ('.','..') and not v.startswith('.') and v not in EXCLUDED and
         not v.endswith(('.pem','.key','.p12','.pfx')) for v in parts)
 
-def regular_read(root: Path, relative: str, limit=CONTENT_LIMIT):
+def regular_read(root: Path, relative: str, limit=CONTENT_LIMIT, *, project_root=None):
     """Open every relative component without following symlinks, then compare reads."""
     if not allowed(relative): raise PermissionError('Excluded source')
-    descriptors=[]
+    descriptors=[]; directories=[]
     try:
-        fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); descriptors.append(fd)
+        anchor=project_root if project_root is not None else root
+        fd=os.open(anchor,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW); descriptors.append(fd)
+        # Pin the project before walking a branch/run root. O_NOFOLLOW on an
+        # absolute root alone would still follow a raced ancestor symlink.
+        for part in root.relative_to(anchor).parts:
+            parent=fd
+            fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent)
+            descriptors.append(fd);directories.append((parent,part,fd))
         parts=PurePosixPath(relative).parts
         for part in parts[:-1]:
-            fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd); descriptors.append(fd)
+            parent=fd
+            fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent)
+            descriptors.append(fd);directories.append((parent,part,fd))
         f=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd); descriptors.append(f)
         before=os.fstat(f)
         if not stat.S_ISREG(before.st_mode): raise PermissionError('Not a regular file')
@@ -80,6 +89,11 @@ def regular_read(root: Path, relative: str, limit=CONTENT_LIMIT):
         final=os.stat(parts[-1],dir_fd=fd,follow_symlinks=False)
         def identity(s): return (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
         if identity(before)!=identity(after) or identity(after)!=identity(final): raise BlockingIOError('Source changing')
+        saved_anchor=os.fstat(descriptors[0]);current_anchor=os.stat(anchor,follow_symlinks=False)
+        if (saved_anchor.st_dev,saved_anchor.st_ino)!=(current_anchor.st_dev,current_anchor.st_ino): raise BlockingIOError('Project directory changing')
+        for parent,part,directory in directories:
+            saved=os.fstat(directory);current=os.stat(part,dir_fd=parent,follow_symlinks=False)
+            if (saved.st_dev,saved.st_ino)!=(current.st_dev,current.st_ino): raise BlockingIOError('Source directory changing')
         return data, {'size':after.st_size,'mtime_ns':after.st_mtime_ns,'ctime_ns':after.st_ctime_ns,'inode':after.st_ino,'metadata':metadata}
     finally:
         for fd in reversed(descriptors): os.close(fd)
@@ -162,7 +176,7 @@ def observe(s, scope, relative, scan_generation, attribution='external_observati
         row=ObservedFile(id=uid(),project_id=scope.project_id,scope_id=scope.id,path=relative,
                          generation=0,scan_generation=scan_generation); s.add(row)
     try:
-        data,metadata=regular_read(scope_root(scope),relative)
+        data,metadata=regular_read(scope_root(scope),relative,project_root=project_dir(scope.project_id))
         state='available' if data is not None else 'metadata_only'
         key=('observation_content_bytes',scope.project_id)
         if key not in s.info:
@@ -322,7 +336,7 @@ def resolve(source):
         if row.state=='deleted': return result('deleted','Source was deleted; retained derived bytes were cleared.')
         if source.file_generation!=row.generation or source.attempt_id!=row.attempt_id: return result('changed','Source generation changed. Historical bytes are not retained.')
         if scope.kind!='remote_workspace':
-            try: current,metadata=regular_read(scope_root(scope),row.path)
+            try: current,metadata=regular_read(scope_root(scope),row.path,project_root=project_dir(scope.project_id))
             except FileNotFoundError: return result('deleted','Source was deleted; no retained bytes are returned.')
             except OSError: return result('unavailable','Source cannot be safely read now.')
             if current!=row.content: return result('changed','Current bytes differ from the observed generation. Wait for reconciliation.')
