@@ -534,12 +534,20 @@ def execution_context_receipts(state):
         if not context:
             unrecorded.append(turn['step'])
             continue
+        request_context = turn.get('request_context') or {}
+        attempt_id = (request_context.get('execution_attempt_id')
+                      if 'execution_attempt_id' in request_context else context.get('attempt_id'))
         if (history and history[-1]['context_history_index'] == index
+                and history[-1].get('attempt_id') == attempt_id
                 and history[-1]['last_step'] + 1 == turn['step']):
             history[-1]['last_step'] = turn['step']
         else:
-            history.append({**deepcopy(context), 'context_history_index': index,
-                            'first_step': turn['step'], 'last_step': turn['step']})
+            entry = deepcopy(context)
+            entry.pop('attempt_id', None)
+            entry.update(context_history_index=index, first_step=turn['step'], last_step=turn['step'])
+            if attempt_id is not None:
+                entry['attempt_id'] = attempt_id
+            history.append(entry)
     return {'history_scope': 'authoritative_project_context', 'history': history,
             'requests': requests, 'unrecorded_steps': unrecorded}
 
@@ -569,9 +577,9 @@ def run_agent(run_id, workspace, config):
             packet = {'goal': p.goal, 'instructions': config.get('instructions', config.get('prompt', ''))}
         project_context = {'project_id': p.id, 'project_revision': p.revision,
                            'project_goal': p.goal, 'goal': packet.get('controls', {}).get('goal', packet.get('goal')),
-                           'run_id': run_id, 'attempt_id': run.config.get('execution_attempt', {}).get('id'),
-                           'node_id': run.node_id, 'graph_revision': graph.get('revision'),
+                           'run_id': run_id, 'node_id': run.node_id, 'graph_revision': graph.get('revision'),
                            'node_revision': packet.get('node_revision')}
+        execution_attempt_id = run.config.get('execution_attempt', {}).get('id')
     provider = config.get('provider_snapshot')
     if not provider:
         raise ValueError('No model configured. Connect a real provider in Settings.')
@@ -615,7 +623,11 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
                       'project_context': project_context,
                       'context_char_budget': context_char_budget(config), 'static_context_char_budget': packet.get('capacity', {}).get('max_chars')}
     context_history = state.setdefault('context_history', [])
-    if not context_history or any(context_history[-1].get(key) != value for key, value in context_record.items()):
+    previous_context_record = deepcopy(context_history[-1]) if context_history else None
+    if previous_context_record and isinstance(previous_context_record.get('project_context'), dict):
+        # Older snapshots included attempt IDs, which are now recorded per request.
+        previous_context_record['project_context'].pop('attempt_id', None)
+    if not context_history or any(previous_context_record.get(key) != value for key, value in context_record.items()):
         context_history.append({**context_record, 'before_step': len(state['transcript']) + 1, 'recorded_at': time.time()})
     def save():
         state['updated_at'] = time.time()
@@ -667,6 +679,7 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
                                         for message in request_messages)
             request_context = {'task_delivery': 'original_message' if original_task_present else 'managed_context',
                                'original_task_message_present': original_task_present,
+                               'execution_attempt_id': execution_attempt_id,
                                'goal_field_present': request_has_goal_field(request_messages, project_context['goal']),
                                'payload_sha256': hashlib.sha256(json.dumps(request_payload, ensure_ascii=False,
                                                                           sort_keys=True, separators=(',', ':')).encode()).hexdigest(),

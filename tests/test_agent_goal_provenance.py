@@ -19,7 +19,7 @@ from tests.test_worker import Harness, wait_until
 
 def probe(directory, mode):
     edited = mode == "queued_edit"
-    resumed = mode == "continuation"
+    resumed = mode in ("continuation", "continuation_unchanged")
     captures = []
 
     class Transport(BaseHTTPRequestHandler):
@@ -69,8 +69,9 @@ def probe(directory, mode):
         h.start_worker()
         if resumed:
             wait_until(lambda: h.run(queued)['status'] == 'budget_exhausted', timeout=30)
-            p = h.request('GET', f"/api/projects/{project['id']}")
-            h.request('PATCH', f"/api/projects/{project['id']}", json={'expected_revision': p['revision'], 'goal': 'GOAL_MULTIPLY: compute 2 * 3 using an actual Python process.'})
+            if mode == 'continuation':
+                p = h.request('GET', f"/api/projects/{project['id']}")
+                h.request('PATCH', f"/api/projects/{project['id']}", json={'expected_revision': p['revision'], 'goal': 'GOAL_MULTIPLY: compute 2 * 3 using an actual Python process.'})
             h.stop(h.worker)
             h.request('POST', f"/api/runs/{queued['id']}/resume", json={'agent_budget': {'steps': 8}})
             h.start_worker()
@@ -95,7 +96,7 @@ def probe(directory, mode):
         thread.join(timeout=2)
 
 
-@pytest.mark.parametrize('mode', ['normal', 'queued_edit', 'continuation'])
+@pytest.mark.parametrize('mode', ['normal', 'queued_edit', 'continuation', 'continuation_unchanged'])
 def test_actual_worker_retains_consumed_goal_context_across_edit_resume_and_api_restart(tmp_path, mode):
     report, run, captures = probe(tmp_path, mode)
     contexts = run['metrics']['execution_context']
@@ -103,6 +104,7 @@ def test_actual_worker_retains_consumed_goal_context_across_edit_resume_and_api_
     for request, receipt in zip(captures, contexts['requests'], strict=True):
         digest = hashlib.sha256(json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         assert receipt['payload_sha256'] == digest
+        assert receipt['execution_attempt_id']
         assert receipt['goal_field_present']
         assert receipt['task_delivery'] == ('original_message' if receipt['original_task_message_present'] else 'managed_context')
     assert contexts['unrecorded_steps'] == []
@@ -110,6 +112,8 @@ def test_actual_worker_retains_consumed_goal_context_across_edit_resume_and_api_
     assert history[0]['first_step'] == 1
     assert history[-1]['last_step'] == run['metrics']['steps']
     assert [step for entry in history for step in range(entry['first_step'], entry['last_step'] + 1)] == list(range(1, len(captures) + 1))
+    saved_state = json.loads((Path(report['workspace']) / 'agent_session.json').read_text())
+    assert len(saved_state['context_history']) == (2 if mode == 'continuation' else 1)
     for entry in history:
         assert entry['run_id'] == run['id']
         assert entry['project_id'] == run['project_id']
@@ -128,6 +132,12 @@ def test_actual_worker_retains_consumed_goal_context_across_edit_resume_and_api_
         assert history[0]['project_revision'] < history[1]['project_revision']
         assert history[0]['attempt_id'] != history[1]['attempt_id']
         assert report['metrics']['observed_metrics']['value'] == 5
+    elif mode == 'continuation_unchanged':
+        assert len(history) >= 2
+        assert all(entry['goal'].startswith('GOAL_ADD') for entry in history)
+        assert len({entry['context_history_index'] for entry in history}) == 1
+        assert len({entry['attempt_id'] for entry in history}) >= 2
+        assert report['metrics']['observed_metrics']['value'] == 5
     else:
         assert all(entry['goal'].startswith('GOAL_MULTIPLY' if mode == 'queued_edit' else 'GOAL_ADD') for entry in history)
         assert report['metrics']['observed_metrics']['value'] == (6 if mode == 'queued_edit' else 5)
@@ -141,6 +151,16 @@ def test_legacy_turns_keep_unknown_context_instead_of_inheriting_current_goal():
     receipt = execution_context_receipts(state)
     assert receipt['unrecorded_steps'] == [1, 2, 4]
     assert receipt['history'] == [{'goal': 'current goal', 'context_history_index': 1, 'first_step': 3, 'last_step': 3}]
+
+
+def test_explicit_unknown_attempt_does_not_inherit_legacy_snapshot_attempt_id():
+    from research.agents.runtime import execution_context_receipts
+    state = {'context_history': [{'project_context': {'goal': 'legacy goal', 'attempt_id': 'legacy-attempt'}}],
+             'transcript': [{'step': 1, 'context_history_index': 0,
+                            'request_context': {'execution_attempt_id': None}}]}
+    receipt = execution_context_receipts(state)
+    assert receipt['history'] == [{'goal': 'legacy goal', 'context_history_index': 0,
+                                   'first_step': 1, 'last_step': 1}]
 
 
 @pytest.mark.parametrize('mode', ['failed_turn', 'paged_goal'])
