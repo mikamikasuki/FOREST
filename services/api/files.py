@@ -238,6 +238,11 @@ async def import_project(file:UploadFile=File(...)):
     try: z=zipfile.ZipFile(io.BytesIO(raw)); manifest=json.loads(z.read('forest-project.json'))
     except Exception: error('INVALID_ARCHIVE','Expected a FOREST project ZIP')
     if manifest.get('format')!='forest-project-v1': error('INVALID_ARCHIVE','Unknown archive format')
+    orig=manifest.get('project')
+    if not isinstance(orig,dict): error('INVALID_ARCHIVE','Project metadata must be an object')
+    mode=orig.get('mode','assisted')
+    if mode not in ('auto','assisted','manual'):
+        error('INVALID_ARCHIVE','Project mode must be auto, assisted, or manual')
     if sum(x.file_size for x in z.infolist())>500*1024*1024: error('ARCHIVE_TOO_LARGE','Uncompressed archive exceeds 500 MB',413)
     for info in z.infolist():
         if info.filename.startswith('/') or '..' in Path(info.filename).parts or (info.external_attr>>16)&0o170000==0o120000: error('UNSAFE_ARCHIVE','Archive contains unsafe paths or symbolic links')
@@ -260,7 +265,7 @@ async def import_project(file:UploadFile=File(...)):
                 # Import is not an instruction to resume a research controller.
                 controller.update(status='paused',phase='PLAN')
             config['controller']=controller
-        p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),budget=orig.get('budget',{}),config=config); root=project_dir(p.id)
+        p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),mode=mode,budget=orig.get('budget',{}),config=config); root=project_dir(p.id)
         graph=manifest['graph']; old_id=graph['project_id']; mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(manifest.get('resources',{}).values())+[manifest.get('papers',[]),manifest.get('runs',[])]:
             for item in rows: mapping.setdefault(item['id'],uid())

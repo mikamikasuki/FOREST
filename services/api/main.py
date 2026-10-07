@@ -104,6 +104,8 @@ def project(ident:str):
         p=asdict(get(s,Project,ident)); p.pop('graph_meta',None); return p
 @app.patch('/api/projects/{ident}')
 def edit_project(ident:str,body:dict=Body(...)):
+    if 'mode' in body and body['mode'] not in ('auto','assisted','manual'):
+        error('INVALID_MODE','Project mode must be auto, assisted, or manual',422)
     with Session.begin() as s:
         p=s.scalar(select(Project).where(Project.id==ident).with_for_update())
         if not p: error('NOT_FOUND','Project missing',404)
@@ -148,7 +150,8 @@ def duplicate_project(ident:str):
         mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(resources.values())+[papers,runs]:
             for item in rows: mapping.setdefault(item['id'],uid())
-        new=make_project(s,p.name+' · Copy',p.goal,p.description,budget=copy.deepcopy(p.budget),config=copy.deepcopy(p.config))
+        mode=p.mode if p.mode in ('auto','assisted','manual') else 'assisted'
+        new=make_project(s,p.name+' · Copy',p.goal,p.description,mode=mode,budget=copy.deepcopy(p.budget),config=copy.deepcopy(p.config))
         def remap(value):
             if isinstance(value,dict): return {k:remap(v) for k,v in value.items()}
             if isinstance(value,list): return [remap(v) for v in value]

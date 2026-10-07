@@ -198,8 +198,9 @@ def case_export_import_reference_roundtrip(client, app):
     assert ok(client.get(f"/api/runs/{new_runs[0]['id']}/output"))["text"] == "actual saved output\n"
 
 
-def case_import_running_controller_requires_explicit_start(client, app):
+def case_import_running_controller_requires_explicit_start(client, app, mode="assisted"):
     p = create(client)
+    ok(client.patch(f"/api/projects/{p['id']}", json={"mode": mode}))
     source_branch_id = graph(client, p)["branches"][0]["id"]
     started = ok(client.post(f"/api/projects/{p['id']}/research/start", json={"autonomous": True, "branch_id": source_branch_id}))
     assert started["status"] == "running" and started["autonomous"] is True
@@ -213,6 +214,7 @@ def case_import_running_controller_requires_explicit_start(client, app):
     archive = client.post(f"/api/projects/{p['id']}/export", json={})
     assert archive.status_code == 200
     imported = ok(client.post("/api/projects/import", files={"file": ("running-project.zip", archive.content, "application/zip")}))
+    assert imported["mode"] == mode
     imported_id = imported["id"]
     imported_graph = graph(client, imported)
     imported_branch_id = imported_graph["branches"][0]["id"]
@@ -235,6 +237,10 @@ def case_import_running_controller_requires_explicit_start(client, app):
     source_after_tick = ok(client.get(f"/api/projects/{p['id']}/research"))
     assert source_after_tick["controller"]["status"] == "running"
     assert source_after_tick["active_runs"] == source_state["active_runs"]
+
+
+def case_import_auto_mode_preserves_controller_pause_and_cleanup(client, app):
+    case_import_running_controller_requires_explicit_start(client, app, mode="auto")
 
 
 def case_export_does_not_follow_config_symlink(client, app):
@@ -389,6 +395,107 @@ def case_duplicate_retains_bindings_without_following_links(client, app):
     assert copied_run["status"] == "interrupted"
     assert {field: copied_run[field] for field in source_times} == source_times
     assert client.get(f"/api/projects/{copied['id']}/file", params={"path": "secret.txt"}).status_code == 404
+
+
+def case_project_copy_preserves_run_mode(client, app):
+    for mode in ("auto", "assisted", "manual"):
+        source = ok(client.post("/api/projects", json={
+            "name": f"{mode} mode copy",
+            "goal": "Preserve the selected run mode",
+            "mode": mode,
+            "budget": {"allow_paid": False},
+        }))
+
+        duplicate = ok(client.post(f"/api/projects/{source['id']}/duplicate", json={}))
+        assert duplicate["mode"] == mode
+        assert ok(client.get(f"/api/projects/{duplicate['id']}"))["mode"] == mode
+
+        archive = client.post(f"/api/projects/{source['id']}/export", json={})
+        assert archive.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as zipped:
+            manifest = json.loads(zipped.read("forest-project.json"))
+        assert manifest["project"]["mode"] == mode
+
+        imported = client.post(
+            "/api/projects/import",
+            files={"file": ("forest-project.zip", archive.content, "application/zip")},
+        )
+        imported_project = ok(imported)
+        assert imported_project["mode"] == mode
+        assert ok(client.get(f"/api/projects/{imported_project['id']}"))["mode"] == mode
+
+    legacy_source = ok(client.post("/api/projects", json={
+        "name": "legacy archive mode",
+        "goal": "Keep old archives compatible",
+        "mode": "manual",
+        "budget": {"allow_paid": False},
+    }))
+    archive = client.post(f"/api/projects/{legacy_source['id']}/export", json={})
+    assert archive.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(archive.content)) as zipped:
+        contents = {item.filename: zipped.read(item.filename) for item in zipped.infolist()}
+    manifest = json.loads(contents["forest-project.json"])
+    manifest["project"].pop("mode")
+    contents["forest-project.json"] = json.dumps(manifest).encode()
+    legacy_archive = io.BytesIO()
+    with zipfile.ZipFile(legacy_archive, "w", zipfile.ZIP_DEFLATED) as zipped:
+        for name, content in contents.items():
+            zipped.writestr(name, content)
+    imported_legacy = ok(client.post(
+        "/api/projects/import",
+        files={"file": ("legacy-project.zip", legacy_archive.getvalue(), "application/zip")},
+    ))
+    assert imported_legacy["mode"] == "assisted"
+
+
+def case_invalid_import_modes_rejected_before_project_creation(client, app):
+    source = create(client)
+    exported = client.post(f"/api/projects/{source['id']}/export", json={})
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        entries = {item.filename: archive.read(item.filename) for item in archive.infolist()}
+
+    projects_root = Path(os.environ["FOREST_DATA_DIR"]) / "projects"
+    existing_projects = {path.name for path in projects_root.iterdir()}
+    for mode in ("operator", None, "x" * 21):
+        manifest = json.loads(entries["forest-project.json"])
+        manifest["project"]["mode"] = mode
+        malformed = dict(entries)
+        malformed["forest-project.json"] = json.dumps(manifest).encode()
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, contents in malformed.items():
+                archive.writestr(name, contents)
+
+        response = client.post(
+            "/api/projects/import",
+            files={"file": ("invalid-mode.zip", payload.getvalue(), "application/zip")},
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"]["code"] == "INVALID_ARCHIVE"
+        assert {path.name for path in projects_root.iterdir()} == existing_projects
+        assert len(ok(client.get("/api/projects"))) == 1
+
+
+def case_project_updates_validate_run_modes(client, app):
+    project = create(client)
+    for mode in ("auto", "assisted", "manual"):
+        updated = ok(client.patch(f"/api/projects/{project['id']}", json={"mode": mode}))
+        assert updated["mode"] == mode
+        project = ok(client.get(f"/api/projects/{project['id']}"))
+        assert project["mode"] == mode
+
+    for mode in ("operator", None, 123, "x" * 21):
+        before = ok(client.get(f"/api/projects/{project['id']}"))
+        response = client.patch(
+            f"/api/projects/{project['id']}",
+            json={"mode": mode, "expected_revision": before["revision"]},
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "INVALID_MODE"
+        after = ok(client.get(f"/api/projects/{project['id']}"))
+        assert after["mode"] == before["mode"]
+        assert after["revision"] == before["revision"]
 
 
 def case_actual_terminal(client, app):
@@ -731,6 +838,18 @@ def case_retry_restores_requested_timeout_when_project_budget_is_removed(client,
     assert retried['id'] != run['id']
     assert retried['status'] == 'queued'
     assert retried['config']['timeout'] == 30
+
+
+def case_duplicate_legacy_unsupported_mode_defaults_to_assisted(client, app):
+    from services.api.db import Session, Project
+    source = create(client)
+    for legacy_mode in ('operator', '', 'AUTO'):
+        with Session.begin() as session:
+            session.get(Project, source['id']).mode = legacy_mode
+        duplicate = ok(client.post(f"/api/projects/{source['id']}/duplicate"))
+        assert duplicate['mode'] == 'assisted'
+        assert ok(client.get(f"/api/projects/{duplicate['id']}"))['mode'] == 'assisted'
+        assert ok(client.get(f"/api/projects/{source['id']}"))['mode'] == legacy_mode
 
 
 def case_retry_refreshes_node_after_project_lock(client, app):
