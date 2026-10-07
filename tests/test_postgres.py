@@ -24,6 +24,7 @@ import uuid
 import httpx
 import psutil
 import psycopg
+from psycopg import sql
 import pytest
 
 from test_worker import Harness, wait_until
@@ -120,6 +121,123 @@ def test_postgres_concurrent_run_clicks_create_one_job(postgres_workers):
     finished = h.terminal(runs[0])
     assert finished["status"] == "completed", finished
     assert finished["metrics"]["ticks"] > 0
+
+
+def test_postgres_concurrent_event_writes_keep_unique_replay_cursors(postgres_workers):
+    h = postgres_workers
+    for worker in h.workers:
+        h.stop(worker)
+    project_id = None
+    try:
+        project, node = h.project_node(seconds=0.2, budget={"max_runs": 500, "seconds": 3600, "allow_paid": False})
+        project_id = project["id"]
+        runs = [h.launch(node, f"event-cursor-{index}") for index in range(32)]
+
+        def reprioritize(item):
+            run, priority = item
+            return h.client.post(f"/api/runs/{run['id']}/priority", json={"priority": priority})
+
+        with ThreadPoolExecutor(max_workers=len(runs)) as pool:
+            for round_number in range(12):
+                values = [(run, round_number * len(runs) + index) for index, run in enumerate(runs)]
+                responses = list(pool.map(reprioritize, values))
+                assert all(response.status_code == 200 for response in responses), [
+                    (response.status_code, response.text) for response in responses if response.status_code != 200
+                ]
+
+        with psycopg.connect(h.postgres_dsn) as connection:
+            total, distinct, maximum = connection.execute(
+                "SELECT COUNT(*),COUNT(DISTINCT sequence),MAX(sequence) FROM events WHERE project_id=%s",
+                (project_id,),
+            ).fetchone()
+            cursor = connection.execute(
+                "SELECT sequence FROM event_sequences WHERE project_id=%s", (project_id,)
+            ).fetchone()[0]
+            assert total == distinct, f"Persisted {total} events under only {distinct} sequence IDs"
+            assert cursor == maximum, (cursor, maximum)
+
+    finally:
+        if project_id:
+            h.request("DELETE", f"/api/projects/{project_id}")
+        h.start_worker()
+        second = h.spawn("event-cursor-worker-2", [sys.executable, "-m", "services.worker.main"])
+        h.workers = [h.worker, second]
+        wait_until(lambda: len([w for w in h.request("GET", "/api/system")["workers"] if w["online"]]) == 2)
+
+
+@pytest.mark.parametrize("first_method", ["DELETE", "PATCH"])
+def test_postgres_library_edit_delete_use_consistent_lock_order(postgres_workers, first_method):
+    h = postgres_workers
+    project = h.request("POST", "/api/projects", json={"name": "Library lock order"})
+    resource = h.request("POST", "/api/library", json={"project_id": project["id"], "title": "Concurrent source"})
+    path = f"/api/library/{resource['id']}"
+    gate_key = uuid.uuid4().int % (2**63)
+    function = sql.Identifier("forest_test_cursor_gate_" + uuid.uuid4().hex)
+    trigger = sql.Identifier("forest_test_cursor_gate_" + uuid.uuid4().hex)
+
+    # A real DB trigger pauses the first HTTP transaction after it locks the
+    # cursor row, before it returns to the route. On the old DELETE path this
+    # lets PATCH lock the source row and wait for the cursor: releasing the gate
+    # then creates the resource/cursor deadlock deterministically.
+    with psycopg.connect(h.postgres_dsn, autocommit=True) as gate:
+        gate.execute(sql.SQL("""
+            CREATE FUNCTION {}() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                PERFORM pg_advisory_xact_lock({});
+                RETURN NEW;
+            END;
+            $$
+        """).format(function, sql.Literal(gate_key)))
+        gate.execute(sql.SQL("""
+            CREATE TRIGGER {} BEFORE UPDATE ON event_sequences
+            FOR EACH ROW WHEN (NEW.project_id = {}) EXECUTE FUNCTION {}()
+        """).format(trigger, sql.Literal(project["id"]), function))
+        try:
+            gate_pid = gate.execute("SELECT pg_backend_pid()").fetchone()[0]
+            gate.execute("SELECT pg_advisory_lock(%s)", (gate_key,))
+
+            def request(method):
+                kwargs = {"json": {"title": "Edited source", "expected_revision": resource["revision"]}} if method == "PATCH" else {}
+                return h.client.request(method, path, **kwargs)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                try:
+                    first = pool.submit(request, first_method)
+                    first_pid = wait_until(lambda: gate.execute(
+                        "SELECT pid FROM pg_stat_activity WHERE datname=current_database() "
+                        "AND %s=ANY(pg_blocking_pids(pid))", (gate_pid,),
+                    ).fetchone(), timeout=5)[0]
+                    second_method = "PATCH" if first_method == "DELETE" else "DELETE"
+                    second = pool.submit(request, second_method)
+                    wait_until(lambda: gate.execute(
+                        "SELECT pid FROM pg_stat_activity WHERE datname=current_database() "
+                        "AND %s=ANY(pg_blocking_pids(pid))", (first_pid,),
+                    ).fetchone(), timeout=5)
+                    assert not first.done() and not second.done()
+                finally:
+                    gate.execute("SELECT pg_advisory_unlock(%s)", (gate_key,))
+                responses = {first_method: first.result(timeout=15), second_method: second.result(timeout=15)}
+
+            assert responses["DELETE"].status_code == 200, responses["DELETE"].text
+            # When deletion locks first, editing sees the committed deletion
+            # and returns the normal missing-resource response, never a 500.
+            expected_patch = 404 if first_method == "DELETE" else 200
+            assert responses["PATCH"].status_code == expected_patch, responses["PATCH"].text
+            if expected_patch == 200:
+                edited = responses["PATCH"].json()
+                assert edited["title"] == "Edited source"
+                assert edited["revision"] == resource["revision"] + 1
+            assert h.client.get(path).status_code == 404
+            events = gate.execute("SELECT sequence,type FROM events WHERE project_id=%s ORDER BY sequence", (project["id"],)).fetchall()
+            assert len(events) == (2 if first_method == "DELETE" else 3), events
+            assert len({sequence for sequence, _ in events}) == len(events)
+            assert all(event_type == "artifact_changed" for _, event_type in events[1:])
+            cursor = gate.execute("SELECT sequence FROM event_sequences WHERE project_id=%s", (project["id"],)).fetchone()[0]
+            assert cursor == events[-1][0]
+        finally:
+            gate.execute(sql.SQL("DROP TRIGGER {} ON event_sequences").format(trigger))
+            gate.execute(sql.SQL("DROP FUNCTION {}()").format(function))
+            h.request("DELETE", f"/api/projects/{project['id']}")
 
 
 def test_postgres_two_workers_enforce_shared_cpu_reservations_across_projects(postgres_workers):

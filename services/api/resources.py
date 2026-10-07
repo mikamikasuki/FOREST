@@ -439,7 +439,9 @@ def install_resource_routes(name,model):
         with Session() as s: return asdict(get(s,model,ident))
     def edit(ident:str,body:dict=Body(...)):
         with Session.begin() as s:
-            r=get(s,model,ident)
+            # Both mutations lock the resource before dependents and the SSE
+            # cursor; deleting must not take the cursor lock ahead of this row.
+            r=get(s,model,ident,for_update=True)
             if body.get('expected_revision',r.revision)!=r.revision: error('REVISION_CONFLICT','This research object changed',409)
             if 'title' in body: r.title=body['title']
             if 'data' in body: r.data={**r.data,**body['data']}
@@ -447,7 +449,7 @@ def install_resource_routes(name,model):
             r.revision+=1; touch_dependents(s,r.project_id,r.id); return asdict(r)
     def remove(ident:str):
         with Session.begin() as s:
-            r=get(s,model,ident); touch_dependents(s,r.project_id,ident); s.delete(r); return {'deleted':ident}
+            r=get(s,model,ident,for_update=True); touch_dependents(s,r.project_id,ident); s.delete(r); return {'deleted':ident}
     router.add_api_route('/api/'+name,listing,methods=['GET'],name=name+'_list')
     if name!='reviews': router.add_api_route('/api/'+name,create,methods=['POST'],name=name+'_create')
     router.add_api_route('/api/'+name+'/{ident}',read,methods=['GET'],name=name+'_get')

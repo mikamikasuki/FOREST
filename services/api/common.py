@@ -9,8 +9,8 @@ from .config import settings
 
 def error(code,message,status=400,suggestion='',retryable=False):
     raise HTTPException(status,{'code':code,'message':str(message),'retryable':retryable,'suggestion':suggestion})
-def get(s,model,ident):
-    obj=s.get(model,ident)
+def get(s,model,ident,*,for_update=False):
+    obj=s.get(model,ident,with_for_update=True) if for_update else s.get(model,ident)
     if obj is None: error('NOT_FOUND',f'{model.__name__} {ident} does not exist',404)
     return obj
 def project_dir(project_id):
@@ -47,7 +47,7 @@ def save_graph(s,p,graph):
     s.flush()
 
 def emit(s,project_id,event_type,data):
-    sequence=(s.scalar(select(func.max(Event.sequence)).where(Event.project_id==project_id)) or 0)+1
+    sequence=allocate_event_sequence(s,project_id)
     s.add(Event(project_id=project_id,sequence=sequence,type=event_type,data=data))
     if sequence%100==0: s.execute(delete(Event).where(Event.project_id==project_id,Event.sequence<sequence-500))
 
