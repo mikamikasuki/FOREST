@@ -24,6 +24,23 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
+      - name: Install Tectonic
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=0.17.0
+          archive="tectonic-${version}-x86_64-unknown-linux-gnu.tar.gz"
+          archive_path="$RUNNER_TEMP/$archive"
+          install_dir="$RUNNER_TEMP/tectonic"
+          curl --fail --show-error --silent --location --retry 3 \
+            "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${version}/${archive}" \
+            --output "$archive_path"
+          echo "1a715688baf591e650c8aeb160ae934e181685eecbb38b317de30b269ac5d606  $archive_path" | sha256sum --check
+          mkdir -p "$install_dir"
+          tar -xzf "$archive_path" -C "$install_dir"
+          chmod +x "$install_dir/tectonic"
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/tectonic" --version
       - run: python -m pip install -r requirements.lock.txt
       - run: python -m pip install --no-deps -e .
       - run: forest --help
