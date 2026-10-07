@@ -21,6 +21,110 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKLOAD = ROOT / "scripts" / "test_worker_case.py"
 
 
+def install_fake_docker(directory):
+    """Install a small Docker CLI stand-in for worker lifecycle integration tests."""
+    binary_dir = directory / "fake-docker-bin"
+    state_dir = directory / "fake-docker-state"
+    binary_dir.mkdir()
+    state_dir.mkdir()
+    docker = binary_dir / "docker"
+    fake_docker_source = '''
+import json, os, signal, subprocess, sys, time, uuid
+from datetime import datetime, timezone
+from pathlib import Path
+import psutil
+
+state_dir = Path(os.environ["FOREST_FAKE_DOCKER_STATE"])
+args = sys.argv[1:]
+action = args[0]
+
+def state_path(ref):
+    for path in state_dir.glob("*.json"):
+        state = json.loads(path.read_text())
+        if ref in (state["Id"], state["name"]):
+            return path, state
+    return None, None
+
+def inspect(state):
+    pid = state.get("pid")
+    alive = False
+    if pid:
+        try:
+            alive = psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            pass
+    if state["State"]["Paused"] and alive:
+        state["State"].update(Status="paused", Running=True)
+    elif alive:
+        state["State"].update(Status="running", Running=True, Paused=False)
+    elif state["State"]["Status"] != "created":
+        state["State"].update(Status="exited", Running=False, Paused=False, ExitCode=0)
+    return {"Id": state["Id"], "Created": state["Created"], "Config": {"Labels": state["labels"]}, "State": state["State"]}
+
+if action == "create":
+    name = args[args.index("--name") + 1]
+    labels = {}
+    env = {}
+    workspace = None
+    for index, value in enumerate(args[:-1]):
+        if value == "--label":
+            key, item = args[index + 1].split("=", 1)
+            labels[key] = item
+        elif value == "--env":
+            key, item = args[index + 1].split("=", 1)
+            env[key] = item
+        elif value == "--mount":
+            workspace = args[index + 1].split("src=", 1)[1].split(",", 1)[0]
+    command = args[args.index("forest-task:local") + 1:]
+    ident = uuid.uuid4().hex
+    state = {"Id": ident, "Created": datetime.now(timezone.utc).isoformat(), "name": name,
+             "labels": labels, "env": env, "workspace": workspace, "command": command,
+             "State": {"Status": "created", "Running": False, "Paused": False,
+                       "StartedAt": "0001-01-01T00:00:00Z", "ExitCode": None}}
+    (state_dir / (ident + ".json")).write_text(json.dumps(state))
+    print(ident)
+elif action == "inspect":
+    path, state = state_path(args[1])
+    if not state:
+        print("Error: No such object", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps([inspect(state)]))
+elif action == "start":
+    path, state = state_path(args[1])
+    if not state:
+        print("Error: No such object", file=sys.stderr)
+        sys.exit(1)
+    process = subprocess.Popen(state["command"], cwd=state["workspace"], env={**state["env"], "PATH": os.environ.get("PATH", "")}, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    state["pid"] = process.pid
+    state["State"].update(Status="running", Running=True, Paused=False, StartedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+    path.write_text(json.dumps(state))
+elif action in ("pause", "unpause", "stop"):
+    path, state = state_path(args[1])
+    if not state:
+        print("Error: No such object", file=sys.stderr)
+        sys.exit(1)
+    pid = state.get("pid")
+    if pid:
+        try:
+            sig = signal.SIGSTOP if action == "pause" else signal.SIGCONT if action == "unpause" else signal.SIGTERM
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            pass
+    state["State"]["Paused"] = action == "pause"
+    if action == "stop":
+        state["State"].update(Status="exited", Running=False, Paused=False, ExitCode=143)
+    path.write_text(json.dumps(state))
+elif action == "logs":
+    pass
+else:
+    print("Unsupported fake Docker action: " + action, file=sys.stderr)
+    sys.exit(2)
+'''
+    docker.write_text("#!" + sys.executable + "\n" + fake_docker_source)
+    docker.chmod(0o755)
+    return binary_dir, state_dir
+
+
 def wait_until(callback, timeout=20):
     deadline = time.monotonic() + timeout
     last = None
@@ -169,6 +273,51 @@ def test_pause_resume_stops_and_restarts_actual_process_group(actual_worker):
     h.request("POST", f"/api/runs/{run['id']}/resume", json={})
     wait_until(lambda: heartbeat.read_text() != before[0])
     assert h.terminal(run)["status"] == "completed"
+
+
+def test_live_container_executor_uses_recalculated_timeout_after_resume(tmp_path):
+    h = Harness(tmp_path)
+    binary_dir, state_dir = install_fake_docker(tmp_path)
+    h.env = {**h.env, "PATH": str(binary_dir) + os.pathsep + h.env["PATH"],
+             "FOREST_FAKE_DOCKER_STATE": str(state_dir)}
+    try:
+        h.start_api()
+        h.start_worker()
+        project, node = h.project_node(seconds=4, timeout=30)
+        project = h.request("GET", f"/api/projects/{project['id']}")
+        initial_budget = {**project["budget"], "seconds": 2}
+        h.request("PATCH", f"/api/projects/{project['id']}",
+                  json={"expected_revision": project["revision"], "budget": initial_budget})
+        script = "import pathlib,time; p=pathlib.Path('starts.txt'); p.write_text(str(int(p.read_text())+1) if p.exists() else '1'); time.sleep(3); pathlib.Path('finished.txt').write_text('ok')"
+        h.request("PATCH", f"/api/nodes/{node['id']}", json={"config": {
+            "kind": "command", "command": [sys.executable, "-c", script],
+            "execution_backend": "container", "container": {"memory": "256m"}, "timeout": 30}})
+        run = h.launch(node)
+        active = h.running(run)
+        output = h.output(run)
+        handle_path = output / "container_task.json"
+        job = wait_until(lambda: json.loads(handle_path.read_text()) if handle_path.exists() else None)
+        wait_until(lambda: (output / "workspace" / "starts.txt").exists())
+        assert active["config"]["timeout"] == 2
+
+        paused = h.request("POST", f"/api/runs/{run['id']}/pause", json={})
+        assert paused["status"] == "paused"
+        current_project = h.request("GET", f"/api/projects/{project['id']}")
+        increased_budget = {**current_project["budget"], "seconds": 20}
+        h.request("PATCH", f"/api/projects/{project['id']}",
+                  json={"expected_revision": current_project["revision"], "budget": increased_budget})
+        resumed = h.request("POST", f"/api/runs/{run['id']}/resume", json={})
+        assert resumed["status"] == "running"
+        assert resumed["pid"] == active["pid"]
+        assert resumed["config"]["timeout"] == 20
+
+        completed = h.terminal(run, timeout=15)
+        assert completed["status"] == "completed", completed
+        assert (output / "workspace" / "finished.txt").read_text() == "ok"
+        assert (output / "workspace" / "starts.txt").read_text() == "1"
+        assert json.loads(handle_path.read_text())["container_id"] == job["container_id"]
+    finally:
+        h.cleanup()
 
 
 def test_cancel_terminates_executor_and_descendant(actual_worker):
