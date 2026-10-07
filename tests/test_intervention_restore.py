@@ -9,15 +9,25 @@ import sys
 from tests.test_intervention_worker import intervention_harness
 
 ROOT=Path(__file__).resolve().parents[1]
-LEGACY=ROOT.parent/'codex-live-reporting'
 
 
 def test_legacy_schema_upgrade_serializes_concurrent_migrators(tmp_path,intervention_harness):
     h=intervention_harness
     env={**os.environ,'FOREST_DATABASE_URL':h.env['FOREST_DATABASE_URL'],'FOREST_DATA_DIR':str(tmp_path/'source'),
-         'FOREST_MODEL':'','PYTHONPATH':str(LEGACY)}
-    legacy="from services.api.db import migrate,Session,Project; migrate();\nwith Session.begin() as s:s.add(Project(id='legacy-retained-project',name='Retained old schema',goal='Preserve actual stored data'))"
-    seeded=subprocess.run([sys.executable,'-c',legacy],cwd=LEGACY,env=env,capture_output=True,text=True,timeout=30)
+         'FOREST_MODEL':'','PYTHONPATH':str(ROOT)}
+    # Build a version-4 database from the core schema in this checkout. The
+    # previous test depended on an untracked sibling repository that CI does
+    # not provision. Migration-owned tables are deliberately absent here.
+    legacy="""from sqlalchemy import inspect
+from services.api.db import Base, Migration, Project, Session, engine
+Base.metadata.create_all(engine)
+with Session.begin() as s:
+    for version in (1, 2, 3, 4): s.add(Migration(version=version))
+    s.add(Project(id='legacy-retained-project', name='Retained old schema', goal='Preserve actual stored data'))
+tables=set(inspect(engine).get_table_names())
+assert not {'interventions', 'intervention_effects', 'action_decisions'} & tables
+"""
+    seeded=subprocess.run([sys.executable,'-c',legacy],cwd=ROOT,env=env,capture_output=True,text=True,timeout=30)
     assert seeded.returncode==0,seeded.stderr
     env['PYTHONPATH']=str(ROOT)
     processes=[subprocess.Popen([sys.executable,'-m','services.api.db'],cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for _ in range(4)]
