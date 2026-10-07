@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
+import re
 from copy import deepcopy
 from pathlib import Path
 import shutil
@@ -12,7 +14,10 @@ import sys
 
 from PIL import Image
 
-from research.figures.workflow import render_candidates, review_requests, select_candidate, promote_candidate
+from research.figures.workflow import (
+    REVIEW_ROLES, CandidateReviewRejected, render_candidates, review_requests,
+    select_candidate, promote_candidate,
+)
 from research.paper.style import writing_contract
 
 
@@ -205,15 +210,185 @@ def review_with_models(client, bundle, output_dir, context=None):
         finally:
             client.config=original_config
         (output / f'review-{index + 1}.json').write_text(json.dumps(response, ensure_ascii=False, indent=2))
-        review = json.loads(response['text'])
-        if not isinstance(review, dict) or review.get('role') != request['role']:
-            raise ValueError('Visual review must identify its actual assigned role: ' + request['role'])
+        try:
+            review = json.loads(response['text'])
+        except (TypeError, json.JSONDecodeError) as error:
+            raise ValueError('Visual review response-format error for ' + request['role'] + ': expected a JSON object') from error
+        review, normalizations = _validate_review_response(review, request['role'], bundle)
+        if normalizations:
+            review['_response_normalizations'] = normalizations
         review['provider_receipt'] = {'model': response['model'], 'request_id': response.get('request_id'),
                                       'response_id': response.get('response_id'), 'usage': response.get('usage'),
                                       'response_path': str(output / f'review-{index + 1}.json'), 'actual_model_call': True}
         reviews.append(review)
     (output / 'reviews.json').write_text(json.dumps(reviews, ensure_ascii=False, indent=2))
     return reviews
+
+
+def _canonical_review_role(value):
+    if not isinstance(value, str):
+        return None
+    normalized = re.sub(r'[\s_-]+', ' ', value).strip().casefold()
+    if normalized.startswith('independent '):
+        normalized = normalized[len('independent '):]
+    return {role.casefold(): role for role in REVIEW_ROLES}.get(normalized)
+
+
+def _validate_review_response(review, expected_role, bundle):
+    """Validate reviewer structure before any visual-repair decision is made."""
+    prefix = 'Visual review response-format error for ' + expected_role + ': '
+    if not isinstance(review, dict):
+        raise ValueError(prefix + 'expected a JSON object')
+    if _canonical_review_role(review.get('role')) != expected_role:
+        raise ValueError(prefix + 'role must identify the assigned reviewer')
+    if 'placement' not in review:
+        raise ValueError(prefix + 'placement must be present and either null or a complete Visual Editor object')
+    candidates = bundle.get('candidates', [])
+    expected_ids = {candidate.get('id') for candidate in candidates}
+    entries = review.get('reviews')
+    if not isinstance(entries, list) or len(entries) != len(expected_ids):
+        raise ValueError(prefix + 'reviews must contain every rendered candidate exactly once')
+    observed = set()
+    normalizations = []
+    if review.get('role') != expected_role:
+        normalizations.append('canonicalized role alias ' + repr(review.get('role')) + ' to ' + repr(expected_role))
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(prefix + 'each review must be an object')
+        identifier = entry.get('candidate_id')
+        if identifier not in expected_ids or identifier in observed:
+            raise ValueError(prefix + 'candidate IDs must match each rendered candidate exactly once')
+        observed.add(identifier)
+        if entry.get('verdict') not in ('accept', 'revise', 'reject'):
+            raise ValueError(prefix + 'verdict must be accept, revise, or reject')
+        reasons = entry.get('reasons')
+        if isinstance(reasons, str) and reasons.strip():
+            entry['reasons'] = [reasons]
+            normalizations.append('wrapped the single textual reason for candidate ' + identifier)
+        elif (not isinstance(reasons, list) or not reasons
+              or any(not isinstance(reason, str) or not reason.strip() for reason in reasons)):
+            raise ValueError(prefix + 'candidate ' + identifier + ' reasons must be a nonempty array of strings')
+        scores = entry.get('scores')
+        dimensions = set(REVIEW_ROLES[expected_role])
+        if not isinstance(scores, dict) or set(scores) != dimensions:
+            raise ValueError(prefix + 'candidate ' + identifier + ' scores must contain exactly ' + ', '.join(sorted(dimensions)))
+        if any(isinstance(value, bool) or not isinstance(value, (int, float))
+               or not math.isfinite(value) or not 0 <= value <= 5 for value in scores.values()):
+            raise ValueError(prefix + 'candidate ' + identifier + ' scores must be finite numbers from 0 to 5')
+    if observed != expected_ids:
+        raise ValueError(prefix + 'reviews must contain every rendered candidate exactly once')
+    placement = review.get('placement')
+    if placement is not None:
+        required = ('section_role', 'after', 'reason')
+        if (expected_role != 'Visual Editor' or not isinstance(placement, dict)
+                or any(not isinstance(placement.get(key), str) or not placement[key].strip() for key in required)):
+            raise ValueError(prefix + 'placement must be null or a complete Visual Editor placement object')
+    review['role'] = expected_role
+    return review, normalizations
+
+
+def _validate_style_repair(response, current_style=None, data=None, kind='bar'):
+    """Reject malformed presentation patches before they can affect a rerender."""
+    prefix = 'Visual repair response-format error: '
+    if not isinstance(response, dict) or set(response) != {'style'}:
+        raise ValueError(prefix + 'expected an object containing only a style object')
+    changes = response['style']
+    allowed = {'font_size', 'width', 'height', 'layout_width_in', 'title', 'xlabel', 'ylabel',
+               'legend_columns', 'rotation', 'color', 'palette', 'labels', 'dataset_labels',
+               'paper_layout', 'span'}
+    if not isinstance(changes, dict) or set(changes) - allowed:
+        raise ValueError(prefix + 'style contains unsupported fields')
+    for field in ('labels', 'dataset_labels'):
+        if field in changes and (not isinstance(changes[field], dict)
+                or any(not isinstance(key, str) or not isinstance(value, str) or not value.strip()
+                       for key, value in changes[field].items())):
+            raise ValueError(prefix + field + ' must map identity strings to nonempty label strings')
+    for field in ('font_size', 'width', 'height', 'layout_width_in', 'rotation'):
+        if field in changes:
+            value = changes[field]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(prefix + field + ' must be a finite number')
+            if field != 'rotation' and value <= 0:
+                raise ValueError(prefix + field + ' must be positive')
+    if 'legend_columns' in changes and (isinstance(changes['legend_columns'], bool)
+            or not isinstance(changes['legend_columns'], int) or not 1 <= changes['legend_columns'] <= 8):
+        raise ValueError(prefix + 'legend_columns must be an integer from 1 to 8')
+    for field in ('title', 'xlabel', 'ylabel', 'span'):
+        if field in changes and (not isinstance(changes[field], str) or not changes[field].strip()):
+            raise ValueError(prefix + field + ' must be a nonempty string')
+    if 'span' in changes and changes['span'] not in ('column', 'page'):
+        raise ValueError(prefix + 'span must be column or page')
+    if 'paper_layout' in changes and not isinstance(changes['paper_layout'], dict):
+        raise ValueError(prefix + 'paper_layout must be an object')
+    if 'palette' in changes and (not isinstance(changes['palette'], list) or not changes['palette']
+            or any(not isinstance(value, str) or not value.strip() for value in changes['palette'])):
+        raise ValueError(prefix + 'palette must be a nonempty array of color strings')
+    from matplotlib.colors import is_color_like
+    if 'palette' in changes and any(not is_color_like(value) for value in changes['palette']):
+        raise ValueError(prefix + 'palette must contain colors accepted by the renderer')
+    if 'color' in changes and (not isinstance(changes['color'], str) or not changes['color'].strip()
+                               or not is_color_like(changes['color'])):
+        raise ValueError(prefix + 'color must be a valid renderer color')
+    if 'rotation' in changes and not -90 <= changes['rotation'] <= 90:
+        raise ValueError(prefix + 'rotation must be between -90 and 90 degrees')
+
+    merged_style = {**(current_style or {}), **changes}
+    if 'paper_layout' in changes:
+        prior_layout = (current_style or {}).get('paper_layout') or {}
+        if not isinstance(prior_layout, dict):
+            raise ValueError(prefix + 'existing paper_layout must be an object')
+        merged_style['paper_layout'] = {**prior_layout, **changes['paper_layout']}
+    try:
+        from research.figures.render import figure_dimensions
+        figure_dimensions(merged_style)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(prefix + str(error)) from error
+
+    rows = data
+    if isinstance(data, dict) and isinstance(data.get('statistical_results'), dict):
+        results = data['statistical_results']
+        rows = results.get('comparisons' if kind == 'forest' else 'records', [])
+        methods = {str(row.get('method', row.get('candidate'))) for row in rows
+                   if isinstance(row, dict) and row.get('method', row.get('candidate')) is not None}
+        datasets = {str(row['dataset']) for row in rows
+                    if isinstance(row, dict) and row.get('dataset') is not None}
+        for binding in data.get('metric_bindings', []):
+            identity = binding.get('statistical_identity', {}) if isinstance(binding, dict) else {}
+            methods.update(str(identity[key]) for key in ('method', 'baseline', 'candidate')
+                           if identity.get(key) is not None)
+            if identity.get('dataset') is not None:
+                datasets.add(str(identity['dataset']))
+    else:
+        if isinstance(data, dict):
+            rows = data.get('summary', data.get('rows', data.get('records')))
+        if isinstance(rows, list) and all(isinstance(row, dict) for row in rows):
+            methods = {str(row['method']) for row in rows if row.get('method') is not None}
+            datasets = {str(row['dataset']) for row in rows if row.get('dataset') is not None}
+        else:
+            methods, datasets = set(), set()
+    if isinstance(rows, list):
+        for field, identities in (('labels', methods), ('dataset_labels', datasets)):
+            mapping = merged_style.get(field, {})
+            if not isinstance(mapping, dict):
+                raise ValueError(prefix + field + ' must map identities to nonempty display strings')
+            if not set(mapping).issubset(identities):
+                raise ValueError(prefix + field + ' keys must match identities in the supplied data')
+        if methods or datasets:
+            from research.figures.statistical import validate_display_labels
+            try:
+                validate_display_labels(merged_style, methods, datasets)
+            except ValueError as error:
+                raise ValueError(prefix + str(error)) from error
+    return changes
+
+
+def _apply_style_repair(current_style, changes):
+    updated = {**current_style, **changes}
+    if 'paper_layout' in changes:
+        updated['paper_layout'] = {
+            **(current_style.get('paper_layout') or {}), **changes['paper_layout']
+        }
+    return updated
 
 
 def apply_story_presentation(data, changes):
@@ -258,7 +433,7 @@ def reviewed_render(client, output_dir, data, style=None, kind='bar', *, context
         reviews = review_with_models(client, bundle, folder / 'model_reviews', context)
         try:
             selection = select_candidate(bundle, reviews)
-        except ValueError as error:
+        except CandidateReviewRejected as error:
             (folder / 'repair_needed.txt').write_text(str(error))
             if number == attempts:
                 raise ValueError('No visual candidate passed the independent reviews; retained candidates and concrete repairs: ' + str(error)) from error
@@ -273,14 +448,15 @@ def reviewed_render(client, output_dir, data, style=None, kind='bar', *, context
                 (folder/'revised_story_data.json').write_text(json.dumps(data,ensure_ascii=False,indent=2))
                 continue
             # Scientific data and statistical definitions remain identical.
-            response = client.complete([{'role': 'system', 'content': 'Repair only presentation. Return JSON {"style":{...}}. Allowed keys: font_size, width, height, layout_width_in, title, xlabel, ylabel, legend_columns, rotation, color, palette, labels, dataset_labels, paper_layout, span. Do not change metric, methods, units, aggregation, uncertainty definitions or observations.'},
+            response = client.complete([{'role': 'system', 'content': 'Repair only presentation. Return JSON {"style":{...}}. Allowed keys: font_size, width, height, layout_width_in, title, xlabel, ylabel, legend_columns, rotation, color, palette, labels, dataset_labels, paper_layout, span. Use font_size >= 8, finite positive dimensions, renderer-valid colors, span column/page, and a valid paper_layout under the selected template. labels and dataset_labels must be JSON objects mapping actual supplied identities to distinct nonempty display strings. Do not change metric, methods, units, aggregation, uncertainty definitions or observations.'},
                 {'role': 'user', 'content': json.dumps({'style': current_style, 'reviews': reviews, 'repair': str(error)}, ensure_ascii=False)}])
             (folder / 'repair_response.json').write_text(json.dumps(response, ensure_ascii=False, indent=2))
-            changes = json.loads(response['text']).get('style')
-            allowed = {'font_size', 'width', 'height', 'layout_width_in', 'title', 'xlabel', 'ylabel', 'legend_columns', 'rotation', 'color', 'palette', 'labels', 'dataset_labels', 'paper_layout', 'span'}
-            if not isinstance(changes, dict) or set(changes) - allowed:
-                raise ValueError('Visual repair attempted to change scientific data or unsupported fields')
-            current_style.update(changes)
+            try:
+                repair_payload = json.loads(response['text'])
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValueError('Visual repair response-format error: expected JSON object') from error
+            changes = _validate_style_repair(repair_payload, current_style, data, kind)
+            current_style = _apply_style_repair(current_style, changes)
             continue
         chosen = promote_candidate(folder, bundle, selection)
         return _publish_outputs(output,chosen), selection
