@@ -541,7 +541,7 @@ Known domain failures: `404` NOT_FOUND; `422` INVALID_PROTOCOL.
 
 #### `POST /api/projects/{ident}/statistics/paired`
 
-Require project-relative existing path and unit_column/baseline_column/candidate_column. Worker analysis_type=paired uses independent unit clusters; optional direction lower/higher, confidence, bootstrap_samples, seed and meaningful_effect configure the analysis. Return Run, not a confidence interval immediately.
+Require project-relative existing path and unit_column/baseline_column/candidate_column. Worker analysis_type=paired uses independent unit clusters; optional direction lower/higher, confidence, bootstrap_samples, seed and meaningful_effect configure the analysis. When required policy or an explicit verifier guard applies, path must select the uniquely admitted source-bound checked artifact or its verified graph input copy. Optional unguarded requests remain available. Return Run, not a confidence interval immediately.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
