@@ -1028,6 +1028,236 @@ def test_missing_deferred_producer_file_blocks_consumer_before_process_start(act
     assert not (h.output(consumer_run) / "workspace" / "consumer_started.txt").exists()
 
 
+def test_successful_current_descendant_consumes_rerun_before_affected_scope(actual_worker):
+    h = actual_worker
+    project = h.request("POST", "/api/projects", json={
+        "name": "Consume rerun after current success",
+        "budget": {"max_runs": 10, "seconds": 60, "allow_paid": False},
+    })
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    branch_id = graph["branches"][0]["id"]
+
+    def add_command_node(title, command):
+        current = h.request("GET", f"/api/projects/{project['id']}/graph")
+        node_id = str(uuid.uuid4())
+        result = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+            "request_id": str(uuid.uuid4()),
+            "expected_revision": current["revision"],
+            "operation": "add_node",
+            "params": {
+                "id": node_id,
+                "branch_id": branch_id,
+                "type": "experiment",
+                "title": title,
+                "config": {"kind": "command", "command": command, "timeout": 10},
+            },
+        })
+        return next(node for node in result["graph"]["nodes"] if node["id"] == node_id)
+
+    root = add_command_node("Root", [sys.executable, "-c", "print('root')"])
+    root_run = h.launch(root)
+    assert h.terminal(root_run)["status"] == "completed"
+
+    child = add_command_node("Child", [sys.executable, "-c", "print('child')"])
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": current["revision"],
+        "operation": "add_dependency",
+        "params": {"source": root["id"], "target": child["id"]},
+    })
+
+    child_run = h.launch(child)
+    assert h.terminal(child_run)["status"] == "completed"
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    completed_child = next(node for node in current["nodes"] if node["id"] == child["id"])
+    assert completed_child["results_current"] is True
+    assert completed_child.get("needs_rerun") is not True, completed_child
+
+    affected = h.request("POST", f"/api/nodes/{root['id']}/run", json={
+        "request_id": str(uuid.uuid4()), "scope": "affected",
+    })
+    scheduled = affected.get("runs", [affected])
+    assert [run["node_id"] for run in scheduled] == [root["id"]]
+
+
+@pytest.mark.parametrize("node_type", ["experiment", "figure", "paper"])
+def test_upstream_invalidation_after_enqueue_preserves_descendant_rerun(actual_worker, node_type):
+    h = actual_worker
+    project = h.request("POST", "/api/projects", json={
+        "name": "Preserve invalidation after enqueue",
+        "budget": {"max_runs": 12, "seconds": 90, "allow_paid": False},
+    })
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    branch_id = graph["branches"][0]["id"]
+
+    def add_command_node(title, command, kind="experiment"):
+        current = h.request("GET", f"/api/projects/{project['id']}/graph")
+        node_id = str(uuid.uuid4())
+        result = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+            "request_id": str(uuid.uuid4()),
+            "expected_revision": current["revision"],
+            "operation": "add_node",
+            "params": {
+                "id": node_id,
+                "branch_id": branch_id,
+                "type": kind,
+                "title": title,
+                "config": {"kind": "command", "command": command, "timeout": 10},
+            },
+        })
+        return next(node for node in result["graph"]["nodes"] if node["id"] == node_id)
+
+    def edit_node(node_id, command):
+        current = h.request("GET", f"/api/projects/{project['id']}/graph")
+        return h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+            "request_id": str(uuid.uuid4()),
+            "expected_revision": current["revision"],
+            "operation": "edit_node",
+            "targets": [node_id],
+            "params": {"config": {"kind": "command", "command": command, "timeout": 10}},
+        })
+
+    root = add_command_node("Upstream", [sys.executable, "-c", "print('root v1')"])
+    assert h.terminal(h.launch(root))["status"] == "completed"
+    child = add_command_node("Descendant", [sys.executable, "-c", "import time; time.sleep(1.5); print('child')"], node_type)
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": current["revision"],
+        "operation": "add_dependency",
+        "params": {"source": root["id"], "target": child["id"]},
+    })
+    accepted_child_run = h.launch(child)
+    assert h.terminal(accepted_child_run)["status"] == "completed"
+
+    child_run = h.launch(child)
+    h.running(child_run)
+    edit_node(root["id"], [sys.executable, "-c", "print('root v2')"])
+    assert h.terminal(child_run)["status"] == "completed"
+
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    current_child = next(node for node in current["nodes"] if node["id"] == child["id"])
+    assert bool(current_child.get("needs_rerun")) == (node_type == "experiment"), current_child
+    assert current_child["deliverable_status"] == "needs_update", current_child
+    assert current_child.get("results_current") is False, current_child
+    assert current_child.get("last_run_id") == accepted_child_run["id"], current_child
+    assert current_child["outputs"][0]["id"] == accepted_child_run["id"], current_child
+
+    affected = h.request("POST", f"/api/nodes/{root['id']}/run", json={
+        "request_id": str(uuid.uuid4()), "scope": "affected",
+    })
+    scheduled = affected.get("runs", [affected])
+    assert child["id"] in [run["node_id"] for run in scheduled]
+
+
+
+@pytest.mark.parametrize("node_type", ["figure", "paper"])
+def test_restart_does_not_promote_invalidated_first_refresh_result(actual_worker, node_type):
+    from test_research_verification_workflow import add_node
+    h = actual_worker
+    project = h.request("POST", "/api/projects", json={
+        "name": "First refresh result remains stale after restart", "mode": "manual",
+        "budget": {"max_runs": 12, "seconds": 90, "allow_paid": False},
+    })
+    source = add_node(h, project, type="experiment", title="Source", config={
+        "kind": "command", "command": [sys.executable, "-c", "print('source v1')"], "timeout": 10})
+    child = add_node(h, project, type=node_type, title="First refresh", config={
+        "kind": "command", "command": [sys.executable, "-c", "import time; time.sleep(1.5); print('old snapshot')"], "timeout": 10})
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()), "expected_revision": graph["revision"], "operation": "add_dependency",
+        "params": {"source": source["id"], "target": child["id"], "relation": "evidence"}})
+    run = h.launch(child)
+    assert not run["dependencies"]  # Evidence propagation is not an execution dependency.
+    h.running(run)
+    h.request("PATCH", f"/api/nodes/{source['id']}", json={"config": {
+        "kind": "command", "command": [sys.executable, "-c", "print('source v2')"], "timeout": 10}})
+    assert h.terminal(run)["status"] == "completed"
+    before = h.request("GET", f"/api/nodes/{child['id']}")
+    assert before.get("results_current") is False, before
+    assert before["deliverable_status"] == "needs_update", before
+    assert not before.get("result_revision") and not before["outputs"], before
+
+    h.stop(h.worker)
+    h.start_worker()
+    # A real command completion establishes that startup reconciliation finished.
+    assert h.terminal(h.launch(source))["status"] == "completed"
+    after = h.request("GET", f"/api/nodes/{child['id']}")
+    assert after.get("results_current") is False, after
+    assert after["deliverable_status"] == "needs_update", after
+    assert not after.get("result_revision") and not after["outputs"], after
+    assert after["latest_run_id"] == run["id"]
+
+
+def test_failed_current_run_keeps_rerun_marker(actual_worker):
+    h = actual_worker
+    project = h.request("POST", "/api/projects", json={
+        "name": "Keep rerun marker after failure",
+        "budget": {"max_runs": 5, "seconds": 30, "allow_paid": False},
+    })
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    node_id = str(uuid.uuid4())
+    created = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": graph["revision"],
+        "operation": "add_node",
+        "params": {
+            "id": node_id,
+            "branch_id": graph["branches"][0]["id"],
+            "type": "experiment",
+            "title": "Fails without satisfying the rerun",
+            "config": {"kind": "command", "command": [sys.executable, "-c", "raise SystemExit(7)"]},
+        },
+    })
+    node = next(value for value in created["graph"]["nodes"] if value["id"] == node_id)
+    run = h.launch(node)
+    assert h.terminal(run)["status"] == "failed"
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    failed_node = next(value for value in current["nodes"] if value["id"] == node_id)
+    assert failed_node["results_current"] is False
+    assert failed_node.get("needs_rerun") is True
+
+
+def test_stale_run_does_not_consume_rerun_marker_or_promote_results(actual_worker):
+    h = actual_worker
+    project = h.request("POST", "/api/projects", json={
+        "name": "Keep rerun marker after stale run",
+        "budget": {"max_runs": 5, "seconds": 30, "allow_paid": False},
+    })
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    node_id = str(uuid.uuid4())
+    initial_config = {"kind": "command", "command": [sys.executable, "-c", "import time; time.sleep(1.2)"]}
+    created = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": graph["revision"],
+        "operation": "add_node",
+        "params": {
+            "id": node_id,
+            "branch_id": graph["branches"][0]["id"],
+            "type": "experiment",
+            "title": "Becomes stale while running",
+            "config": initial_config,
+        },
+    })
+    node = next(value for value in created["graph"]["nodes"] if value["id"] == node_id)
+    run = h.launch(node)
+    h.running(run)
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": current["revision"],
+        "operation": "edit_node",
+        "targets": [node_id],
+        "params": {"config": {"kind": "command", "command": [sys.executable, "-c", "print('new revision')"]}},
+    })
+    assert h.terminal(run)["status"] == "completed"
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    stale_node = next(value for value in current["nodes"] if value["id"] == node_id)
+    assert stale_node.get("needs_rerun") is True
+    assert stale_node.get("results_current") is not True
+
+
 @pytest.mark.parametrize("stage", ["after_model", "before_tool"])
 def test_real_debug_checkpoint_can_edit_payload_then_resume(actual_worker, stage):
     h = actual_worker

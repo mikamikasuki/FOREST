@@ -345,7 +345,8 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     run = TaskRun(project_id=project_id, node_id=node.id if node else None, branch_id=node.branch_id if node else merged.get('branch_id'),
                   request_id=request_id, kind=kind, config=merged, node_revision=run_revision,
                   dependencies=dependencies or [], priority=int(config.get('priority', 0)),
-                  resource={'time_budget': time_budget})
+                  resource={'time_budget': time_budget,
+                            'rerun_generation_at_enqueue': int(node.extra.get('rerun_generation', 0)) if node else 0})
     s.add(run)
     s.flush()
     run.resource = {**run.resource, 'verification_status': 'unverified'}
