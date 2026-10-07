@@ -345,6 +345,46 @@ def case_sse_replay(client, app):
     asyncio.run(read_frames())
 
 
+def case_sse_cursor_legacy_repair(client, app):
+    from sqlalchemy import select, text
+    from services.api.common import emit
+    from services.api.db import Event, EventSequence, Session, migrate
+
+    p = project(client, app.openapi())
+    with Session.begin() as session:
+        session.add_all([
+            Event(project_id=p["id"], sequence=900, type="node_changed", data={"revision": 1}),
+            Event(project_id=p["id"], sequence=901, type="run_changed", data={"status": "queued"}),
+        ])
+    with Session.begin() as session:
+        emit(session, p["id"], "run_changed", {"status": "running"})
+        emit(session, p["id"], "run_changed", {"status": "completed"})
+    with Session() as session:
+        assert session.scalar(select(EventSequence.sequence).where(EventSequence.project_id == p["id"])) == 903
+
+    # Model legacy event rows whose concurrent writers reused IDs.
+    with Session.begin() as session:
+        session.execute(text("DROP INDEX IF EXISTS uq_events_project_sequence"))
+        session.execute(text("DELETE FROM schema_versions WHERE version = 2"))
+        session.add_all([
+            Event(project_id=p["id"], sequence=904, type="run_changed", data={"run_id": "a"}),
+            Event(project_id=p["id"], sequence=904, type="run_changed", data={"run_id": "b"}),
+            Event(project_id=p["id"], sequence=904, type="run_changed", data={"run_id": "c"}),
+        ])
+    migrate()
+
+    with Session() as session:
+        sequences = list(session.scalars(
+            select(Event.sequence).where(Event.project_id == p["id"]).order_by(Event.sequence)))
+        assert len(sequences) == len(set(sequences))
+        assert sequences[-3:] == [904, 905, 906]
+        assert session.scalar(select(EventSequence.sequence).where(EventSequence.project_id == p["id"])) == 906
+    with Session.begin() as session:
+        emit(session, p["id"], "run_changed", {"status": "recovered"})
+    with Session() as session:
+        assert session.scalar(select(EventSequence.sequence).where(EventSequence.project_id == p["id"])) == 907
+
+
 def case_aliased_data_directory(client, app):
     from services.api.config import settings
 

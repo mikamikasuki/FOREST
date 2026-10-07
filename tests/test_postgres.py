@@ -122,6 +122,48 @@ def test_postgres_concurrent_run_clicks_create_one_job(postgres_workers):
     assert finished["metrics"]["ticks"] > 0
 
 
+def test_postgres_concurrent_event_writes_keep_unique_replay_cursors(postgres_workers):
+    h = postgres_workers
+    for worker in h.workers:
+        h.stop(worker)
+    project_id = None
+    try:
+        project, node = h.project_node(seconds=0.2, budget={"max_runs": 500, "seconds": 3600, "allow_paid": False})
+        project_id = project["id"]
+        runs = [h.launch(node, f"event-cursor-{index}") for index in range(32)]
+
+        def reprioritize(item):
+            run, priority = item
+            return h.client.post(f"/api/runs/{run['id']}/priority", json={"priority": priority})
+
+        with ThreadPoolExecutor(max_workers=len(runs)) as pool:
+            for round_number in range(12):
+                values = [(run, round_number * len(runs) + index) for index, run in enumerate(runs)]
+                responses = list(pool.map(reprioritize, values))
+                assert all(response.status_code == 200 for response in responses), [
+                    (response.status_code, response.text) for response in responses if response.status_code != 200
+                ]
+
+        with psycopg.connect(h.postgres_dsn) as connection:
+            total, distinct, maximum = connection.execute(
+                "SELECT COUNT(*),COUNT(DISTINCT sequence),MAX(sequence) FROM events WHERE project_id=%s",
+                (project_id,),
+            ).fetchone()
+            cursor = connection.execute(
+                "SELECT sequence FROM event_sequences WHERE project_id=%s", (project_id,)
+            ).fetchone()[0]
+            assert total == distinct, f"Persisted {total} events under only {distinct} sequence IDs"
+            assert cursor == maximum, (cursor, maximum)
+
+    finally:
+        if project_id:
+            h.request("DELETE", f"/api/projects/{project_id}")
+        h.start_worker()
+        second = h.spawn("event-cursor-worker-2", [sys.executable, "-m", "services.worker.main"])
+        h.workers = [h.worker, second]
+        wait_until(lambda: len([w for w in h.request("GET", "/api/system")["workers"] if w["online"]]) == 2)
+
+
 def test_postgres_two_workers_enforce_shared_cpu_reservations_across_projects(postgres_workers):
     h = postgres_workers
     # Queue the contenders before both workers begin to claim them; two

@@ -47,7 +47,7 @@ def save_graph(s,p,graph):
     s.flush()
 
 def emit(s,project_id,event_type,data):
-    sequence=(s.scalar(select(func.max(Event.sequence)).where(Event.project_id==project_id)) or 0)+1
+    sequence=allocate_event_sequence(s,project_id)
     s.add(Event(project_id=project_id,sequence=sequence,type=event_type,data=data))
     if sequence%100==0: s.execute(delete(Event).where(Event.project_id==project_id,Event.sequence<sequence-500))
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 import datetime as dt
 import uuid
-from sqlalchemy import create_engine, event, String, Text, Integer, Float, Boolean, JSON, ForeignKey, UniqueConstraint
+from sqlalchemy import (create_engine, event, String, Text, Integer, Float, Boolean, JSON,
+                        ForeignKey, UniqueConstraint, Index, case, func, select, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from .config import settings
 
@@ -165,10 +166,15 @@ class Agent(Identity,Base):
     enabled: Mapped[bool] = mapped_column(Boolean,default=True)
 class Event(Identity,Base):
     __tablename__='events'
+    __table_args__=(Index('uq_events_project_sequence','project_id','sequence',unique=True),)
     project_id: Mapped[str] = mapped_column(ForeignKey('projects.id',ondelete='CASCADE'),index=True)
     sequence: Mapped[int] = mapped_column(Integer,default=0)
     type: Mapped[str] = mapped_column(String(80))
     data: Mapped[dict] = mapped_column(JSON,default=dict)
+class EventSequence(Base):
+    __tablename__='event_sequences'
+    project_id: Mapped[str] = mapped_column(ForeignKey('projects.id',ondelete='CASCADE'),primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer,default=0)
 class FileRevision(Identity,Base):
     __tablename__='file_revisions'
     __table_args__=(UniqueConstraint('project_id','path'),)
@@ -197,8 +203,71 @@ def asdict(obj, secrets=False):
         result['has_key']=bool(result.pop('credential_ref',None))
     if 'extra' in result: result.update(result.pop('extra') or {})
     return result
+
+def _event_cursor_insert(session):
+    dialect=session.bind.dialect.name
+    if dialect=='sqlite':
+        from sqlalchemy.dialects.sqlite import insert
+    elif dialect=='postgresql':
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        raise RuntimeError(f'Event cursors are not supported by the {dialect} database dialect')
+    return insert
+
+def _seed_event_cursor(session, project_id, sequence):
+    insert=_event_cursor_insert(session)
+    statement=insert(EventSequence).values(project_id=project_id,sequence=sequence)
+    excluded=statement.excluded.sequence
+    statement=statement.on_conflict_do_update(
+        index_elements=[EventSequence.project_id],
+        set_={'sequence':case((EventSequence.sequence<excluded,excluded),else_=EventSequence.sequence)})
+    session.execute(statement)
+
+def allocate_event_sequence(session, project_id):
+    """Atomically allocate the next per-project SSE cursor across DB writers."""
+    insert=_event_cursor_insert(session)
+    initial=(select(func.coalesce(func.max(Event.sequence),0)+1)
+             .where(Event.project_id==project_id).scalar_subquery())
+    statement=insert(EventSequence).values(project_id=project_id,sequence=initial)
+    statement=statement.on_conflict_do_update(
+        index_elements=[EventSequence.project_id],
+        set_={'sequence':EventSequence.sequence+1})
+    return session.execute(statement.returning(EventSequence.sequence)).scalar_one()
+
+def repair_event_sequences(session):
+    """Move legacy duplicate cursors above the old high-water mark."""
+    projects=session.execute(
+        select(Event.project_id,func.max(Event.sequence))
+        .group_by(Event.project_id).order_by(Event.project_id)).all()
+    for project_id, maximum in projects:
+        _seed_event_cursor(session,project_id,maximum)
+        duplicate_sequences=session.execute(
+            select(Event.sequence,func.count())
+            .where(Event.project_id==project_id)
+            .group_by(Event.sequence).having(func.count()>1).order_by(Event.sequence)).all()
+        next_sequence=maximum
+        for duplicate_sequence,_ in duplicate_sequences:
+            rows=list(session.scalars(
+                select(Event).where(Event.project_id==project_id,Event.sequence==duplicate_sequence)
+                .order_by(Event.created_at,Event.id)))
+            for row in rows[1:]:
+                next_sequence+=1
+                row.sequence=next_sequence
+        cursor=session.get(EventSequence,project_id)
+        if cursor.sequence<next_sequence:
+            cursor.sequence=next_sequence
+    session.flush()
+
 def migrate():
     Base.metadata.create_all(engine)
     with Session.begin() as s:
+        if engine.dialect.name=='sqlite':
+            s.connection().exec_driver_sql('BEGIN IMMEDIATE')
+        elif engine.dialect.name=='postgresql':
+            s.execute(text('SELECT pg_advisory_xact_lock(824721)'))
         if not s.get(Migration,1): s.add(Migration(version=1))
-if __name__=='__main__': migrate(); print('FOREST database schema 1 ready')
+        if not s.get(Migration,2):
+            repair_event_sequences(s)
+            s.add(Migration(version=2))
+        s.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_events_project_sequence ON events (project_id, sequence)'))
+if __name__=='__main__': migrate(); print('FOREST database schema 2 ready')
