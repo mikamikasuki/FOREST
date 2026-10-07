@@ -1219,6 +1219,77 @@ def test_failed_current_run_keeps_rerun_marker(actual_worker):
     assert failed_node.get("needs_rerun") is True
 
 
+def test_latest_same_revision_failure_rearms_rerun_for_affected_scope(actual_worker):
+    h = actual_worker
+    project = h.request("POST", "/api/projects", json={
+        "name": "Rearm rerun after a same-revision failure",
+        "budget": {"max_runs": 8, "seconds": 60, "allow_paid": False},
+    })
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    branch_id = graph["branches"][0]["id"]
+
+    def add_command_node(title, command):
+        current = h.request("GET", f"/api/projects/{project['id']}/graph")
+        node_id = str(uuid.uuid4())
+        created = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+            "request_id": str(uuid.uuid4()),
+            "expected_revision": current["revision"],
+            "operation": "add_node",
+            "params": {
+                "id": node_id,
+                "branch_id": branch_id,
+                "type": "experiment",
+                "title": title,
+                "config": {"kind": "command", "command": command, "timeout": 10},
+            },
+        })
+        return next(node for node in created["graph"]["nodes"] if node["id"] == node_id)
+
+    root = add_command_node("Root", [sys.executable, "-c", "print('root')"])
+    child = add_command_node("Child", [sys.executable, "-c", "print('child')"])
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": current["revision"],
+        "operation": "add_dependency",
+        "params": {"source": root["id"], "target": child["id"]},
+    })
+
+    assert h.terminal(h.launch(root))["status"] == "completed"
+    first_success = h.launch(child)
+    assert h.terminal(first_success)["status"] == "completed"
+    after_success = h.request("GET", f"/api/projects/{project['id']}/graph")
+    successful_child = next(node for node in after_success["nodes"] if node["id"] == child["id"])
+    assert successful_child["results_current"] is True
+    assert successful_child.get("needs_rerun") is not True
+
+    control = h.request("POST", f"/api/nodes/{root['id']}/run", json={
+        "request_id": str(uuid.uuid4()), "scope": "affected",
+    })
+    control_runs = control.get("runs", [control])
+    assert [run["node_id"] for run in control_runs] == [root["id"]]
+    assert h.terminal(control_runs[0])["status"] == "completed"
+
+    failed = h.request("POST", f"/api/nodes/{child['id']}/run", json={
+        "request_id": str(uuid.uuid4()),
+        "scope": "single",
+        "config": {"kind": "command", "command": [sys.executable, "-c", "raise SystemExit(7)"], "timeout": 10},
+    })
+    assert h.terminal(failed)["status"] == "failed"
+
+    after_failure = h.request("GET", f"/api/projects/{project['id']}/graph")
+    failed_child = next(node for node in after_failure["nodes"] if node["id"] == child["id"])
+    assert failed_child["latest_run_id"] == failed["id"]
+    assert failed_child["results_current"] is False
+    assert failed_child.get("needs_rerun") is True, failed_child
+
+    affected = h.request("POST", f"/api/nodes/{root['id']}/run", json={
+        "request_id": str(uuid.uuid4()), "scope": "affected",
+    })
+    affected_runs = affected.get("runs", [affected])
+    assert child["id"] in [run["node_id"] for run in affected_runs]
+
+
 def test_stale_run_does_not_consume_rerun_marker_or_promote_results(actual_worker):
     h = actual_worker
     project = h.request("POST", "/api/projects", json={
