@@ -119,6 +119,24 @@ After installing the Web workspace:
 
 Saved runs retain decisions, logs, metrics, artifacts, and execution history for inspection.
 
+### Paired Statistics Input Provenance
+
+For paired statistics submitted to `POST /api/projects/{id}/statistics/paired`,
+the worker retains the exact CSV bytes it parses as
+`runs/{run_id}/paired-input.csv`. The run metrics and its Analysis record include
+an `input_provenance` object with that project-relative artifact path, the
+original project-relative `source_path`, SHA-256, and byte size. The Analysis
+`path` points to the retained input, and `metrics_path` points to that run's
+metrics artifact.
+
+Read the run through `GET /api/runs/{run_id}` and fetch the retained bytes with
+`GET /api/projects/{id}/download?path=runs/{run_id}/paired-input.csv`. Uploading
+a correction at the original source path still marks analyses and authored
+claims that depend on that path as needing an update; it does not rebind their
+saved run, metrics, or retained input. Starting another paired run creates a
+distinct run-local input artifact. This records bytes at worker consumption,
+not at enqueue time, and is not a general file-version history.
+
 PDF compilation requires `tectonic` or `pdflatex`. Configure spending and execution limits before unattended runs, and keep credentials outside the repository.
 
 See [Deployment](https://github.com/mikamikasuki/FOREST/blob/main/docs/DEPLOYMENT.md) for Docker, PostgreSQL, background services, backups, and Windows via WSL2 or Docker Desktop. See [Security](https://github.com/mikamikasuki/FOREST/blob/main/SECURITY.md) for execution boundaries.

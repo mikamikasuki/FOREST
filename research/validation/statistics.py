@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import csv
+from contextlib import nullcontext
+import io
 import json
 import math
 from pathlib import Path
@@ -13,7 +15,7 @@ from research.paper.evidence import _numbers
 
 def paired_csv(path, *, unit_column, baseline_column, candidate_column,
                direction='lower', confidence=0.95, bootstrap_samples=5000, seed=0,
-               meaningful_effect=0.0, output=None):
+               meaningful_effect=0.0, output=None, input_stream=None):
     """Paired cluster bootstrap of unit-average score differences.
 
     Repeated observations of a unit remain together. Inference conditions on
@@ -27,7 +29,8 @@ def paired_csv(path, *, unit_column, baseline_column, candidate_column,
     if not math.isfinite(meaningful_effect) or meaningful_effect < 0:
         raise ValueError('meaningful_effect must be finite and nonnegative')
     groups = {}
-    with Path(path).open(newline='') as stream:
+    with (Path(path).open(newline='') if input_stream is None else
+          nullcontext(input_stream)) as stream:
         rows = csv.DictReader(stream)
         if not {unit_column, baseline_column, candidate_column} <= set(rows.fieldnames or []):
             raise ValueError('Observed CSV is missing requested pairing or score columns')

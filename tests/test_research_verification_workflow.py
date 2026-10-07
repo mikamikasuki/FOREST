@@ -1,4 +1,5 @@
 """Real HTTP, SQLite and subprocess handoffs, with no model or process doubles."""
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -275,3 +276,294 @@ def test_explicit_verifier_guard_and_optional_unguarded_paired_use(research_work
     completed = h.terminal(optional)
     assert completed['status'] == 'completed', completed
     assert completed['metrics']['improvement'] == 2
+
+
+def test_paired_statistics_retain_consumed_upload_across_same_path_replacement(research_worker):
+    h = research_worker
+    project = h.request('POST', '/api/projects', json={
+        'name': 'Retained paired input ' + str(uuid.uuid4())[:8],
+        'mode': 'manual',
+        'goal': 'Keep historical paired metrics bound to the exact uploaded observations.',
+        'budget': {'max_runs': 20, 'seconds': 180, 'allow_paid': False}})
+    source_path = 'uploads/paired.csv'
+    v1_bytes = (
+        b'unit,baseline,candidate\n'
+        b'u1,10,8\nu2,12,11\nu3,8,6\nu4,14,11\n')
+    v2_bytes = (
+        b'unit,baseline,candidate\n'
+        b'u1,10,13\nu2,12,14\nu3,8,11\nu4,14,17\n')
+    options = {
+        'unit_column': 'unit', 'baseline_column': 'baseline',
+        'candidate_column': 'candidate', 'direction': 'lower',
+        'confidence': 0.95, 'bootstrap_samples': 1000, 'seed': 617,
+        'meaningful_effect': 0,
+    }
+
+    def upload(filename, content):
+        response = h.client.post(
+            f"/api/projects/{project['id']}/upload",
+            params={'directory': 'uploads'},
+            files={'file': (filename, content, 'text/csv')})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def run_statistics(path):
+        queued = h.request('POST', f"/api/projects/{project['id']}/statistics/paired",
+                           json={**options, 'path': path})
+        finished = h.terminal(queued)
+        assert finished['status'] == 'completed', finished
+        return finished
+
+    def analysis_for(run_id, before):
+        records = h.request('GET', '/api/analyses',
+                            params={'project_id': project['id']})
+        created = [item for item in records if item['id'] not in before]
+        assert len(created) == 1, created
+        return created[0]
+
+    def download(path):
+        return h.client.get(f"/api/projects/{project['id']}/download",
+                            params={'path': path})
+
+    escaped = h.client.post(
+        f"/api/projects/{project['id']}/statistics/paired",
+        json={**options, 'path': '../../outside.csv'})
+    assert escaped.status_code == 403
+    assert escaped.json()['detail']['code'] == 'PATH_ESCAPE'
+
+    original_upload = upload('paired.csv', v1_bytes)
+    assert original_upload['path'] == source_path
+
+    before_analyses = {
+        item['id'] for item in h.request(
+            'GET', '/api/analyses', params={'project_id': project['id']})}
+    v1_run = run_statistics(source_path)
+    v1_analysis = analysis_for(v1_run['id'], before_analyses)
+    v1_artifact_path = f"{v1_run['output_path']}/paired-input.csv"
+    v1_metrics_path = f"{v1_run['output_path']}/metrics.json"
+    v1_result_path = f"{v1_run['output_path']}/result.json"
+    v1_input_before = download(v1_artifact_path)
+    v1_metrics_before = download(v1_metrics_path)
+    v1_result_before = download(v1_result_path)
+    assert v1_metrics_before.status_code == 200, v1_metrics_before.text
+    assert v1_result_before.status_code == 200, v1_result_before.text
+    source_before = download(source_path)
+    assert source_before.status_code == 200 and source_before.content == v1_bytes
+
+    claim_payload = {
+        'text': 'The first uploaded candidate improves the paired score.',
+        'verification_status': 'unverified',
+        'source_path': source_path,
+        'source_analysis_id': v1_analysis['id'],
+        'metric_run_id': v1_run['id'],
+        'metric_artifact_path': v1_metrics_path,
+        'metric_snapshot': {'improvement': 2.0},
+    }
+    claim = h.request('POST', '/api/claims', json={
+        'project_id': project['id'], 'title': 'Unverified V1 paired claim',
+        'data': claim_payload})
+    claim_before = h.request('GET', f"/api/claims/{claim['id']}")
+    assert claim_before['data'] == claim_payload
+    assert claim_before['status'] == 'draft'
+
+    # Re-run unchanged bytes and then consume identical bytes under another
+    # filename. Neither operation publishes over the original source path.
+    before_analyses = {
+        item['id'] for item in h.request(
+            'GET', '/api/analyses', params={'project_id': project['id']})}
+    unchanged_run = run_statistics(source_path)
+    unchanged_analysis = analysis_for(unchanged_run['id'], before_analyses)
+    unchanged_source = download(source_path)
+    unchanged_input = download(
+        f"{unchanged_run['output_path']}/paired-input.csv")
+
+    other_path = 'uploads/paired-copy.csv'
+    other_upload = upload('paired-copy.csv', v1_bytes)
+    assert other_upload['path'] == other_path
+    before_analyses = {
+        item['id'] for item in h.request(
+            'GET', '/api/analyses', params={'project_id': project['id']})}
+    other_run = run_statistics(other_path)
+    other_analysis = analysis_for(other_run['id'], before_analyses)
+    other_source = download(other_path)
+    other_input = download(f"{other_run['output_path']}/paired-input.csv")
+    v1_analysis_after_other = h.request('GET', f"/api/analyses/{v1_analysis['id']}")
+    v1_after_controls = download(v1_artifact_path)
+    metrics_after_controls = download(v1_metrics_path)
+
+    # A real same-path replacement marks the V1 Analysis and authored claim
+    # stale before a distinct V2 run is explicitly submitted.
+    replaced = upload('paired.csv', v2_bytes)
+    assert replaced['path'] == source_path
+    stale_analysis = h.request('GET', f"/api/analyses/{v1_analysis['id']}")
+    stale_claim = h.request('GET', f"/api/claims/{claim['id']}")
+    v2_source = download(source_path)
+    before_analyses = {
+        item['id'] for item in h.request(
+            'GET', '/api/analyses', params={'project_id': project['id']})}
+    v2_run = run_statistics(source_path)
+    v2_analysis = analysis_for(v2_run['id'], before_analyses)
+    v2_artifact_path = f"{v2_run['output_path']}/paired-input.csv"
+    v2_metrics_path = f"{v2_run['output_path']}/metrics.json"
+    v2_result_path = f"{v2_run['output_path']}/result.json"
+    v2_input = download(v2_artifact_path)
+    v2_metrics = download(v2_metrics_path)
+    v2_result = download(v2_result_path)
+
+    # A retry reuses the V1 task configuration (including its original
+    # source-path key), but must derive provenance again from the bytes it
+    # actually consumes rather than inheriting any V1 result metadata.
+    retried = h.request('POST', f"/api/runs/{v1_run['id']}/retry", json={})
+    retried = h.terminal(retried)
+    retry_analysis = analysis_for(
+        retried['id'], {v1_analysis['id'], unchanged_analysis['id'],
+                        other_analysis['id'], v2_analysis['id']})
+    retry_artifact_path = f"{retried['output_path']}/paired-input.csv"
+    retry_metrics_path = f"{retried['output_path']}/metrics.json"
+    retry_result_path = f"{retried['output_path']}/result.json"
+    retry_input = download(retry_artifact_path)
+    retry_metrics = download(retry_metrics_path)
+    retry_result = download(retry_result_path)
+
+    # Verify persisted run, resource, Analysis and claim references after a
+    # real task-owned API/worker restart against the same temporary SQLite DB.
+    h.stop(h.worker)
+    h.stop(h.api)
+    h.client.close()
+    h.client = h.client.__class__(base_url=h.base_url, timeout=12)
+    h.start_api()
+    h.start_worker()
+    v1_reopened = h.request('GET', f"/api/runs/{v1_run['id']}")
+    v2_reopened = h.request('GET', f"/api/runs/{v2_run['id']}")
+    retry_reopened = h.request('GET', f"/api/runs/{retried['id']}")
+    v1_analysis_reopened = h.request('GET', f"/api/analyses/{v1_analysis['id']}")
+    v2_analysis_reopened = h.request('GET', f"/api/analyses/{v2_analysis['id']}")
+    retry_analysis_reopened = h.request('GET', f"/api/analyses/{retry_analysis['id']}")
+    claim_reopened = h.request('GET', f"/api/claims/{claim['id']}")
+    v1_input_reopened = download(v1_artifact_path)
+    v1_metrics_reopened = download(v1_metrics_path)
+    v1_result_reopened = download(v1_result_path)
+    v2_input_reopened = download(v2_artifact_path)
+    v2_metrics_reopened = download(v2_metrics_path)
+    v2_result_reopened = download(v2_result_path)
+    retry_input_reopened = download(retry_artifact_path)
+    retry_metrics_reopened = download(retry_metrics_path)
+    retry_result_reopened = download(retry_result_path)
+    v1_file_after_replacement = download(source_path)
+
+    expected_v1_provenance = {
+        'artifact_path': v1_artifact_path,
+        'source_path': source_path,
+        'sha256': hashlib.sha256(v1_bytes).hexdigest(),
+        'size_bytes': len(v1_bytes),
+    }
+    expected_v2_provenance = {
+        'artifact_path': v2_artifact_path,
+        'source_path': source_path,
+        'sha256': hashlib.sha256(v2_bytes).hexdigest(),
+        'size_bytes': len(v2_bytes),
+    }
+    expected_retry_provenance = {
+        'artifact_path': retry_artifact_path,
+        'source_path': source_path,
+        'sha256': hashlib.sha256(v2_bytes).hexdigest(),
+        'size_bytes': len(v2_bytes),
+    }
+    assert v1_run['metrics']['improvement'] == 2.0
+    assert unchanged_run['metrics']['improvement'] == 2.0
+    assert other_run['metrics']['improvement'] == 2.0
+    assert v2_run['metrics']['improvement'] == -2.75
+    assert v1_run['id'] != v2_run['id']
+    assert v1_artifact_path != v2_artifact_path
+    assert v1_metrics_path != v2_metrics_path
+    assert retried['id'] not in {v1_run['id'], v2_run['id']}
+    assert retried['metrics']['improvement'] == -2.75
+    assert retried['config']['path'] == source_path
+    assert 'input_provenance' not in retried['config']
+    assert retried['metrics']['input_provenance'] == expected_retry_provenance
+    assert retried['metrics']['source_file'] == str((h.output(retried) / 'paired-input.csv').resolve())
+    assert retry_analysis['data']['input_provenance'] == expected_retry_provenance
+    assert retry_analysis['data']['analysis_run_id'] == retried['id']
+    assert retry_analysis['data']['path'] == retry_artifact_path
+    assert retry_analysis['data']['source_path'] == source_path
+    assert retry_input.status_code == 200 and retry_input.content == v2_bytes
+    assert retry_metrics.status_code == 200
+    assert retry_result.status_code == 200
+    assert v1_input_before.status_code == 200 and v1_input_before.content == v1_bytes
+    assert v1_run['metrics'].get('input_provenance') == expected_v1_provenance
+    assert v1_run['metrics']['source_file'] == str((h.output(v1_run) / 'paired-input.csv').resolve())
+    assert 'input_provenance' not in v1_run['config']
+    assert unchanged_run['metrics'].get('input_provenance') == {
+        'artifact_path': f"{unchanged_run['output_path']}/paired-input.csv",
+        **{key: value for key, value in expected_v1_provenance.items()
+           if key != 'artifact_path'}}
+    assert unchanged_analysis['data'].get('input_provenance') == unchanged_run['metrics']['input_provenance']
+    assert unchanged_analysis['data']['analysis_run_id'] == unchanged_run['id']
+    assert other_run['metrics'].get('input_provenance') == {
+        'artifact_path': f"{other_run['output_path']}/paired-input.csv",
+        'source_path': other_path,
+        'sha256': hashlib.sha256(v1_bytes).hexdigest(),
+        'size_bytes': len(v1_bytes),
+    }
+    assert other_analysis['data'].get('input_provenance') == other_run['metrics']['input_provenance']
+    assert other_analysis['data']['analysis_run_id'] == other_run['id']
+    assert v2_run['metrics'].get('input_provenance') == expected_v2_provenance
+    assert v2_run['metrics']['source_file'] == str((h.output(v2_run) / 'paired-input.csv').resolve())
+    assert json.loads(v1_metrics_before.content)['input_provenance'] == expected_v1_provenance
+    assert json.loads(v2_metrics.content)['input_provenance'] == expected_v2_provenance
+    assert v1_analysis['data'].get('input_provenance') == expected_v1_provenance
+    assert v1_analysis['data']['analysis_run_id'] == v1_run['id']
+    assert v1_analysis['data']['path'] == v1_artifact_path
+    assert v1_analysis['data'].get('source_path') == source_path
+    assert v2_analysis['data'].get('input_provenance') == expected_v2_provenance
+    assert v2_analysis['data']['analysis_run_id'] == v2_run['id']
+    assert v2_analysis['data']['path'] == v2_artifact_path
+    assert v2_analysis['data'].get('source_path') == source_path
+    assert unchanged_source.status_code == 200 and unchanged_source.content == v1_bytes
+    assert unchanged_input.status_code == 200 and unchanged_input.content == v1_bytes
+    assert other_source.status_code == 200 and other_source.content == v1_bytes
+    assert other_input.status_code == 200 and other_input.content == v1_bytes
+    assert v1_analysis_after_other['status'] == 'ready_for_review'
+    assert v1_analysis_after_other['data']['input_provenance'] == expected_v1_provenance
+    assert v1_after_controls.status_code == 200 and v1_after_controls.content == v1_bytes
+    assert metrics_after_controls.status_code == 200
+    assert v1_metrics_before.content == metrics_after_controls.content
+    assert v1_result_before.content == download(v1_result_path).content
+    assert v2_source.status_code == 200 and v2_source.content == v2_bytes
+    assert v1_input_reopened.status_code == 200 and v1_input_reopened.content == v1_bytes
+    assert v1_metrics_reopened.status_code == 200
+    assert v1_metrics_reopened.content == v1_metrics_before.content
+    assert v1_result_reopened.status_code == 200
+    assert v1_result_reopened.content == v1_result_before.content
+    assert v2_input.status_code == 200 and v2_input.content == v2_bytes
+    assert v2_metrics.status_code == 200 and v2_metrics_reopened.content == v2_metrics.content
+    assert v2_result.status_code == 200 and v2_result_reopened.content == v2_result.content
+    assert retry_input_reopened.status_code == 200 and retry_input_reopened.content == v2_bytes
+    assert retry_metrics_reopened.status_code == 200
+    assert retry_metrics_reopened.content == retry_metrics.content
+    assert retry_result_reopened.status_code == 200
+    assert retry_result_reopened.content == retry_result.content
+    assert json.loads(v1_result_reopened.content)['metrics']['input_provenance'] == expected_v1_provenance
+    assert json.loads(v2_result_reopened.content)['metrics']['input_provenance'] == expected_v2_provenance
+    assert json.loads(retry_result_reopened.content)['metrics']['input_provenance'] == expected_retry_provenance
+    assert v1_reopened['metrics'] == v1_run['metrics']
+    assert v2_reopened['metrics'] == v2_run['metrics']
+    assert retry_reopened['metrics'] == retried['metrics']
+    assert stale_analysis['status'] == 'needs_update'
+    assert stale_analysis['data']['analysis_run_id'] == v1_analysis['data']['analysis_run_id']
+    assert stale_analysis['data']['run_ids'] == v1_analysis['data']['run_ids']
+    assert stale_analysis['data']['metrics_path'] == v1_analysis['data']['metrics_path']
+    assert stale_analysis['data']['improvement'] == v1_analysis['data']['improvement'] == 2.0
+    assert stale_claim['status'] == 'needs_update'
+    assert stale_claim['data']['source_analysis_id'] == v1_analysis['id']
+    assert stale_claim['data']['metric_run_id'] == v1_run['id']
+    assert stale_claim['data']['metric_artifact_path'] == v1_metrics_path
+    assert stale_claim['data']['metric_snapshot'] == {'improvement': 2.0}
+    assert stale_claim['data']['verification_status'] == 'unverified'
+    assert stale_analysis['data']['input_provenance'] == expected_v1_provenance
+    assert claim_reopened == stale_claim
+    assert v1_analysis_reopened == stale_analysis
+    assert v2_analysis_reopened['data']['input_provenance'] == expected_v2_provenance
+    assert retry_analysis_reopened['data']['input_provenance'] == expected_retry_provenance
+    assert v1_file_after_replacement.status_code == 200
+    assert v1_file_after_replacement.content == v2_bytes
