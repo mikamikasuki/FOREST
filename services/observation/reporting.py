@@ -7,7 +7,7 @@ from services.api.db import Session, Project, Provider, ModelRequest, now, uid
 from services.api.common import get, error, asdict, read_secret
 from research.agents.provider import ModelClient, ProviderError
 from research.agents.budget import BudgetExceeded, totals
-from .models import ObservationState, ReporterPolicy, ReportJob, ReportRequest
+from .models import ObservationState, ReporterPolicy, ReportJob, ReportRequest, ReportDispatch
 from .contracts import ReporterSettings, ReporterSettingsView, ReporterJob, ReporterReport, ProjectProgressSnapshot
 from .projection import project_snapshot
 
@@ -114,17 +114,25 @@ def claim(owner):
             for r in requests:
                 if r.status=='reserved': r.status='uncertain'
             job.status='uncertain' if requests else 'failed'; job.error='Lease expired; inspect usage before refreshing'
+            if not requests:
+                s.execute(update(ReportDispatch).where(ReportDispatch.job_id==job.id).values(job_id=None,owner=None,lease_until=0))
             state=s.get(ObservationState,job.project_id)
             if state and state.active_job==job.id: state.active_job=None
         # A single transaction-scoped advisory lock bounds all API instances.
-        count=s.scalar(select(func.count()).select_from(ReportJob).where(ReportJob.status.in_(['preparing','requesting','validating'])))
-        if count>=2: return None
+        slots=[]
+        for ident in range(2):
+            slot=s.get(ReportDispatch,ident)
+            if slot is None: slot=ReportDispatch(id=ident,lease_until=0);s.add(slot)
+            slots.append(slot)
+        available=next((slot for slot in slots if slot.lease_until<time.time()),None)
+        if available is None: return None
         job_id=s.scalar(select(ReportJob.id).where(ReportJob.status=='queued').order_by(ReportJob.created_at).limit(1))
         if not job_id: return None
         project_id=s.scalar(select(ReportJob.project_id).where(ReportJob.id==job_id))
         get(s,Project,project_id,for_update=True)
         changed=s.execute(update(ReportJob).where(ReportJob.id==job_id,ReportJob.status=='queued').values(status='preparing',lease_owner=owner,lease_until=time.time()+180,lease_generation=ReportJob.lease_generation+1))
         if changed.rowcount!=1: return None
+        available.job_id=job_id;available.owner=owner;available.lease_until=time.time()+180
         return job_id
 
 def execute(job_id,owner):
@@ -188,6 +196,11 @@ def execute(job_id,owner):
             job.error='Reporting budget or authorization blocked the request' if isinstance(exc,BudgetExceeded) else 'Provider outcome is uncertain; inspect usage before retry' if job.status=='uncertain' else 'Report generation failed or returned an invalid response'
             state=s.get(ObservationState,job.project_id)
             if state and state.active_job==job.id: state.active_job=None
+
+    finally:
+        with Session.begin() as s:
+            write_lock(s)
+            s.execute(update(ReportDispatch).where(ReportDispatch.job_id==job_id,ReportDispatch.owner==owner).values(job_id=None,owner=None,lease_until=0))
 
 def job_view(s,job):
     state=s.get(ObservationState,job.project_id); _,version=policy(s,job.project_id)

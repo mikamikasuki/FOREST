@@ -219,7 +219,7 @@ def quarantine_execution(database_url):
             if 'task_runs' in tables:
                 connection.execute(text("UPDATE task_runs SET status='interrupted', pid=NULL, process_created=NULL, worker_id=NULL, error='Restored from backup; review artifacts and explicitly start a new run before execution' WHERE status IN ('queued','running','paused','pausing','waiting','budget_exhausted','cancelling')"))
             # Derived snapshots/leases must not become current after a restore.
-            for table in ('observed_files','observation_scopes','report_requests','report_jobs','observation_states'):
+            for table in ('observed_files','observation_scopes','report_requests','report_jobs','report_dispatch_slots','observation_states'):
                 if table in tables:
                     connection.execute(text('DELETE FROM '+table))
             if 'reporter_policies' in tables:

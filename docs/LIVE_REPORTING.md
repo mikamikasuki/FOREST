@@ -85,7 +85,10 @@ slots or add scientific TaskRuns.
 
 At most one active job is owned by a project, with two active jobs and 200 queued
 jobs across API instances. Jobs have 180-second leases; provider timeouts are at
-most 120 seconds and ambiguous sends are not automatically replayed. Publication
+most 120 seconds and ambiguous sends are not automatically replayed. Dispatch
+leases survive cancellation and project deletion until an
+in-flight inference returns or its lease expires. This preserves the global
+concurrency bound while discarding late results. Publication
 rechecks policy, lease, epoch, provider version and snapshot dependencies. A
 failed or stale report leaves deterministic progress usable. Inspect shared
 usage before retrying an uncertain request.

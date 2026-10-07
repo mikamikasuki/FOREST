@@ -78,3 +78,11 @@ class ReportRequest(Identity, Base):
     project_id: Mapped[str] = mapped_column(ForeignKey('projects.id',ondelete='CASCADE'),index=True)
     request_id: Mapped[str] = mapped_column(String(160))
     job_id: Mapped[str] = mapped_column(ForeignKey('report_jobs.id',ondelete='CASCADE'),index=True)
+
+class ReportDispatch(Base):
+    """Two service leases survive project/job deletion until inference returns."""
+    __tablename__ = 'report_dispatch_slots'
+    id: Mapped[int] = mapped_column(Integer,primary_key=True)
+    job_id: Mapped[str|None] = mapped_column(String(64),nullable=True)
+    owner: Mapped[str|None] = mapped_column(String(64),nullable=True)
+    lease_until: Mapped[float] = mapped_column(Float,default=0)

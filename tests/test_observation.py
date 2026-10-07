@@ -277,6 +277,25 @@ def scenario():
         from services.api.common import get
         with patch('services.observation.reporting.ModelClient.complete',changed_during_response):execute(jobid,owner)
         with Session() as s:assert s.get(ReportJob,jobid).status=='superseded'
+    # Cancellation cannot free a global dispatch slot while another API could
+    # still be receiving the in-flight response. One uncertain earlier slot is
+    # retained; this blocked call occupies the second until it actually returns.
+    configured();jobid=enqueue(pid,uid());assert claim(owner)==jobid
+    entered=threading.Event();finish=threading.Event()
+    def blocked_response(client,messages):
+        context=json.loads(messages[-1]['content']);entered.set();assert finish.wait(10)
+        return {'text':json.dumps({'snapshot_id':context['snapshot_id'],'focus':'activity','fact_ids':[context['facts'][0]['id']]})}
+    with patch('services.observation.reporting.ModelClient.complete',blocked_response),ThreadPoolExecutor(1) as pool:
+        future=pool.submit(execute,jobid,owner)
+        try:
+            assert entered.wait(5)
+            configured()  # Cancels the first job while its response is outstanding.
+            nextjob=enqueue(pid,uid())
+            assert claim('second-api') is None
+        finally:finish.set()
+        future.result(timeout=5)
+    assert claim('second-api')==nextjob
+    with patch('services.observation.reporting.ModelClient.complete',return_value={'text':'invalid'}):execute(nextjob,'second-api')
     # A stale SSH executor cannot relabel its observations as the new attempt.
     from services.observation.remote import capture
     with Session.begin() as s:
