@@ -289,10 +289,14 @@ def run_action(ident:str,action:str,body:dict=Body(default={})):
         if action in ('cancel','pause','resume') and s.bind.dialect.name=='sqlite': s.execute(sql_text('BEGIN IMMEDIATE'))
         r=get(s,TaskRun,ident)
         if action=='retry':
+            from services.worker.scheduler import _lock_project
+            _lock_project(s,r.project_id)
+            r=s.scalar(select(TaskRun).where(TaskRun.id==ident).with_for_update().execution_options(populate_existing=True))
             if r.status not in TERMINAL: error('RUN_ACTIVE','Only stopped runs can be restarted',409)
             requested_timeout,_=requested_task_timeout(s,r)
             return asdict(enqueue(s,r.project_id,r.kind,r.config,body.get('request_id'),s.get(Node,r.node_id) if r.node_id else None,r.dependencies,
-                                  requested_timeout_override=requested_timeout))
+                                  requested_timeout_override=requested_timeout,
+                                  node_revision=r.node_revision if r.node_id else None))
         if action in ('cancel','pause','resume'):
             # Validate control actions against locked current state before
             # signaling anything, using the request guard's project -> run order.

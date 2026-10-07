@@ -26,8 +26,8 @@ def _contract(config):
 
 
 def latest_node_run(session, node):
-    """A newer queued or failed attempt supersedes older successful evidence."""
-    return session.scalar(select(TaskRun).where(TaskRun.node_id == node.id)
+    """Only attempts of the current revision can supersede current evidence."""
+    return session.scalar(select(TaskRun).where(TaskRun.node_id == node.id, TaskRun.node_revision == node.revision)
                           .order_by(TaskRun.created_at.desc(), TaskRun.id.desc()).limit(1))
 
 
@@ -61,7 +61,7 @@ def prepare_verification_enqueue(session, project, kind, config, node, dependenc
     config = deepcopy(config)
     dependencies = list(dependencies or [])
     try:
-        identifiers = _required_ids(config, node.inputs if node else config.get('input_references', []))
+        identifiers = _required_ids(config, config.get('input_references', node.inputs if node else []))
         if kind == 'verification':
             contract = _contract(config)
             producer = get(session, Node, contract['producer_node_id'])
