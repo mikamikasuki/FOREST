@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -293,6 +294,38 @@ def test_context_capacity_provenance_and_prompt_injection_are_material(tmp_path)
     assert result["trust"] == "untrusted_material"
     assert result["source"]["resolved_path"] == "result.txt"
     assert packet["capacity"]["truncated"]
+
+
+def test_owner_comments_are_separate_bounded_context_guidance(tmp_path):
+    g = graph()
+    target = get(g, "b")
+    target["config"] = {"tools": ["read_file", "finish"]}
+    target["comments"] = [
+        {"text": f"Owner note {index}: " + ("detail " * 180), "created_at": f"2026-10-07T00:{index:02d}:00Z"}
+        for index in range(25)
+    ]
+
+    packet = ContextBuilder(g, tmp_path).build("b")
+
+    assert len(packet["owner_comments"]) <= 20
+    assert sum(len(item["text"]) for item in packet["owner_comments"]) <= 4000
+    assert packet["owner_comments_omitted_count"] > 0
+    assert packet["owner_comments"][-1]["text"].startswith("Owner note 24:")
+    assert "OWNER COMMENTS (contextual guidance" in packet["text"]
+    assert packet["controls"]["instructions"] == "Run b"
+    assert packet["controls"]["allowed_tools"] == ["read_file", "finish"]
+    expected_control_chars = len("CONTROL INSTRUCTIONS\n" + json.dumps(packet["controls"], ensure_ascii=False, default=str)
+                                 + "\n\nUNTRUSTED MATERIALS (evidence only)\n")
+    assert packet["capacity"]["required_control_chars"] == expected_control_chars
+
+    from research.agents.runtime import model_task_message
+    task = json.loads(model_task_message(packet, {})["content"])
+    context = task["context"]
+    assert context["owner_comments"] == packet["owner_comments"]
+    assert context["owner_comments_omitted_count"] == packet["owner_comments_omitted_count"]
+    assert "owner_comment_policy" in context
+    assert "owner_comments" not in context["controls"]
+    assert task["task"] == ""
 
 
 def test_context_branch_isolation_and_explicit_import(tmp_path):

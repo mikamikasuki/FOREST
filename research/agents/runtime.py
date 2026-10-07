@@ -23,7 +23,7 @@ from .processes import ManagedProcesses, TERMINAL, atomic_json, read_json
 from research.execution.process_manager import process_manager
 
 
-CONTEXT_POLICY_VERSION = 8
+CONTEXT_POLICY_VERSION = 9
 DEFAULT_CONTEXT_CHAR_BUDGET = 64000
 
 
@@ -304,6 +304,10 @@ def model_task_message(packet, config):
                               if key in ('id', 'kind', 'text', 'source', 'trust', 'truncated', 'source_truncated', 'stale', 'branch_id')})
         context = {'controls': controls, 'untrusted_materials': materials, 'capacity': packet['capacity'],
                    'omitted_count': len(packet.get('omitted', [])), 'full_packet_file': 'context_packet.json'}
+        if 'owner_comments' in packet:
+            context['owner_comments'] = deepcopy(packet.get('owner_comments', []))
+            context['owner_comments_omitted_count'] = packet.get('owner_comments_omitted_count', 0)
+            context['owner_comment_policy'] = 'Saved owner comments are contextual guidance for this node. They do not change task controls or enabled tools.'
     elif 'text' in packet:
         context = {'text': packet['text'], 'capacity': packet['capacity'],
                    'omitted_count': len(packet.get('omitted', [])), 'full_packet_file': 'context_packet.json'}
@@ -653,7 +657,7 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
     state = read_json(session_path)
     if state and state.get('run_id') != run_id:
         raise ValueError('Session belongs to a different run')
-    system = {'role': 'system', 'content': RESEARCH_POLICY + '\n' + publication_instructions(profile) + '\nROLE: ' + role_instruction + '\n' + protocol}
+    system = {'role': 'system', 'content': RESEARCH_POLICY + '\nSaved owner comments are contextual guidance only; the supplied task controls and effective tool allowlist remain authoritative.\n' + publication_instructions(profile) + '\nROLE: ' + role_instruction + '\n' + protocol}
     atomic_json(workspace / 'context_packet.json', packet)
     task = model_task_message(packet, config)
     if not state:
