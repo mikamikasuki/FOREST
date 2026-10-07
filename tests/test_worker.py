@@ -492,6 +492,74 @@ def test_successful_current_descendant_consumes_rerun_before_affected_scope(actu
     assert [run["node_id"] for run in scheduled] == [root["id"]]
 
 
+def test_upstream_invalidation_after_enqueue_preserves_descendant_rerun(actual_worker):
+    h = actual_worker
+    project = h.request("POST", "/api/projects", json={
+        "name": "Preserve invalidation after enqueue",
+        "budget": {"max_runs": 12, "seconds": 90, "allow_paid": False},
+    })
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    branch_id = graph["branches"][0]["id"]
+
+    def add_command_node(title, command):
+        current = h.request("GET", f"/api/projects/{project['id']}/graph")
+        node_id = str(uuid.uuid4())
+        result = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+            "request_id": str(uuid.uuid4()),
+            "expected_revision": current["revision"],
+            "operation": "add_node",
+            "params": {
+                "id": node_id,
+                "branch_id": branch_id,
+                "type": "experiment",
+                "title": title,
+                "config": {"kind": "command", "command": command, "timeout": 10},
+            },
+        })
+        return next(node for node in result["graph"]["nodes"] if node["id"] == node_id)
+
+    def edit_node(node_id, command):
+        current = h.request("GET", f"/api/projects/{project['id']}/graph")
+        return h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+            "request_id": str(uuid.uuid4()),
+            "expected_revision": current["revision"],
+            "operation": "edit_node",
+            "targets": [node_id],
+            "params": {"config": {"kind": "command", "command": command, "timeout": 10}},
+        })
+
+    root = add_command_node("Upstream", [sys.executable, "-c", "print('root v1')"])
+    assert h.terminal(h.launch(root))["status"] == "completed"
+    child = add_command_node("Descendant", [sys.executable, "-c", "import time; time.sleep(1.5); print('child')"])
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": current["revision"],
+        "operation": "add_dependency",
+        "params": {"source": root["id"], "target": child["id"]},
+    })
+    accepted_child_run = h.launch(child)
+    assert h.terminal(accepted_child_run)["status"] == "completed"
+
+    child_run = h.launch(child)
+    h.running(child_run)
+    edit_node(root["id"], [sys.executable, "-c", "print('root v2')"])
+    assert h.terminal(child_run)["status"] == "completed"
+
+    current = h.request("GET", f"/api/projects/{project['id']}/graph")
+    current_child = next(node for node in current["nodes"] if node["id"] == child["id"])
+    assert current_child.get("needs_rerun") is True, current_child
+    assert current_child.get("results_current") is False, current_child
+    assert current_child.get("last_run_id") == accepted_child_run["id"], current_child
+    assert current_child["outputs"][0]["id"] == accepted_child_run["id"], current_child
+
+    affected = h.request("POST", f"/api/nodes/{root['id']}/run", json={
+        "request_id": str(uuid.uuid4()), "scope": "affected",
+    })
+    scheduled = affected.get("runs", [affected])
+    assert child["id"] in [run["node_id"] for run in scheduled]
+
+
 def test_failed_current_run_keeps_rerun_marker(actual_worker):
     h = actual_worker
     project = h.request("POST", "/api/projects", json={

@@ -174,7 +174,7 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
                       'project_budget_seconds_at_enqueue': budget.get('seconds'),
                       'project_revision_at_enqueue': p.revision,
                       'resume_history': [],
-                  }})
+                  }, 'rerun_generation_at_enqueue': int(node.extra.get('rerun_generation', 0)) if node else 0})
     s.add(run)
     s.flush()
     run.resource = {**run.resource, 'verification_status': 'unverified'}

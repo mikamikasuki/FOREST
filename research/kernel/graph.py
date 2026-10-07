@@ -19,7 +19,7 @@ EXECUTION = {"depends_on", "consumes"}
 PROPAGATION = EXECUTION | {"derived_from", "evidence", "cites"}
 VISUAL_FIELDS = {"position", "color", "collapsed", "selected", "width", "height", "group_id"}
 DISPLAY_FIELDS = {"title", "comments", "description"}
-RUNTIME_FIELDS = {"execution_status", "research_status", "last_run_id", "last_run_revision", "outputs", "last_result", "run_ids"}
+RUNTIME_FIELDS = {"execution_status", "research_status", "last_run_id", "last_run_revision", "outputs", "last_result", "run_ids", "rerun_generation"}
 OPERATIONS = {"add_node", "edit_node", "delete_node", "add_dependency", "remove_dependency", "fork_branch", "clone_subtree",
               "insert_before", "insert_after", "reparent_subtree", "merge_branches", "split_node", "group_nodes", "prune_branch",
               "restore_branch", "set_main_branch", "apply_instruction_patch", "undo", "redo"}
@@ -584,6 +584,8 @@ class GraphCommandService:
                         node["deliverable_status"] = "needs_update"
                         node["results_current"] = False
                     node["needs_rerun"] = node["id"] in impact["rerun_nodes"]
+                    if node["id"] in impact["rerun_nodes"]:
+                        node["rerun_generation"] = int(node.get("rerun_generation", 0)) + 1
         if not dry_run:
             # Every structural and DAG check precedes the first filesystem write.
             workspaces = BranchWorkspace(self.project_dir, self.graph)

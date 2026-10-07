@@ -366,17 +366,28 @@ class WorkerLoop:
                 if n and n.revision==r.node_revision and n.extra.get('latest_run_id')==r.id:
                     n.execution_status=r.status
                     if r.status in ('completed','failed','interrupted'):
-                        n.deliverable_status='ready_for_review' if r.status=='completed' else 'draft'
-                        current_result={**n.extra,'results_current':r.status=='completed','last_run_id':r.id,'result_revision':r.node_revision,
-                            'verification_status':r.resource.get('verification_status','unverified')}
-                        if r.status=='completed': current_result['needs_rerun']=False
-                        n.extra=current_result
-                        if r.kind=='experiment' and r.status=='completed':
-                            recovery=r.metrics.get('mechanism_recovery',[])
-                            n.research_status='supported' if recovery and all(x['supported_descriptively'] for x in recovery) else 'not_supported' if recovery else 'unevaluated'
-                        n.outputs=[{'kind':'run','id':r.id,'path':r.output_path+'/result.json','project_scope':True,'node_revision':r.node_revision}]
-                        for filename in ('metrics.json','predictions.csv','sources.json','verification.json','workspace/agent_result.json','workspace/theory_check.json'):
-                            if (output/filename).is_file(): n.outputs.append({'kind':'file','path':r.output_path+'/'+filename,'project_scope':True,'node_revision':r.node_revision})
+                        invalidation_changed_after_enqueue = (
+                            r.status == 'completed'
+                            and int(n.extra.get('rerun_generation', 0))
+                            != int(r.resource.get('rerun_generation_at_enqueue', 0))
+                        )
+                        if invalidation_changed_after_enqueue:
+                            # A later upstream edit invalidated this node while it ran.
+                            # Keep its previous accepted outputs and make the new rerun
+                            # visible to the affected-scope scheduler.
+                            n.extra={**n.extra,'results_current':False,'needs_rerun':True}
+                        else:
+                            n.deliverable_status='ready_for_review' if r.status=='completed' else 'draft'
+                            current_result={**n.extra,'results_current':r.status=='completed','last_run_id':r.id,'result_revision':r.node_revision,
+                                'verification_status':r.resource.get('verification_status','unverified')}
+                            if r.status=='completed': current_result['needs_rerun']=False
+                            n.extra=current_result
+                            if r.kind=='experiment' and r.status=='completed':
+                                recovery=r.metrics.get('mechanism_recovery',[])
+                                n.research_status='supported' if recovery and all(x['supported_descriptively'] for x in recovery) else 'not_supported' if recovery else 'unevaluated'
+                            n.outputs=[{'kind':'run','id':r.id,'path':r.output_path+'/result.json','project_scope':True,'node_revision':r.node_revision}]
+                            for filename in ('metrics.json','predictions.csv','sources.json','verification.json','workspace/agent_result.json','workspace/theory_check.json'):
+                                if (output/filename).is_file(): n.outputs.append({'kind':'file','path':r.output_path+'/'+filename,'project_scope':True,'node_revision':r.node_revision})
                 self.processes.pop(ident,None)
     def run(self):
         self.reconcile_completed()
