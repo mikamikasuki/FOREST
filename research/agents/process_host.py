@@ -33,15 +33,30 @@ def execute_child(folder):
 
 
 def process_group_exists(process_group_id):
-    """Return whether any process remains in the command's owned group."""
-    try:
-        os.killpg(int(process_group_id), 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # A process exists in the group even if signaling it is not permitted.
-        return True
+    """Return whether a live process remains in the command's owned group.
+
+    ``killpg(pgid, 0)`` also succeeds for groups containing only zombies.
+    Those processes cannot write more output and no signal can make them exit,
+    so waiting for the group would leave the durable receipt nonterminal.
+    """
+    process_group_id = int(process_group_id)
+    for process in psutil.process_iter():
+        try:
+            if os.getpgid(process.pid) != process_group_id:
+                continue
+        except (ProcessLookupError, psutil.NoSuchProcess):
+            continue
+        except (PermissionError, psutil.AccessDenied):
+            # We cannot safely conclude that an inaccessible member is gone.
+            return True
+        try:
+            if process.status() != psutil.STATUS_ZOMBIE:
+                return True
+        except (ProcessLookupError, psutil.NoSuchProcess):
+            continue
+        except psutil.AccessDenied:
+            return True
+    return False
 
 
 def supervise(folder):
