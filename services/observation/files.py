@@ -208,6 +208,7 @@ def reconcile(scope_id):
         if not scope or not scope_authorized(s,scope): return
         observation_write_lock(s,scope.project_id)
         s.refresh(scope)
+        scope.observed_at=now()
         if scope.kind=='remote_workspace':
             scope.coverage='unavailable'; scope.error='Remote observations are not local inventory'; return
         try: root=scope_root(scope)

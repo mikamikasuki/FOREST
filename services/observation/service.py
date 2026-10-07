@@ -6,6 +6,7 @@ leases and the global job limit provide correctness across API processes.
 import logging
 import threading
 import time
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import select, update
 from services.api.db import Session, Project, uid, now
@@ -73,10 +74,12 @@ class ObservationService:
                             state=s.get(ObservationState,ident)
                             live_ids=[f['sources'][0]['object_id'] for f in state.snapshot.get('facts',[]) if f['id'].startswith('run:') and f['value'] in ('queued','running','waiting','waiting_input','pausing','paused')]
                             from sqlalchemy import or_
+                            retry_before=(datetime.now(timezone.utc)-timedelta(seconds=30)).isoformat()
+                            eligible=or_(ObservationScope.coverage!='unavailable',ObservationScope.observed_at.is_(None),ObservationScope.observed_at<retry_before)
                             priority=s.scalar(select(ObservationScope.id).where(ObservationScope.project_id==ident,
-                                ObservationScope.kind!='remote_workspace',or_(ObservationScope.kind.in_(['project','branch_workspace']),
+                                ObservationScope.kind!='remote_workspace',eligible,or_(ObservationScope.kind.in_(['project','branch_workspace']),
                                 ObservationScope.object_id.in_(live_ids))).order_by(ObservationScope.observed_at.asc().nullsfirst(),ObservationScope.id).limit(1))
-                            scope=s.scalar(select(ObservationScope.id).where(ObservationScope.project_id==ident,ObservationScope.kind!='remote_workspace').order_by(ObservationScope.observed_at.asc().nullsfirst(),ObservationScope.id).limit(1))
+                            scope=s.scalar(select(ObservationScope.id).where(ObservationScope.project_id==ident,ObservationScope.kind!='remote_workspace',eligible).order_by(ObservationScope.observed_at.asc().nullsfirst(),ObservationScope.id).limit(1))
                         for candidate in dict.fromkeys([priority,scope]):
                             if candidate: reconcile(candidate)
                         self.automatic(ident)

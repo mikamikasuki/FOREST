@@ -218,9 +218,11 @@ def scenario():
             with Session.begin() as writer:
                 write_lock(writer);project=writer.get(Project,pid);project.revision+=1
                 writer.get(Node,nid).revision+=1
+                writer.get(TaskRun,new.id).status='completed'
         with ThreadPoolExecutor(1) as pool: pool.submit(mutate).result(timeout=10)
         assert reader.scalar(select(Project.revision).where(Project.id==pid))==first
         assert reader.scalar(select(Node.revision).where(Node.id==nid))==0
+        assert reader.scalar(select(TaskRun.status).where(TaskRun.id==new.id))=='failed'
     with Session() as s: assert s.get(Project,pid).revision==first+1
     # Injected provider outputs exercise validation and cancellation only. These
     # are not live-provider results or real billed usage.
@@ -312,6 +314,35 @@ def scenario():
             for connection in connections: connection.close()
             await stream.aclose()
     asyncio.run(pool_contention())
+    # Normal competing observers must advance a real inventory despite an
+    # unavailable branch sorting ahead of it. This exercises scheduler fairness.
+    fresh_project=ok(client.post('/api/projects',json={'name':'Competing observers'}))['id']
+    fresh_root=project_dir(fresh_project)
+    with Session.begin() as s:
+        ensure_state(s,fresh_project)
+        branch=s.scalar(select(Branch).where(Branch.project_id==fresh_project));branch.workspace='branches/not-created'
+        s.flush();sync_scopes(s,fresh_project);s.flush()
+        missing=s.scalar(select(ObservationScope).where(ObservationScope.project_id==fresh_project,ObservationScope.kind=='branch_workspace'))
+        missing.id='00000000-'+uid();missing_id=missing.id
+    for i in range(301):(fresh_root/f'file-{i:04}.md').write_text(f'# Source\n{i}\n')
+    from services.observation.service import ObservationService
+    observers=[ObservationService(),ObservationService()]
+    try:
+        for observer in observers:observer.start()
+        deadline=time.monotonic()+15
+        while time.monotonic()<deadline:
+            with Session() as s:
+                count=s.scalar(select(func.count()).select_from(ObservedFile).where(ObservedFile.project_id==fresh_project))
+                missing=s.get(ObservationScope,missing_id)
+                observed=bool(missing.observed_at and missing.coverage=='unavailable')
+                if count==301 and observed:break
+            time.sleep(.1)
+        assert count==301 and observed
+        with Session() as s:
+            assert s.scalar(select(func.count()).select_from(TaskRun).where(TaskRun.project_id==fresh_project))==0
+            state=s.get(ObservationState,fresh_project);assert state.generation>0 and state.lease_owner in [observer.owner for observer in observers]
+    finally:
+        for observer in observers:observer.close()
     # Restore clears all derived source content and active leases, disables billing.
     from scripts.backup import quarantine_execution
     from services.api.config import settings
