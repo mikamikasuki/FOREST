@@ -772,7 +772,7 @@ function Overview() {
           </>
         }
       />
-      <ResearchControls projectId={id!} onChange={reload} />
+      <ResearchControls projectId={id!} runMode={p.mode || "assisted"} onChange={reload} />
       <div className="overview-grid">
         <section className="surface goal-surface">
           <div className="eyebrow">
@@ -872,9 +872,11 @@ function Overview() {
 
 function ResearchControls({
   projectId,
+  runMode,
   onChange,
 }: {
   projectId: string;
+  runMode: string;
   onChange: () => Promise<void>;
 }) {
   const { t, action } = useUI();
@@ -883,16 +885,18 @@ function ResearchControls({
   });
   const [branch, setBranch] = useState("");
   const [state, setState] = useState<Json | null>(null);
-  const [autonomous, setAutonomous] = useState(true);
+  const [autonomous, setAutonomous] = useState(runMode !== "manual");
   const [metric, setMetric] = useState("");
   const [direction, setDirection] = useState("min");
-  const { data: session, reload: reloadSession } = useLoad<Json>(`/projects/${projectId}/research`, {controller: {}, decisions: [], active_runs: []});
+  const { data: session, loading: sessionLoading, reload: reloadSession } = useLoad<Json>(`/projects/${projectId}/research`, {controller: {}, decisions: [], active_runs: []});
   useEffect(() => { setMetric(session.objective?.metric || ""); setDirection(session.objective?.direction || "min"); }, [session.objective?.metric, session.objective?.direction]);
   useEffect(() => {
     if (typeof session.controller?.autonomous === "boolean") {
       setAutonomous(session.controller.autonomous);
+    } else {
+      setAutonomous(runMode !== "manual");
     }
-  }, [session.controller?.autonomous]);
+  }, [session.controller?.autonomous, runMode]);
   useEffect(() => { const timer = setInterval(() => void reloadSession(), 5000); return () => clearInterval(timer); }, [reloadSession]);
   return (
     <section className="surface research-controls">
@@ -911,7 +915,7 @@ function ResearchControls({
           </option>
         ))}
       </select>
-      <label className="inline-actions"><input type="checkbox" checked={autonomous} onChange={e => setAutonomous(e.target.checked)} />Autonomous planning</label>
+      <label className="inline-actions"><input type="checkbox" checked={autonomous} disabled={sessionLoading} onChange={e => setAutonomous(e.target.checked)} />Autonomous planning</label>
       <Badge status={session.controller?.status || state?.status || "idle"} />
       {session.controller?.phase && <span>{session.controller.phase}</span>}
       {(session.controller?.reason || session.controller?.last_rationale) && <p>{session.controller.reason || session.controller.last_rationale}</p>}
@@ -932,6 +936,7 @@ function ResearchControls({
           <Button
             className={op === "start" ? "primary" : ""}
             key={String(op)}
+            disabled={String(op) === "start" && sessionLoading}
             onClick={() =>
               action(async () => {
                 const result = await api(`/projects/${projectId}/research/${op}`, "POST", {
