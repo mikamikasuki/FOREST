@@ -9,8 +9,8 @@ from .config import settings
 
 def error(code,message,status=400,suggestion='',retryable=False):
     raise HTTPException(status,{'code':code,'message':str(message),'retryable':retryable,'suggestion':suggestion})
-def get(s,model,ident):
-    obj=s.get(model,ident)
+def get(s,model,ident,*,for_update=False):
+    obj=s.get(model,ident,with_for_update=True) if for_update else s.get(model,ident)
     if obj is None: error('NOT_FOUND',f'{model.__name__} {ident} does not exist',404)
     return obj
 def project_dir(project_id):
