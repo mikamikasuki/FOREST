@@ -177,6 +177,7 @@ def duplicate_project(ident:str):
             s.add(TaskRun(id=run_id,project_id=new.id,node_id=remap(row.get('node_id')),branch_id=remap(row.get('branch_id')),
                 request_id='copy:'+run_id,kind=row['kind'],status=row['status'] if row['status'] in TERMINAL else 'interrupted',
                 config={**remap(row['config']),'origin':'copied_run','original_run_id':row['id']},node_revision=row['node_revision'],
+                created_at=row['created_at'],started_at=row.get('started_at'),finished_at=row.get('finished_at'),
                 output_path=remap(row['output_path']),dependencies=remap(row.get('dependencies',[])),metrics=remap(row['metrics']),resource=row['resource'],exit_code=row['exit_code']))
         s.flush(); return asdict(new)
 @app.get('/api/projects/{ident}/graph')
