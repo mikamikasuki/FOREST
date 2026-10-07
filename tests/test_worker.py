@@ -185,6 +185,10 @@ def test_cancel_terminates_executor_and_descendant(actual_worker):
         return not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
     wait_until(lambda: stopped(active["pid"]) and stopped(child_pid))
     assert h.run(run)["status"] == "cancelled"
+    # The executor is a direct child of the live worker. Cancellation must not
+    # leave it as a zombie after the worker has stopped the command process.
+    wait_until(lambda: not psutil.pid_exists(active["pid"]), timeout=5)
+    assert h.worker.poll() is None
 
 
 def test_worker_restart_recovers_running_job_without_duplicate_execution(actual_worker):
