@@ -198,6 +198,45 @@ def case_export_import_reference_roundtrip(client, app):
     assert ok(client.get(f"/api/runs/{new_runs[0]['id']}/output"))["text"] == "actual saved output\n"
 
 
+def case_import_running_controller_requires_explicit_start(client, app):
+    p = create(client)
+    source_branch_id = graph(client, p)["branches"][0]["id"]
+    started = ok(client.post(f"/api/projects/{p['id']}/research/start", json={"autonomous": True, "branch_id": source_branch_id}))
+    assert started["status"] == "running" and started["autonomous"] is True
+    from services.worker.controller import advance_projects
+    advance_projects()
+    source_state = ok(client.get(f"/api/projects/{p['id']}/research"))
+    assert source_state["controller"]["status"] == "running"
+    assert source_state["controller"]["last_run"]
+    assert source_state["active_runs"][0]["kind"] == "research_plan"
+
+    archive = client.post(f"/api/projects/{p['id']}/export", json={})
+    assert archive.status_code == 200
+    imported = ok(client.post("/api/projects/import", files={"file": ("running-project.zip", archive.content, "application/zip")}))
+    imported_id = imported["id"]
+    imported_graph = graph(client, imported)
+    imported_branch_id = imported_graph["branches"][0]["id"]
+    before_tick = ok(client.get(f"/api/projects/{imported_id}/research"))
+    imported_runs = ok(client.get(f"/api/projects/{imported_id}/runs"))
+    assert before_tick["controller"]["status"] == "paused"
+    assert before_tick["controller"]["autonomous"] is True
+    assert imported_branch_id != source_branch_id
+    assert before_tick["controller"]["branch_id"] == imported_branch_id
+    assert "last_run" not in before_tick["controller"]
+    assert before_tick["active_runs"] == []
+    assert len(imported_runs) == 1 and imported_runs[0]["status"] == "interrupted"
+
+    advance_projects()
+
+    after_tick = ok(client.get(f"/api/projects/{imported_id}/research"))
+    assert after_tick["controller"]["status"] == "paused"
+    assert after_tick["active_runs"] == []
+    assert ok(client.get(f"/api/projects/{imported_id}/runs")) == imported_runs
+    source_after_tick = ok(client.get(f"/api/projects/{p['id']}/research"))
+    assert source_after_tick["controller"]["status"] == "running"
+    assert source_after_tick["active_runs"] == source_state["active_runs"]
+
+
 def case_export_does_not_follow_config_symlink(client, app):
     p = create(client)
     root = Path(os.environ["FOREST_DATA_DIR"]) / "projects" / p["id"]
