@@ -137,6 +137,34 @@ def _waiting_outcome_resource(resource, outcome, observed_at=None):
     return value
 
 
+def _invalidate_failed_run_dependents(session, project_id, node_id):
+    """Invalidate graph consumers when a current run no longer has a result."""
+    from research.kernel.graph import ImpactAnalyzer
+    from services.api.common import graph_from_db
+
+    project = session.get(Project, project_id)
+    if project is None:
+        return
+    impact = ImpactAnalyzer(graph_from_db(session, project)).resolve([{
+        'id': node_id,
+        'category': 'semantic',
+        'reason': 'Latest current run failed or was interrupted',
+    }])
+    rerun_nodes = set(impact['rerun_nodes'])
+    refresh_nodes = set(impact['refresh_nodes'])
+    for dependent_id in (rerun_nodes | refresh_nodes) - {node_id}:
+        dependent = session.get(Node, dependent_id)
+        if dependent is None:
+            continue
+        extra = {**(dependent.extra or {}), 'context_stale': True}
+        if dependent.outputs:
+            dependent.deliverable_status = 'needs_update'
+            extra['results_current'] = False
+        extra['needs_rerun'] = dependent_id in rerun_nodes
+        extra['rerun_generation'] = int(extra.get('rerun_generation', 0)) + 1
+        dependent.extra = extra
+
+
 class WorkerLoop:
     def __init__(self):
         self.id=uid(); self.stopping=False; self.processes={}; self.log_offsets={}; self.last_heartbeat=0
@@ -500,7 +528,7 @@ class WorkerLoop:
                             n.deliverable_status='ready_for_review' if r.status=='completed' else 'draft'
                             current_result={**n.extra,'results_current':r.status=='completed','last_run_id':r.id,'result_revision':r.node_revision,
                                 'verification_status':r.resource.get('verification_status','unverified')}
-                            if r.status=='completed': current_result['needs_rerun']=False
+                            current_result['needs_rerun'] = r.status != 'completed'
                             n.extra=current_result
                             if r.kind=='experiment' and r.status=='completed':
                                 recovery=r.metrics.get('mechanism_recovery',[])
@@ -508,6 +536,8 @@ class WorkerLoop:
                             n.outputs=[{'kind':'run','id':r.id,'path':r.output_path+'/result.json','project_scope':True,'node_revision':r.node_revision}]
                             for filename in ('metrics.json','predictions.csv','sources.json','verification.json','workspace/agent_result.json','workspace/theory_check.json'):
                                 if (output/filename).is_file(): n.outputs.append({'kind':'file','path':r.output_path+'/'+filename,'project_scope':True,'node_revision':r.node_revision})
+                            if r.status != 'completed':
+                                _invalidate_failed_run_dependents(s, r.project_id, n.id)
                 self.processes.pop(ident,None)
     def run(self):
         self.reconcile_completed()
