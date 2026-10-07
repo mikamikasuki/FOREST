@@ -230,8 +230,11 @@ class ContainerRunner:
 
     def resume(self, job):
         info=self._verified(job)
-        if info and not info['State'].get('Paused'): return self.status(job)
-        self.command(['unpause', job['container_id']])
+        if info is None: return self.status(job)
+        if info['State'].get('Status') == 'created':
+            self.command(['start', job['container_id']])
+        elif info['State'].get('Paused'):
+            self.command(['unpause', job['container_id']])
         return self.status(job)
 
 
@@ -289,6 +292,10 @@ def execute_container(config, workspace, output, env=None, require_metrics=False
         if resume_path:
             forwarded['FOREST_RESUME_PATH'] = resume_path
         job = runner.start(argv, workspace, task_id=task_id, env={**config.get('env', {}), **(env or {}), **forwarded}, receipt_path=handle_path)
+    elif attempt.get('mode') == 'container_reconnect':
+        # Worker starts this executor only after the project budget reservation
+        # succeeds; resume a detached container at that admission boundary.
+        runner.resume(job)
     cursor = json.loads(cursor_path.read_text()) if cursor_path.exists() else None
     while True:
         status = runner.status(job)
