@@ -487,16 +487,29 @@ def research_control(ident:str,action:str,body:dict=Body(default={})):
 @router.post('/api/research/proposals/{ident}/apply')
 def apply_proposal(ident:str,body:dict=Body(...)):
     from research.kernel import GraphCommandService
+    with Session() as lookup:
+        proposal_project_id=get(lookup,Hypothesis,ident).project_id
     with Session.begin() as s:
-        proposal=get(s,Hypothesis,ident); p=s.scalar(select(Project).where(Project.id==proposal.project_id).with_for_update())
+        p=lock_graph_project(s,proposal_project_id)
+        proposal=s.scalar(select(Hypothesis).where(Hypothesis.id==ident).with_for_update())
+        if proposal is None: error('NOT_FOUND','Proposal does not exist',404)
         if body.get('expected_revision',p.revision)!=p.revision: error('REVISION_CONFLICT','Graph changed before proposal application',409)
         commands=body.get('commands',proposal.data.get('commands',[])); selected=body.get('indices',list(range(len(commands))))
         if not selected: error('EMPTY_SELECTION','Choose at least one proposed command')
-        graph=graph_from_db(s,p); applied=[]
+        graph=graph_from_db(s,p); applied=[]; effects={'actions':[],'affected_nodes':[]}
         for index in selected:
             cmd={**commands[index],'project_id':p.id,'request_id':uid(),'expected_revision':graph['revision']}
-            result=GraphCommandService(graph,project_dir(p.id)).apply(cmd); graph=result['graph']; applied.append(index)
-        save_graph(s,p,graph); proposal.data={**proposal.data,'accepted_indices':sorted(set(proposal.data.get('accepted_indices',[])+applied))}; proposal.status='partly_adopted' if len(applied)<len(commands) else 'adopted'; graph.pop('_history',None); emit(s,p.id,'node_changed',{'revision':p.revision}); return {'graph':graph,'accepted_indices':applied}
+            result=GraphCommandService(graph,project_dir(p.id)).apply(cmd)
+            graph=result['graph']; applied.append(index)
+            effects['actions'].extend(result['impact'].get('actions',[]))
+            effects['affected_nodes'].extend(result['impact'].get('affected_nodes',[]))
+        save_graph(s,p,graph)
+        apply_graph_mutation_effects(s,p.id,effects)
+        graph=graph_from_db(s,p)
+        proposal.data={**proposal.data,'accepted_indices':sorted(set(proposal.data.get('accepted_indices',[])+applied))}
+        proposal.status='partly_adopted' if len(applied)<len(commands) else 'adopted'
+        graph.pop('_history',None); emit(s,p.id,'node_changed',{'revision':p.revision})
+        return {'graph':graph,'accepted_indices':applied}
 
 @router.post('/api/reviews/{ident}/apply')
 def apply_revision(ident:str,body:dict=Body(...)):

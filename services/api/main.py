@@ -204,39 +204,14 @@ def preview(ident:str,body:GraphCommand):
 def command(ident:str,body:GraphCommand):
     from research.kernel import GraphCommandService
     with Session.begin() as s:
-        # SQLite has no SELECT FOR UPDATE. Serialize read/compare/write so two
-        # local clients cannot both apply against the same graph revision.
-        if s.bind.dialect.name=='sqlite': s.execute(sql_text('BEGIN IMMEDIATE'))
         if body.project_id and body.project_id!=ident: error('CROSS_PROJECT','The command belongs to a different project',422)
-        p=s.scalar(select(Project).where(Project.id==ident).with_for_update())
-        if not p: error('NOT_FOUND','Project missing',404)
+        p=lock_graph_project(s,ident)
         receipt=s.scalar(select(CommandReceipt).where(CommandReceipt.project_id==ident,CommandReceipt.request_id==body.request_id))
         if receipt: return receipt.response
         cmd=body.model_dump(); cmd['project_id']=ident
         result=GraphCommandService(graph_from_db(s,p),project_dir(ident)).apply(cmd); save_graph(s,p,result['graph'])
-        for action in result['impact'].get('actions',[]):
-            if action['action']=='cancel_current_run':
-                for active in s.scalars(select(TaskRun).where(TaskRun.node_id==action['node_id'],TaskRun.status.in_(ACTIVE))
-                                        .with_for_update().execution_options(populate_existing=True)):
-                    from research.execution.process_manager import process_manager
-                    process_manager(safe_path(project_dir(active.project_id),active.output_path+'/workspace'),active.config).cancel_all()
-                    if active.config.get('execution_backend')=='container':
-                        from runners.container import cancel_container
-                        cancel_container(active.config,safe_path(project_dir(active.project_id),active.output_path))
-                    if active.config.get('remote'):
-                        from runners.remote import cancel_remote
-                        cancel_remote(active.config,safe_path(project_dir(active.project_id),active.output_path))
-                    if active.pid:
-                        from runners.local import stop_group
-                        stop_group(active.pid,active.process_created)
-                    finalize_cancelled_run_elapsed(active)
-                    active.status='cancelled'; active.finished_at=now(); active.error='Stopped to apply owner edits'
-                    interrupt_run_reservations(active.id,session=s)
-                    edited=s.get(Node,action['node_id'])
-                    if edited and edited.extra.get('latest_run_id')==active.id: edited.execution_status='cancelled'
-                    emit(s,ident,'run_changed',{'run_id':active.id,'status':'cancelled'})
-        # Editing history cannot roll back completed external effects.
-        for nid in result['impact'].get('affected_nodes',[]): touch_dependents(s,ident,nid if isinstance(nid,str) else nid.get('id',''))
+        apply_graph_mutation_effects(s,ident,result['impact'])
+        result['graph']=graph_from_db(s,p)
         run_ids=[]
         if body.run:
             run_ids=[r.id for r in enqueue_selected(s,result.get('run_nodes',[]),body.request_id+':run')]

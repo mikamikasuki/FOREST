@@ -9,7 +9,8 @@ import uuid
 from pathlib import Path
 from sqlalchemy import select
 from services.api.db import *
-from services.api.common import get, project_dir, safe_path, read_secret, emit, graph_from_db, save_graph
+from services.api.common import (apply_graph_mutation_effects, get, lock_graph_project, project_dir,
+                                 safe_path, read_secret, emit, graph_from_db, save_graph)
 from .policy import RESEARCH_POLICY, ROLES, TOOLS
 from .provider import ModelClient, ProviderError
 from .schemas import tool_definitions, decode_tool_call
@@ -38,10 +39,11 @@ class AgentYield(Exception):
 
 
 class ToolRuntime:
-    def __init__(self, run_id, workspace, allowed=None, config=None):
+    def __init__(self, run_id, workspace, allowed=None, config=None, expected_revision=None):
         self.run_id = run_id
         self.workspace = Path(workspace)
         self.allowed = list(TOOLS if allowed is None else allowed)
+        self.expected_revision = expected_revision
         # A chunk is a narrower form of an already-authorized editable file write.
         if 'write_file' in self.allowed and 'write_file_chunk' not in self.allowed:
             self.allowed.append('write_file_chunk')
@@ -163,13 +165,16 @@ class ToolRuntime:
         if name == 'graph_command':
             from research.kernel import GraphCommandService
             with Session.begin() as s:
-                p = s.scalar(select(Project).where(Project.id == pid).with_for_update())
+                p = lock_graph_project(s,pid)
                 receipt = s.scalar(select(CommandReceipt).where(CommandReceipt.project_id == pid, CommandReceipt.request_id == action_id)) if action_id else None
                 if receipt:
                     return receipt.response
-                command = {**args, 'project_id': pid, 'request_id': action_id or uid(), 'expected_revision': p.revision}
+                expected_revision=args['expected_revision'] if 'expected_revision' in args else self.expected_revision
+                command = {**args, 'project_id': pid, 'request_id': action_id or uid(), 'expected_revision': expected_revision}
                 result = GraphCommandService(graph_from_db(s, p), project_dir(pid)).apply(command)
                 save_graph(s, p, result['graph'])
+                apply_graph_mutation_effects(s,pid,result['impact'])
+                self.expected_revision=p.revision
                 response = {'revision': p.revision, 'impact': result['impact'], 'exit_code': 0}
                 if action_id:
                     s.add(CommandReceipt(project_id=pid, request_id=action_id, response=response))
@@ -592,7 +597,7 @@ def run_agent(run_id, workspace, config):
         raise ValueError('No model configured. Connect a real provider in Settings.')
     provider = {**provider, '_usage_context': {'project_id': run.project_id, 'run_id': run_id}}
     client = ModelClient(provider, read_secret(provider.get('credential_ref')), config.get('allow_paid', False))
-    tool = ToolRuntime(run_id, workspace, allowed, config)
+    tool = ToolRuntime(run_id, workspace, allowed, config, expected_revision=graph.get('revision'))
     protocol = '''Return exactly one JSON object per turn: {"tool":"TOOL_NAME", "arguments":{}, "summary":"short public action rationale"}.
 Enabled tools: TOOLS.
 write_file={"path":"relative filename","content":"text"}; read_file={"path":"...","offset":0,"limit":16000}; list_files={"offset":0}.

@@ -222,24 +222,28 @@ def review_writing(ident:str,body:dict=Body(...)):
 def graph_batch(ident:str,body:dict=Body(...)):
     from copy import deepcopy
     from research.kernel import GraphCommandService
-    from .common import graph_from_db,save_graph
+    from .common import apply_graph_mutation_effects, graph_from_db, lock_graph_project, save_graph
     with Session.begin() as s:
-        p=s.scalar(select(Project).where(Project.id==ident).with_for_update())
-        if not p: error('NOT_FOUND','Project does not exist',404)
+        p=lock_graph_project(s,ident)
         old=s.scalar(select(CommandReceipt).where(CommandReceipt.project_id==ident,CommandReceipt.request_id==body.get('request_id')))
         if old: return old.response
         if p.revision!=body.get('expected_revision'): error('REVISION_CONFLICT','Graph changed; reload before applying this batch',409)
         graph=graph_from_db(s,p); history=deepcopy(graph.pop('_history',{'undo':[],'redo':[]})); before=deepcopy(graph)
         commands=body.get('commands',[])
         if not isinstance(commands,list) or not commands: error('EMPTY_BATCH','Provide graph commands',422)
+        effects={'actions':[],'affected_nodes':[]}
         for command in commands:
             # Filesystem-mutating fork/merge operations remain separate explicit commands.
             if command.get('operation') not in ('add_node','edit_node','add_dependency','remove_dependency','prune_branch','restore_branch','set_main_branch'):
                 error('UNSUPPORTED_BATCH_OPERATION','Use a separate command for this operation',422)
-            graph=GraphCommandService(graph,project_dir(ident)).apply({**command,'request_id':uid(),'expected_revision':graph['revision']})['graph']
+            applied=GraphCommandService(graph,project_dir(ident)).apply({**command,'request_id':uid(),'expected_revision':graph['revision']})
+            graph=applied['graph']
+            effects['actions'].extend(applied['impact'].get('actions',[]))
+            effects['affected_nodes'].extend(applied['impact'].get('affected_nodes',[]))
             graph.pop('_history',None)
         history['undo'].append(before); history['redo']=[]; graph['_history']=history
         save_graph(s,p,graph)
+        apply_graph_mutation_effects(s,ident,effects)
         result={'revision':p.revision,'applied':len(commands),'node_count':len(graph['nodes']),'edge_count':len(graph['edges'])}
         s.add(CommandReceipt(project_id=ident,request_id=body.get('request_id') or uid(),response=result))
         emit(s,ident,'node_changed',{'revision':p.revision});return result

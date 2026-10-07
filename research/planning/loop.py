@@ -4,7 +4,8 @@ from copy import deepcopy
 from pathlib import Path
 from sqlalchemy import select
 from services.api.db import Session, Project, TaskRun, SourcePaper, ResearchClaim, Hypothesis, uid, now, asdict
-from services.api.common import get, graph_from_db, save_graph, project_dir, emit, safe_path
+from services.api.common import (apply_graph_mutation_effects, get, graph_from_db, lock_graph_project,
+                                 save_graph, project_dir, emit, safe_path)
 from research.kernel import GraphCommandService
 from research.publication import publication_profile, publication_instructions, assess_submission
 
@@ -343,7 +344,7 @@ def apply_plan(project_id, run_id, plan, expected_revision):
     if plan['action']!='continue' and commands: raise ValueError('Complete or block after proposed graph work has been adopted and evaluated in a separate cycle')
     allowed={'add_node','edit_node','add_dependency','fork_branch','prune_branch','set_main_branch'}
     with Session.begin() as s:
-        p=s.scalar(select(Project).where(Project.id==project_id).with_for_update())
+        p=lock_graph_project(s,project_id)
         control=p.config.get('controller',{})
         if control.get('status')!='running':
             return {'status':'proposal_only','reason':'Research was paused or stopped before plan adoption','plan':plan}
@@ -353,6 +354,7 @@ def apply_plan(project_id, run_id, plan, expected_revision):
         graph=graph_from_db(s,p)
         original_graph=deepcopy(graph)
         project_runs=list(s.scalars(select(TaskRun).where(TaskRun.project_id==p.id)))
+        effects={'actions':[],'affected_nodes':[]}
         for c in commands:
             if c.get('operation') not in allowed: raise ValueError('Unsupported autonomous graph operation')
             params=c.get('params',{})
@@ -368,7 +370,10 @@ def apply_plan(project_id, run_id, plan, expected_revision):
                     checks=spec.get('checks') if isinstance(spec,dict) else None
                     if not isinstance(spec,dict) or not spec.get('producer_node_id') or not isinstance(checks,list) or not checks or any(not isinstance(check,dict) or not check.get('id') or not check.get('kind') for check in checks):
                         raise ValueError('A verification node requires an actual producer and explicit identified executable checks')
-            graph=GraphCommandService(graph,project_dir(p.id)).apply({**c,'request_id':uid(),'expected_revision':graph['revision']})['graph']
+            applied=GraphCommandService(graph,project_dir(p.id)).apply({**c,'request_id':uid(),'expected_revision':graph['revision']})
+            graph=applied['graph']
+            effects['actions'].extend(applied['impact'].get('actions',[]))
+            effects['affected_nodes'].extend(applied['impact'].get('affected_nodes',[]))
         from research.planning.route_review import route_health
         health=route_health(original_graph,[asdict(run) for run in project_runs],p.config)
         replanned=validate_replanning(plan,original_graph,graph,[asdict(run) for run in project_runs],control,health,p.goal)
@@ -413,7 +418,9 @@ def apply_plan(project_id, run_id, plan, expected_revision):
                 return {'decision_id':record.id,'action':'continue','status':'needs_revision','applied_commands':0,
                         'graph_revision':p.revision,'submission_quality':audit,
                         'rationale':'Continue the real research and manuscript revision loop until the delivery audit is ready.'}
-        if commands: save_graph(s,p,graph)
+        if commands:
+            save_graph(s,p,graph)
+            apply_graph_mutation_effects(s,p.id,effects)
         record=Hypothesis(project_id=p.id,title='Research decision',status='adopted' if commands else plan['action'],data={**plan,'origin':'research_controller','run_id':run_id,'graph_revision':p.revision,'evidence_label':'INFERRED'})
         s.add(record); s.flush()
         control={**control,'phase':'EXECUTE' if commands else 'CONFIRM','last_decision_id':record.id,'last_rationale':plan['rationale'], 'last_plan_run':run_id, 'cycles':int(control.get('cycles',0))+1}

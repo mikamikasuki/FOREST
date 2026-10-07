@@ -834,7 +834,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/projects/{ident}/graph/batch`
 
-Require current PROJECT expected_revision and a nonempty commands array. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.
+Require current PROJECT expected_revision and a nonempty commands array. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; cancellation and affected-node invalidation effects from the commands are applied before return. Result counts and final graph revision are returned, not the graph itself.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -848,7 +848,7 @@ Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT; `422` EMPTY_BAT
 
 #### `POST /api/projects/{ident}/graph/commands`
 
-Apply one kernel command under the project writer transaction. The project request_id deduplicates saved command receipts before revision comparison; reuse it only for the same logical submission. Return public graph, impact, run_nodes and run_ids. run:true enqueues selected affected nodes. Preview conflicts/missing inputs must be inspected; undo restores graph content, not completed external effects.
+Apply one kernel command under the project writer transaction. The project request_id deduplicates saved command receipts before revision comparison; reuse it only for the same logical submission. Return public graph, impact, run_nodes and run_ids. Apply returned current-run cancellation and affected-node invalidation effects before returning. run:true enqueues selected affected nodes. Preview conflicts/missing inputs must be inspected; undo restores graph content, not completed external effects.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1514,7 +1514,7 @@ Known domain failures: `400` Scheduling/input errors; `404` NOT_FOUND.
 
 #### `POST /api/research/proposals/{ident}/apply`
 
-ident is a Hypothesis/proposal record. Optional expected_revision compares PROJECT graph revision. commands defaults saved proposal commands; indices defaults all. Apply sequential kernel commands and return graph/accepted_indices. Empty selection is rejected. Each selected command can have filesystem effects; client should preview and supply valid indices.
+ident is a Hypothesis/proposal record. Optional expected_revision compares PROJECT graph revision. commands defaults saved proposal commands; indices defaults all. Apply sequential kernel commands, then apply their cancellation and affected-node invalidation effects before returning graph/accepted_indices. Empty selection is rejected. Each selected command can have filesystem effects; client should preview and supply valid indices.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |

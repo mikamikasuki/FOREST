@@ -2,7 +2,7 @@ import json
 import os
 import secrets
 from pathlib import Path
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete, func, text as sql_text
 from fastapi import HTTPException
 from .db import *
 from .config import settings
@@ -13,6 +13,14 @@ def get(s,model,ident,*,for_update=False):
     obj=s.get(model,ident,with_for_update=True) if for_update else s.get(model,ident)
     if obj is None: error('NOT_FOUND',f'{model.__name__} {ident} does not exist',404)
     return obj
+
+def lock_graph_project(s,project_id):
+    """Serialize graph writes before reading the revision used by a mutation."""
+    if s.bind.dialect.name=='sqlite': s.execute(sql_text('BEGIN IMMEDIATE'))
+    project=s.scalar(select(Project).where(Project.id==project_id).with_for_update())
+    if project is None: error('NOT_FOUND','Project does not exist',404)
+    return project
+
 def project_dir(project_id):
     if not project_id or any(c not in '0123456789abcdef-' for c in project_id): error('INVALID_ID','Invalid project identifier')
     return settings.data_dir/'projects'/project_id
@@ -88,3 +96,40 @@ def touch_dependents(s,project_id,origin):
             if origin in text or cls is PaperDocument:
                 obj.status='needs_update'; obj.data={**obj.data,'stale_reason':f'Upstream material changed: {origin}'}
     emit(s,project_id,'artifact_changed',{'source':origin})
+
+def apply_graph_mutation_effects(s,project_id,impact):
+    """Apply runtime and downstream effects returned by GraphCommandService."""
+    from services.worker.scheduler import ACTIVE, finalize_cancelled_run_elapsed
+    from research.agents.budget import interrupt_run_reservations
+    for action in impact.get('actions',[]):
+        if action.get('action')!='cancel_current_run': continue
+        node_id=action.get('node_id')
+        if not node_id: continue
+        query=(select(TaskRun).where(TaskRun.project_id==project_id,TaskRun.node_id==node_id,
+                                     TaskRun.status.in_(ACTIVE)).with_for_update()
+               .execution_options(populate_existing=True))
+        for active in s.scalars(query):
+            from research.execution.process_manager import process_manager
+            process_manager(safe_path(project_dir(active.project_id),active.output_path+'/workspace'),active.config).cancel_all()
+            if active.config.get('execution_backend')=='container':
+                from runners.container import cancel_container
+                cancel_container(active.config,safe_path(project_dir(active.project_id),active.output_path))
+            if active.config.get('remote'):
+                from runners.remote import cancel_remote
+                cancel_remote(active.config,safe_path(project_dir(active.project_id),active.output_path))
+            if active.pid:
+                from runners.local import stop_group
+                stop_group(active.pid,active.process_created)
+            finalize_cancelled_run_elapsed(active)
+            active.status='cancelled'; active.finished_at=now(); active.error='Stopped to apply owner edits'
+            interrupt_run_reservations(active.id,session=s)
+            edited=s.get(Node,node_id)
+            if edited and edited.extra.get('latest_run_id')==active.id: edited.execution_status='cancelled'
+            emit(s,project_id,'run_changed',{'run_id':active.id,'status':'cancelled'})
+    affected=[]
+    for node in impact.get('affected_nodes',[]):
+        node_id=node if isinstance(node,str) else node.get('id') if isinstance(node,dict) else None
+        if node_id and node_id not in affected: affected.append(node_id)
+    for node_id in affected: touch_dependents(s,project_id,node_id)
+    return {'cancelled_nodes':[a.get('node_id') for a in impact.get('actions',[]) if a.get('action')=='cancel_current_run'],
+            'invalidated_nodes':affected}
