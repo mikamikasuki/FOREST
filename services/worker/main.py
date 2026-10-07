@@ -117,6 +117,7 @@ class WorkerLoop:
                     claim.worker_id=self.id
                 r['worker_id']=self.id
             self.monitor(r)
+        self.reap_cancelled()
         with Session() as s:
             active=[r for r in s.scalars(select(TaskRun).where(TaskRun.status.in_(('running','paused','pausing')))) if r.pid or r.status!='paused']
             owned=[r for r in active if r.worker_id==self.id]
@@ -251,6 +252,26 @@ class WorkerLoop:
                     r.status='queued'; r.pid=None; r.process_created=None
                     r.config={**r.config,'_next_attempt':{'mode':'continue'}}
                     emit(s,r.project_id,'run_resumed',{'run_id':r.id,'reason':'Awaited work is ready'})
+
+    def reap_cancelled(self):
+        """Reap locally owned executor children after API-side cancellation.
+
+        Cancellation persists a terminal run state in the API process, so the
+        normal monitor query no longer selects that run. Keep polling the
+        worker-owned Popen until the stopped child exits, then release both the
+        process handle and its progress offset.
+        """
+        if not self.processes:
+            return
+        identifiers = list(self.processes)
+        with Session() as s:
+            cancelled = set(s.scalars(select(TaskRun.id).where(
+                TaskRun.id.in_(identifiers), TaskRun.status == 'cancelled')))
+        for ident in cancelled:
+            proc = self.processes.get(ident)
+            if proc is not None and proc.poll() is not None:
+                self.processes.pop(ident, None)
+                self.log_offsets.pop(ident, None)
 
     def monitor(self,value):
         if value['status']=='paused' and not value.get('pid'):
