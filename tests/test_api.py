@@ -367,6 +367,16 @@ def case_duplicate_retains_bindings_without_following_links(client, app):
     p = create(client)
     n = add_node(client, p, config={"kind": "command", "command": ["python", "-c", "print(1)"]})
     run = ok(client.post(f"/api/nodes/{n['id']}/run", json={"request_id": "to-copy"}))
+    source_times = {
+        "created_at": "2024-05-30T09:00:00+00:00",
+        "started_at": "2024-05-30T09:01:12.125000+00:00",
+        "finished_at": "2024-05-30T09:01:17.750000+00:00",
+    }
+    from services.api.db import Session, TaskRun
+    with Session.begin() as session:
+        source_run = session.get(TaskRun, run["id"])
+        for field, value in source_times.items():
+            setattr(source_run, field, value)
     fig = ok(client.post("/api/figures", json={"project_id": p["id"], "title": "Measured", "data": {"run_ids": [run["id"]]}}))
     root = Path(os.environ["FOREST_DATA_DIR"]) / "projects" / p["id"]
     private = root.parent / "outside.txt"
@@ -377,6 +387,7 @@ def case_duplicate_retains_bindings_without_following_links(client, app):
     copied_fig = ok(client.get("/api/figures", params={"project_id": copied["id"]}))[0]
     assert copied_fig["id"] != fig["id"] and copied_fig["data"]["run_ids"] == [copied_run["id"]]
     assert copied_run["status"] == "interrupted"
+    assert {field: copied_run[field] for field in source_times} == source_times
     assert client.get(f"/api/projects/{copied['id']}/file", params={"path": "secret.txt"}).status_code == 404
 
 
