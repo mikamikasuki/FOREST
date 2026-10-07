@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from .errors import GraphError
 
-IGNORED = {".git", ".venv", "node_modules", "__pycache__", ".forest-bases", "branches", ".merge-staging"}
+IGNORED = {".git", ".venv", "node_modules", "__pycache__", ".forest-bases", "branches", ".merge-staging", ".forest-interventions"}
 DATA_DIRS = {"data", "datasets"}
 RESULT_DIRS = {"results", "runs", "outputs", "figures"}
 
@@ -135,6 +135,9 @@ class BranchWorkspace:
         return found
 
     def _selection(self, root, policy):
+        if not isinstance(policy,dict): raise GraphError('copy_policy','Copy policy must be an object.')
+        maximum=policy.get('max_copy_bytes',100*1024*1024)
+        if type(maximum) is not int or maximum<0: raise GraphError('copy_budget','max_copy_bytes must be a nonnegative integer.')
         selected, refs = {}, []
         for rel, path in _files(root).items():
             top = Path(rel).parts[0]
@@ -149,11 +152,11 @@ class BranchWorkspace:
             elif strategy == "copy":
                 selected[rel] = path
         total = sum(p.stat().st_size for p in selected.values())
-        if total > policy.get("max_copy_bytes", 100 * 1024 * 1024):
+        if total > maximum:
             raise GraphError("copy_budget", f"The selected files total {total} bytes; use references or increase max_copy_bytes.")
         return selected, refs
 
-    def fork(self, node_id, copy_policy=None, *, branch_id=None, dry_run=False):
+    def fork(self, node_id, copy_policy=None, *, branch_id=None, dry_run=False, capture_sources=False):
         policy = copy_policy or {}
         node = next((n for n in self.graph["nodes"] if n["id"] == node_id), None)
         if node is None:
@@ -181,7 +184,9 @@ class BranchWorkspace:
         return {"branch_id": branch_id, "workspace": str(dest.relative_to(self.project_dir)),
                 "base_workspace": str(base.relative_to(self.project_dir)), "parent_branch_id": source["id"],
                 "base_config": source.get("config", {}), "files": sorted(selected), "input_mapping": refs,
-                "copy_policy": policy}
+                "copy_policy": policy, **({'_materialization': {
+                    rel: {'kind': 'copy', 'source': str(path.relative_to(self.project_dir))}
+                    for rel, path in selected.items()}} if capture_sources else {})}
 
     def _base(self, left, right):
         base = None
@@ -231,7 +236,7 @@ class BranchWorkspace:
                 "results": {b["id"]: [{"node_id": n["id"], "outputs": n.get("outputs", []), "research_status": n.get("research_status")}
                                      for n in self.graph["nodes"] if n["branch_id"] == b["id"]] for b in (left, right)}}
 
-    def merge(self, left, right, resolution=None, *, branch_id=None, dry_run=False):
+    def merge(self, left, right, resolution=None, *, branch_id=None, dry_run=False, capture_sources=False):
         left, right = self._branch(left), self._branch(right)
         resolution = resolution or {}
         comparison = self.compare(left, right)
@@ -297,4 +302,7 @@ class BranchWorkspace:
                 shutil.rmtree(staging, ignore_errors=True)
         return {**comparison, "branch_id": branch_id, "workspace": str(dest.relative_to(self.project_dir)),
                 "config": config or {}, "conflicts": conflicts, "requires_revalidation": True,
-                "reevaluate_inputs": [n["id"] for n in self.graph["nodes"] if n["branch_id"] in (left["id"], right["id"])]}
+                "reevaluate_inputs": [n["id"] for n in self.graph["nodes"] if n["branch_id"] in (left["id"], right["id"])],
+                **({'_materialization': {rel: {'kind': kind, **({'source': str(value.relative_to(self.project_dir))}
+                    if kind == 'copy' else {'content': value} if kind == 'content' else {})}
+                    for rel, (kind, value) in selected.items()}} if capture_sources else {})}

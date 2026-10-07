@@ -30,6 +30,73 @@ def write_json(path, value):
     path.write_text(json.dumps(value))
 
 
+@pytest.mark.parametrize('change,problem', [
+    ('none', None), ('unit', 'declared_units'), ('missing', 'missing_value'),
+    ('type', 'column_type'), ('leak', 'split_leakage'), ('duplicate', 'duplicate_sample_identity'),
+    ('count', 'split_counts')])
+def test_raw_data_contract_checks_actual_schema_units_missing_identities_and_split(workspaces, change, problem):
+    producer, verifier = workspaces
+    rows = ['s1,0,train,1.5', 's2,0,test,2.5']
+    units = {'units': {'measurement': 'dimensionless', 'value': 'kg'}}
+    if change == 'unit': units['units']['value'] = 'g'
+    if change == 'missing': rows[1] = 's2,0,test,'
+    if change == 'type': rows[1] = 's2,0.5,test,2.5'
+    if change == 'leak': rows[1] = 's1,1,test,2.5'
+    if change == 'duplicate': rows[1] = 's1,0,test,2.5'
+    if change == 'count': rows.append('s3,0,test,3.5')
+    (producer/'data.csv').write_text('id,measurement,split,value\n'+'\n'.join(rows)+'\n')
+    write_json(producer/'schema.json', units)
+    check = {'id': 'raw-data', 'kind': 'data_contract', 'source': 'data.csv', 'units_file': 'schema.json',
+        'identity_columns': ['id', 'measurement'], 'columns': {
+            'id': {'type': 'string', 'nullable': False}, 'split': {'type': 'string', 'nullable': False},
+            'measurement': {'type': 'integer', 'nullable': False, 'unit': 'dimensionless'},
+            'value': {'type': 'number', 'nullable': False, 'unit': 'kg'}},
+        'split': {'column': 'split', 'identity_columns': ['id'], 'expected_counts': {'train': 1, 'test': 1}}}
+    result = check_contract(contract(check), producer, verifier)
+    assert result['verification_status'] == ('accepted' if problem is None else 'rejected')
+    if problem: assert problem in {issue['check'] for issue in result['checks'][0]['issues']}
+    else:
+        # Changing the actual metadata invalidates admission on reread.
+        units['units']['value'] = 'g'; write_json(producer/'schema.json', units)
+        assert check_contract(contract(check), producer, verifier)['verification_status'] == 'rejected'
+
+
+def test_json_raw_schema_preserves_large_integer_identities_and_nullable_values(workspaces):
+    producer, verifier = workspaces
+    write_json(producer/'data.json', [
+        {'id': 9007199254740992, 'split': 'train', 'value': None},
+        {'id': 9007199254740993, 'split': 'test', 'value': 2.5}])
+    write_json(producer/'units.json', {'units': {'id': 'dimensionless', 'value': 'kg'}})
+    check = {'id': 'json-schema', 'kind': 'data_contract', 'source': 'data.json', 'units_file': 'units.json',
+        'columns': {'id': {'type': 'integer', 'nullable': False, 'unit': 'dimensionless'},
+            'split': {'type': 'string', 'nullable': False}, 'value': {'type': 'number', 'nullable': True, 'unit': 'kg'}},
+        'identity_columns': ['id'], 'split': {'column': 'split', 'identity_columns': ['id'],
+                                            'expected_counts': {'train': 1, 'test': 1}}}
+    observed = check_contract(contract(check), producer, verifier)
+    assert observed['verification_status'] == 'accepted', observed
+    assert observed['checks'][0]['nullable_counts'] == {'value': 1}
+    records = json.loads((producer/'data.json').read_text()); records[1]['value'] = True
+    write_json(producer/'data.json', records)
+    rejected = check_contract(contract(check), producer, verifier)
+    assert rejected['verification_status'] == 'rejected'
+    assert rejected['checks'][0]['issues'][0]['check'] == 'column_type'
+
+
+def test_raw_contract_retains_total_failures_with_bounded_diagnostics(workspaces):
+    producer, verifier = workspaces
+    (producer/'data.csv').write_text('id,split,value\n'+'same,train,invalid\n'*1000)
+    write_json(producer/'units.json', {'units': {'value': 'kg'}})
+    check = {'id': 'bounded-issues', 'kind': 'data_contract', 'source': 'data.csv', 'units_file': 'units.json',
+        'columns': {'id': {'type': 'string', 'nullable': False}, 'split': {'type': 'string', 'nullable': False},
+                    'value': {'type': 'number', 'nullable': False, 'unit': 'kg'}},
+        'identity_columns': ['id'], 'split': {'column': 'split', 'identity_columns': ['id'], 'expected_counts': {'train': 1000}}}
+    observed = check_contract(contract(check), producer, verifier)
+    assert observed['verification_status'] == 'rejected'
+    result = observed['checks'][0]
+    assert result['row_count'] == 1000 and result['issue_count'] == 1999
+    assert result['issues_truncated'] and len(result['issues']) == 200
+
+
 def test_actual_numeric_files_are_compared_with_pointer_receipts(workspaces):
     producer, verifier = workspaces
     write_json(producer / 'metrics.json', {'score': 7, 'results': [{'accuracy': .75}]})

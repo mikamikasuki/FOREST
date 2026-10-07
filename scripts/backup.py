@@ -217,7 +217,39 @@ def quarantine_execution(database_url):
         with engine.begin() as connection:
             tables = inspect(connection).get_table_names()
             if 'task_runs' in tables:
-                connection.execute(text("UPDATE task_runs SET status='interrupted', pid=NULL, process_created=NULL, worker_id=NULL, error='Restored from backup; review artifacts and explicitly start a new run before execution' WHERE status IN ('queued','running','paused','pausing','waiting','budget_exhausted','cancelling')"))
+                connection.execute(text("UPDATE task_runs SET status='interrupted', pid=NULL, process_created=NULL, worker_id=NULL, error='Restored from backup; review artifacts and explicitly start a new run before execution' WHERE status IN ('queued','running','paused','pausing','waiting','waiting_input','budget_exhausted','cancelling')"))
+            def read_object(value):
+                return json.loads(value) if isinstance(value,str) else dict(value or {})
+            def save_object(table,column,ident,value):
+                encoded=json.dumps(value)
+                assignment='CAST(:value AS JSON)' if engine.dialect.name=='postgresql' else ':value'
+                connection.execute(text(f'UPDATE {table} SET {column}={assignment} WHERE id=:id'),{'value':encoded,'id':ident})
+            if 'task_runs' in tables and 'resource' in {c['name'] for c in inspect(connection).get_columns('task_runs')}:
+                for ident,resource in connection.execute(text('SELECT id, resource FROM task_runs')).all():
+                    resource=read_object(resource)
+                    if resource.get('pending_intervention'):
+                        resource['historical_pending_intervention']=resource.pop('pending_intervention')
+                    resource.pop('wait_for',None)
+                    save_object('task_runs','resource',ident,resource)
+            if 'intervention_effects' in tables:
+                for ident,status,observation in connection.execute(text('SELECT id,status,observation FROM intervention_effects')).all():
+                    if status not in ('applied','superseded'):
+                        save_object('intervention_effects','observation',ident,{**read_object(observation),
+                            'reason':'backup_restore_requires_new_execution','original_status':status})
+                        connection.execute(text("UPDATE intervention_effects SET status='superseded',target='{}',lease_owner=NULL,lease_until=0,retry_after=0 WHERE id=:id"),{'id':ident})
+                    else:
+                        connection.execute(text("UPDATE intervention_effects SET target='{}',lease_owner=NULL,lease_until=0 WHERE id=:id"),{'id':ident})
+            if 'interventions' in tables:
+                connection.execute(text("UPDATE interventions SET status='superseded' WHERE status IN ('accepted','needs_attention','partially_applied')"))
+            if 'action_decisions' in tables:
+                connection.execute(text("UPDATE action_decisions SET status='stale' WHERE status IN ('pending','accepted')"))
+            if 'branches' in tables:
+                for ident,extra in connection.execute(text('SELECT id,extra FROM branches')).all():
+                    extra=read_object(extra)
+                    if extra.get('workspace_intervention'):
+                        extra['historical_workspace_intervention']=extra.pop('workspace_intervention')
+                        save_object('branches','extra',ident,extra)
+                        connection.execute(text("UPDATE branches SET status='disabled' WHERE id=:id"),{'id':ident})
             # Derived snapshots/leases must not become current after a restore.
             for table in ('observed_files','observation_scopes','report_requests','report_jobs','report_dispatch_slots','observation_states'):
                 if table in tables:

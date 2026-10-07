@@ -41,6 +41,109 @@ export function ExecutionSettings({
 
   return (
     <div className="execution-settings">
+      <Field label="Evidence use">
+        <select
+          value={config.acceptance_contract?.purpose ?? DEFAULT}
+          onChange={(event) => {
+            const next = { ...config };
+            if (event.target.value === DEFAULT) delete next.acceptance_contract;
+            else
+              next.acceptance_contract = {
+                ...(config.acceptance_contract || {}),
+                purpose: event.target.value,
+              };
+            onChange(next);
+          }}
+        >
+          <option value={DEFAULT}>Task verification policy</option>
+          <option value="exploratory">Exploratory notes</option>
+          <option value="raw_data">Raw data handoff</option>
+          <option value="comparison">Measured comparison</option>
+          <option value="major_claim">Major claim with confirmation</option>
+        </select>
+      </Field>
+      {config.acceptance_contract?.purpose === "raw_data" && (
+        <Field
+          label="Required data artifacts"
+          hint="Producer workspace paths, one per line. Configure independent data_contract checks for their schema, units and sample split."
+        >
+          <textarea
+            value={(config.acceptance_contract.artifact_paths || []).join("\n")}
+            onChange={(event) =>
+              onChange({
+                ...config,
+                acceptance_contract: {
+                  ...config.acceptance_contract,
+                  artifact_paths: event.target.value
+                    .split("\n")
+                    .map((path) => path.trim())
+                    .filter(Boolean),
+                },
+              })
+            }
+          />
+        </Field>
+      )}
+      {config.acceptance_contract?.purpose === "major_claim" && (
+        <Field
+          label="Confirmation runs"
+          hint="Distinct completed confirmation-phase run IDs, one per line. Their numerical evidence must be independently checked."
+        >
+          <textarea
+            value={(config.acceptance_contract.confirmation_run_ids || []).join(
+              "\n",
+            )}
+            onChange={(event) =>
+              onChange({
+                ...config,
+                acceptance_contract: {
+                  ...config.acceptance_contract,
+                  confirmation_run_ids: event.target.value
+                    .split("\n")
+                    .map((id) => id.trim())
+                    .filter(Boolean),
+                },
+              })
+            }
+          />
+        </Field>
+      )}
+      <Field label="Human action review">
+        <select
+          value={
+            config.human_review_tools === undefined
+              ? DEFAULT
+              : Array.isArray(config.human_review_tools) &&
+                  config.human_review_tools.includes("*")
+                ? "all"
+                : Array.isArray(config.human_review_tools) &&
+                    !config.human_review_tools.length
+                  ? "none"
+                  : "selected"
+          }
+          onChange={(event) => {
+            const next = { ...config };
+            if (event.target.value === DEFAULT) delete next.human_review_tools;
+            else
+              next.human_review_tools =
+                event.target.value === "all" ? ["*"] : [];
+            onChange(next);
+          }}
+        >
+          <option value={DEFAULT}>Inherit project review policy</option>
+          <option value="all">Review every agent action</option>
+          <option value="none">
+            Execute enabled tools without action review
+          </option>
+          {Array.isArray(config.human_review_tools) &&
+            config.human_review_tools.length > 0 &&
+            !config.human_review_tools.includes("*") && (
+              <option value="selected">
+                Selected tools (editable in configuration)
+              </option>
+            )}
+        </select>
+      </Field>
       <Field label="Execution backend">
         <select value={backend} onChange={(e) => setBackend(e.target.value)}>
           <option value={DEFAULT}>Local (default)</option>

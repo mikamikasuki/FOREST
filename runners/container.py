@@ -215,11 +215,22 @@ class ContainerRunner:
 
     def stop(self, job, grace=5):
         info = self._verified(job)
+        if info and info['State'].get('Status') == 'created':
+            # docker stop leaves an unstarted container in created state. Remove
+            # this identity-verified job so a delayed start cannot execute it.
+            self.command(['rm', job['container_id']])
+            if self._verified(job) is not None:
+                raise RuntimeError('Created container removal remains unconfirmed')
+            return {**job, 'status': 'cancelled', 'stop_confirmed': True,
+                    'observation': 'unstarted container removed', 'error': None,
+                    'cancel_requested_at': time.time()}
         if info and info['State'].get('Running'):
             if info['State'].get('Paused'):
                 self.command(['unpause', job['container_id']])
             self.command(['stop', '--time', str(int(grace)), job['container_id']], timeout=grace + 30)
         result = self.status(job)
+        if result['status'] in ('running', 'paused', 'starting'):
+            raise RuntimeError('Container stop remains unconfirmed')
         return {**result, 'status': 'cancelled', 'cancel_requested_at': time.time()}
 
     def pause(self, job):
@@ -351,8 +362,22 @@ def control_container(config, output, action):
     return result
 
 
-def cancel_container(config, output):
-    return control_container(config, output, 'stop')
+def cancel_container(config, output, *, run_id=None):
+    result=control_container(config, output, 'stop')
+    if result is not None or not run_id: return result
+    # The submitting executor has been stopped by the intervention service.
+    # Adopt a deterministic create that lost its handle before stopping it.
+    attempt=config.get('execution_attempt') or {}
+    task_id=run_id+'-a-'+attempt['id'] if attempt.get('mode')=='checkpoint' else run_id
+    runner=ContainerRunner(config.get('container'))
+    info=runner._inspect('forest-task-'+task_id.lower())
+    if info is None:
+        return {'status':'cancelled','stop_confirmed':True,'observation':'no matching container exists'}
+    workspace=str((Path(output)/'workspace').resolve())
+    job={'container_id':info['Id'],'task_id':task_id,'workspace':workspace}
+    result=runner.stop(job)
+    _save(Path(output)/'container_result.json',result)
+    return result
 
 
 class ContainerProcesses:

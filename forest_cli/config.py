@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -158,3 +159,40 @@ def save_project_binding(project_id: str, endpoint: str,
         raise CliError("Project ID cannot be empty.", "INVALID_PROJECT", 2)
     path = Path(cwd or Path.cwd()).expanduser().resolve() / ".forest" / "project.json"
     return _write_config(path, {"endpoint": normalize_endpoint(endpoint), "project_id": project_id})
+
+
+def remember_graph_request(context: Context, project_id: str, request_id: str,
+                           intent: dict, body: dict, path=None) -> dict:
+    """Freeze the first observed graph and implicit defaults before sending.
+
+    The journal stores no credentials or server response. An atomic hard link
+    chooses one complete request across concurrent CLI processes; retries send
+    that exact body, including after a response was lost.
+    """
+    key = json.dumps([context.endpoint, project_id, request_id], ensure_ascii=False)
+    destination = config_path(path).parent / 'requests' / (hashlib.sha256(key.encode()).hexdigest() + '.json')
+    temporary = None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if not destination.exists():
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=destination.parent,
+                                             prefix='.request-', delete=False) as stream:
+                temporary = Path(stream.name)
+                os.chmod(temporary, 0o600)
+                json.dump({'identity': key, 'intent': intent, 'body': body}, stream, ensure_ascii=False)
+                stream.flush(); os.fsync(stream.fileno())
+            try: os.link(temporary, destination)
+            except FileExistsError: pass
+        recorded = _read_config(destination)
+        if (recorded.get('identity') != key or
+                json.dumps(recorded.get('intent'), sort_keys=True) != json.dumps(intent, sort_keys=True)):
+            raise CliError('This request identity belongs to different intent; use a new request ID.',
+                           'REQUEST_ID_CONFLICT', 4)
+        if not isinstance(recorded.get('body'), dict):
+            raise CliError('The stored request is unreadable: ' + str(destination), 'INVALID_CONFIG', 2)
+        return recorded['body']
+    except OSError:
+        raise CliError('Could not persist the request before submission: ' + str(destination),
+                       'REQUEST_JOURNAL_ERROR') from None
+    finally:
+        if temporary is not None: temporary.unlink(missing_ok=True)

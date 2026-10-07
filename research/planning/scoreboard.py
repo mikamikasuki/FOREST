@@ -34,6 +34,13 @@ def compare_trials(runs,objective):
                    comparison_eligible=declaration['complete'] and (not required or (verification=='accepted' and numerical_ready)),
                    verification_status=verification,numerical_verification=numerical,
                    evidence_label='MEASURED' if run.get('kind')!='agent' or numerical_ready else 'REPORTED')
+        applicability = run.get('goal_applicability')
+        if applicability is not None:
+            row['goal_applicability'] = applicability
+            if not applicability['ready']:
+                row.update(comparison_eligible=False, disposition='goal_review_required',
+                           comparison_status='goal_review_required', comparator_run_id=None)
+                rows.append(row); continue
         if not declaration['complete'] or (required and (verification!='accepted' or not numerical_ready)):
             row.update(disposition='incomparable' if declaration['conflicting_fields'] else 'unverified',
                        comparison_status='incomparable' if declaration['conflicting_fields'] else 'unverified',comparator_run_id=None)

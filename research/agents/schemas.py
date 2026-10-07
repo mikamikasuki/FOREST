@@ -134,3 +134,11 @@ def decode_tool_call(call, allowed):
             raise ValueError('env_json must encode an object of string values')
         args['env'] = env
     return {'tool': name, 'arguments': args, 'call_id': call['call_id']}
+
+
+def json_action_schema(allowed):
+    """Constrain JSON transports to the currently enabled FOREST actions."""
+    definitions = tool_definitions(allowed)
+    return closed({'tool': {'type': 'string', 'enum': [d['name'] for d in definitions]},
+                   'arguments': {'anyOf': [d['parameters'] for d in definitions]},
+                   'summary': string('Short public action rationale')})

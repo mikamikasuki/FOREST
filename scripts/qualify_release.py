@@ -191,6 +191,7 @@ def agents(api,args,report):
     if args.allow_paid:
         usage=api('GET',f'/api/providers/{args.provider_id}/usage')
         if usage.get('limit_usd') is None or usage['limit_usd']>args.max_cost_usd: raise ValueError('Configure the server provider budget_usd at or below --max-cost-usd before paid qualification')
+        if usage.get('remaining_usd') is None: raise ValueError('Provider remaining USD is unknown; priced usage is required for --allow-paid qualification')
         report['provider_usage_before']=usage
     report.setdefault('tasks',[]); report['status']='running'; report['latest_corpus_version']=VERSION
     def persist():
@@ -203,8 +204,11 @@ def agents(api,args,report):
         record=previous[-1] if previous and previous[-1]['status']=='running' else {'id':task.id,'category':task.category,'attempt':len(previous)+1,'status':'running','started_at':utc(),'conditions':{'corpus_version':VERSION,'oracle_revision':ORACLE_REVISION,'provider_id':args.provider_id,'model':provider.get('model'),'context_char_budget':AGENT_CONTEXT_CHARS,'max_steps':args.max_steps,'task_timeout':args.task_timeout,'instructions':PRIME_GOAL if task.id=='01-prime-independence' else task_instruction(task),'output_contract':{'required_artifacts':['metrics.json','report.md'] if task.id=='01-prime-independence' else list(task.outputs),'metrics_required_keys':[] if task.id=='01-prime-independence' else list(task.expected.keys()),'top_level_types':{} if task.id=='01-prime-independence' else result_types(task.expected)}}}
         if record not in report['tasks']: report['tasks'].append(record)
         persist()
-        if args.allow_paid and report['provider_usage_latest'].get('remaining_usd',0)<=0:
-            record.update(status='not_run_budget',failures=['Provider shared budget has no remaining reservation capacity']); persist(); break
+        if args.allow_paid:
+            remaining=report['provider_usage_latest'].get('remaining_usd')
+            if remaining is None or remaining<=0:
+                reason='Provider remaining USD is unknown; spending capacity cannot be established' if remaining is None else 'Provider shared budget has no remaining reservation capacity'
+                record.update(status='not_run_budget',failures=[reason]); persist(); break
         if task.id=='01-prime-independence':
             run_prime(api,args,record,persist)
             if record['status']=='running': return
@@ -261,7 +265,11 @@ def graph(api,args,report):
     start=time.monotonic(); project,g=api.project('Release qualification · graph scale','Exercise real graph storage, paging, and edit APIs. This graph-scale test does not execute 1,000 computations.')
     pid=project['id']; branch=g['branches'][0]; ids=[str(uuid.uuid4()) for _ in range(args.nodes)]
     commands=[{'operation':'add_node','params':{'id':nid,'branch_id':branch['id'],'type':'idea','title':f'Qualification node {i:04}','instructions':'Graph storage qualification; no computation was executed.','position':{'x':(i%20)*250,'y':(i//20)*140},**({'parent_id':ids[(i-1)//2]} if i else {})}} for i,nid in enumerate(ids)]
-    created=api('POST',f'/api/projects/{pid}/graph/batch',json={'request_id':str(uuid.uuid4()),'expected_revision':g['revision'],'commands':commands}); write_seconds=time.monotonic()-start
+    revision=g['revision']; batches=0
+    for offset in range(0,len(commands),200):
+        created=api('POST',f'/api/projects/{pid}/graph/batch',json={'request_id':str(uuid.uuid4()),'expected_revision':revision,'commands':commands[offset:offset+200]})
+        revision=created['revision']; batches+=1
+    write_seconds=time.monotonic()-start
     page_start=time.monotonic(); observed=[]; offset=0; pages=0
     while True:
         page=api('GET',f'/api/projects/{pid}/graph/page',params={'offset':offset,'limit':100}); observed.extend(n['id'] for n in page['nodes']); pages+=1
@@ -274,7 +282,7 @@ def graph(api,args,report):
     if len(observed)!=args.nodes or set(observed)!=set(ids): failures.append('Paged graph did not return each submitted node exactly once')
     if len(final['edges'])!=args.nodes-1: failures.append('Tree edge count differs from nodes minus one')
     if node['title']!='Edited final qualification node': failures.append('Ordinary node edit did not persist')
-    report.update(status='passed' if not failures else 'failed',project_id=pid,node_count=len(final['nodes']),edge_count=len(final['edges']),pages=pages,creation_seconds=write_seconds,paging_seconds=paging_seconds,observed_seconds=time.monotonic()-start,failures=failures,executed_compute_nodes=0,scope='API graph storage, pagination and ordinary editing only; no parallel compute or browser frame-rate claim'); save(args.report,report)
+    report.update(status='passed' if not failures else 'failed',project_id=pid,node_count=len(final['nodes']),edge_count=len(final['edges']),batches=batches,pages=pages,creation_seconds=write_seconds,paging_seconds=paging_seconds,observed_seconds=time.monotonic()-start,failures=failures,executed_compute_nodes=0,scope='API graph storage, pagination and ordinary editing only; no parallel compute or browser frame-rate claim'); save(args.report,report)
 
 
 def compute(api,args,report):

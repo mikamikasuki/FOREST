@@ -173,8 +173,11 @@ test("Overview reload and continue preserve the saved autonomous-planning settin
   await expect
     .poll(
       async () =>
-        (await (await request.get(`/api/projects/${projectId}/research`)).json())
-          .controller.autonomous,
+        (
+          await (
+            await request.get(`/api/projects/${projectId}/research`)
+          ).json()
+        ).controller.autonomous,
     )
     .toBe(false);
 
@@ -184,8 +187,11 @@ test("Overview reload and continue preserve the saved autonomous-planning settin
   await expect
     .poll(
       async () =>
-        (await (await request.get(`/api/projects/${projectId}/research`)).json())
-          .controller.autonomous,
+        (
+          await (
+            await request.get(`/api/projects/${projectId}/research`)
+          ).json()
+        ).controller.autonomous,
     )
     .toBe(false);
   await expect
@@ -193,7 +199,10 @@ test("Overview reload and continue preserve the saved autonomous-planning settin
       const state = await (
         await request.get(`/api/projects/${projectId}/research`)
       ).json();
-      return { autonomous: state.controller.autonomous, runs: state.counts.runs };
+      return {
+        autonomous: state.controller.autonomous,
+        runs: state.counts.runs,
+      };
     })
     .toEqual({ autonomous: false, runs: 0 });
 });
@@ -330,24 +339,37 @@ test("search reveals an offscreen node in a large graph and reopens its inspecto
   ).json();
   const ids = Array.from({ length: 1000 }, () => crypto.randomUUID());
   const title = "Final large graph navigation target";
-  const seeded = await request.post(`/api/projects/${projectId}/graph/batch`, {
-    timeout: 60000,
-    data: {
-      request_id: crypto.randomUUID(),
-      expected_revision: initial.revision,
-      commands: ids.map((id, index) => ({
-        operation: "add_node",
-        targets: [],
-        params: {
-          id,
-          type: "implementation",
-          title: index === 999 ? title : `Navigation node ${index}`,
-          position: { x: (index % 20) * 300, y: Math.floor(index / 20) * 220 },
+  let seedRevision = initial.revision;
+  for (let start = 0; start < ids.length; start += 200) {
+    const seeded = await request.post(
+      `/api/projects/${projectId}/graph/batch`,
+      {
+        timeout: 60000,
+        data: {
+          request_id: crypto.randomUUID(),
+          expected_revision: seedRevision,
+          commands: ids.slice(start, start + 200).map((id, offset) => {
+            const index = start + offset;
+            return {
+              operation: "add_node",
+              targets: [],
+              params: {
+                id,
+                type: "implementation",
+                title: index === 999 ? title : `Navigation node ${index}`,
+                position: {
+                  x: (index % 20) * 300,
+                  y: Math.floor(index / 20) * 220,
+                },
+              },
+            };
+          }),
         },
-      })),
-    },
-  });
-  expect(seeded.ok()).toBeTruthy();
+      },
+    );
+    expect(seeded.ok()).toBeTruthy();
+    seedRevision = (await seeded.json()).graph.revision;
+  }
   const before = await (
     await request.get(`/api/projects/${projectId}/graph`)
   ).json();
@@ -461,24 +483,38 @@ test("narrow workspace opens a dismissible inspector and keeps the searched node
   ).json();
   const ids = Array.from({ length: 1000 }, () => crypto.randomUUID());
   const title = "Narrow workspace final navigation target";
-  const seeded = await request.post(`/api/projects/${projectId}/graph/batch`, {
-    timeout: 60000,
-    data: {
-      request_id: crypto.randomUUID(),
-      expected_revision: initial.revision,
-      commands: ids.map((id, index) => ({
-        operation: "add_node",
-        targets: [],
-        params: {
-          id,
-          type: "implementation",
-          title: index === 999 ? title : `Narrow navigation node ${index}`,
-          position: { x: (index % 20) * 300, y: Math.floor(index / 20) * 220 },
+  let seedRevision = initial.revision;
+  for (let start = 0; start < ids.length; start += 200) {
+    const seeded = await request.post(
+      `/api/projects/${projectId}/graph/batch`,
+      {
+        timeout: 60000,
+        data: {
+          request_id: crypto.randomUUID(),
+          expected_revision: seedRevision,
+          commands: ids.slice(start, start + 200).map((id, offset) => {
+            const index = start + offset;
+            return {
+              operation: "add_node",
+              targets: [],
+              params: {
+                id,
+                type: "implementation",
+                title:
+                  index === 999 ? title : `Narrow navigation node ${index}`,
+                position: {
+                  x: (index % 20) * 300,
+                  y: Math.floor(index / 20) * 220,
+                },
+              },
+            };
+          }),
         },
-      })),
-    },
-  });
-  expect(seeded.ok()).toBeTruthy();
+      },
+    );
+    expect(seeded.ok()).toBeTruthy();
+    seedRevision = (await seeded.json()).graph.revision;
+  }
   const before = await (
     await request.get(`/api/projects/${projectId}/graph`)
   ).json();

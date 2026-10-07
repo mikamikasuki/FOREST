@@ -252,6 +252,10 @@ class ModelClient:
         if maximum <= 0:
             raise ProviderError('Maximum output tokens must be positive', code='configuration')
         plain = [{'role': m['role'], 'content': m['content']} for m in messages]
+        if self.api == 'codex_cli':
+            if tools: raise ProviderError('Codex transport uses FOREST JSON actions, not native tool calls', code='configuration')
+            from .codex_transport import request_payload
+            return 'codex_cli', request_payload(messages, json_mode, cfg.get('_forest_action_schema'))
         if self.api == 'ollama':
             ollama_messages = [{**m, **({'images': messages[index]['images']} if messages[index].get('images') else {})} for index, m in enumerate(plain)]
             payload = {'model': model, 'messages': ollama_messages, 'stream': False, 'options': {

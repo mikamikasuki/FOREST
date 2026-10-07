@@ -63,6 +63,30 @@ if __name__ == "__main__":
         fresh = client.get(f"/api/projects/{other['id']}/usage").json()
         assert fresh["remaining_usd"] is None
 
+        with Session.begin() as session:
+            unpriced = Provider(name="Signed-in CLI", kind="codex_cli", base_url="http://127.0.0.1", model="gpt-6-luna",
+                                config={"budget_usd": 5})
+            session.add(unpriced)
+            session.flush()
+            unpriced_id = unpriced.id
+            session.add(ModelRequest(provider_id=unpriced_id, project_id=pid, model="gpt-6-luna",
+                status="uncertain", estimated_microusd=None, reserved_microusd=0,
+                details={"api": "codex_cli", "cost_source": "unpriced_local_provider",
+                         "usage": {"input_tokens": 100, "output_tokens": 20}}))
+        incomplete = client.get(f"/api/projects/{pid}/usage").json()
+        assert incomplete["estimated_cost_usd"] is None
+        assert incomplete["known_cost_usd"] == 1
+        assert incomplete["unknown_cost_requests"] == 1
+        assert incomplete["cost_source"] == "mixed_known_and_unknown"
+        assert incomplete["remaining_usd"] is None
+        cli_usage = client.get(f"/api/providers/{unpriced_id}/usage").json()
+        assert cli_usage["estimated_cost_usd"] is None
+        assert cli_usage["known_cost_usd"] == 0
+        assert cli_usage["unknown_cost_requests"] == 1
+        assert cli_usage["cost_source"] == "unpriced_local_provider"
+        assert cli_usage["remaining_usd"] is None
+        assert cli_usage["requests"][0]["usage"]["output_tokens"] == 20
+
         paper = client.get(f"/api/papers/{pid}").json()
         folder = project_dir(pid)
         (folder / "paper").mkdir(exist_ok=True)

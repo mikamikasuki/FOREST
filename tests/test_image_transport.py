@@ -124,13 +124,18 @@ if __name__ == '__main__':
     guard({'phase': 'after', 'api': 'text', 'reservation': accepted[0],
            'usage': {'input_tokens': 1, 'output_tokens': 1, 'cost': .000001}})
     summary = usage_summary(provider['id'])
-    assert summary['reserved_usd'] == .4 and summary['estimated_cost_usd'] == 0
+    assert summary['reserved_usd'] == .4 and summary['estimated_cost_usd'] is None
+    assert summary['known_cost_usd'] == 0 and summary['unknown_cost_requests'] == 1
+    assert summary['remaining_usd'] is None
     assert summary['uncertain_requests'] == 1 and all(row['api'] == 'images' for row in summary['requests'])
     guard({'phase': 'error', 'reservation': accepted[1], 'ambiguous': False, 'http_status': 400})
     text_request = guard({'phase': 'before', 'api': 'responses', 'model': provider['model'],
                           'pricing': pricing, 'input_bytes': 0, 'max_output_tokens': 1})
     guard({'phase': 'after', 'reservation': text_request, 'usage': {'input_tokens': 10, 'output_tokens': 2}})
-    assert usage_summary(provider['id'])['estimated_cost_usd'] == .000012
+    mixed = usage_summary(provider['id'])
+    assert mixed['estimated_cost_usd'] is None and mixed['known_cost_usd'] == .000012
+    assert mixed['cost_source'] == 'mixed_known_and_unknown'
+    assert mixed['unknown_cost_requests'] == 1
     for limits in ({'project_limit': .39}, {'run_limit': .39}):
         bounded = saved_provider(**limits)
         bounded_guard = make_request_guard(bounded)
