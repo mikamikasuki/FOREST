@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from .common import *
 from .schemas import FileWrite
+from services.observation.files import managed_change, observation_write_lock
 router=APIRouter()
 
 def validate_project(ident):
@@ -153,6 +154,7 @@ def write_file(ident:str,body:FileWrite):
         rev.revision=actual+1; rev.origin='user_edited'
         sync_working_file_edit(s,ident,relative,body.content)
         touch_dependents(s,ident,relative)
+        managed_change(s,ident,relative,'owner_editor')
         return {'path':relative,'revision':rev.revision,'origin':'user_edited'}
 @router.delete('/api/projects/{ident}/file')
 def delete_file(ident:str,path:str):
@@ -161,14 +163,20 @@ def delete_file(ident:str,path:str):
     if p.is_dir(): shutil.rmtree(p)
     else: p.unlink()
     with Session.begin() as s:
+        observation_write_lock(s,ident)
         s.execute(delete(FileRevision).where(FileRevision.project_id==ident,FileRevision.path==path)); touch_dependents(s,ident,path)
+        managed_change(s,ident,path,'owner_editor')
     return {'deleted':path}
 @router.post('/api/projects/{ident}/file/rename')
 def rename_file(ident:str,body:dict=Body(...)):
     root=validate_project(ident); src=safe_path(root,body['path'],True); dst=safe_path(root,body['new_path'])
     if dst.exists(): error('FILE_EXISTS','Destination already exists',409)
     dst.parent.mkdir(parents=True,exist_ok=True); src.rename(dst)
-    with Session.begin() as s: touch_dependents(s,ident,body['path'])
+    with Session.begin() as s:
+        observation_write_lock(s,ident)
+        touch_dependents(s,ident,body['path'])
+        managed_change(s,ident,body['path'],'owner_editor')
+        managed_change(s,ident,body['new_path'],'owner_editor')
     return {'path':body['new_path']}
 @router.get('/api/projects/{ident}/download')
 def download_file(ident:str,path:str):
@@ -191,7 +199,10 @@ async def upload(ident:str,file:UploadFile=File(...),directory:str='uploads'):
         temporary.replace(p)
     finally:
         temporary.unlink(missing_ok=True)
-    with Session.begin() as s: touch_dependents(s,ident,str(p.relative_to(root)))
+    with Session.begin() as s:
+        observation_write_lock(s,ident)
+        touch_dependents(s,ident,str(p.relative_to(root)))
+        managed_change(s,ident,str(p.relative_to(root)),'upload')
     return {'path':str(p.relative_to(root)),'size':total,'origin':'user_import'}
 
 def project_export(s,p,selection=None):

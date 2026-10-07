@@ -4,8 +4,9 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
 } from "react";
-import type { ReactNode, ButtonHTMLAttributes } from "react";
+import type { ReactNode, ButtonHTMLAttributes, SetStateAction } from "react";
 import {
   AlertCircle,
   Check,
@@ -25,29 +26,53 @@ export type UIContextType = {
 export const UIContext = createContext<UIContextType>(null!);
 export const useUI = () => useContext(UIContext);
 export function useLoad<T>(path: string | null, initial: T) {
-  const [data, setData] = useState<T>(initial);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
-  const reload = useCallback(async () => {
+  const [state, setState] = useState({ path, data: initial, error: "", loading: true });
+  const currentPath = useRef(path);
+  const generation = useRef(0);
+  const inFlight = useRef<{ path: string | null; pending: boolean; promise: Promise<void> } | null>(null);
+  currentPath.current = path;
+  const reload = useCallback((): Promise<void> => {
     if (!path) {
-      setLoading(false);
-      return;
+      ++generation.current;
+      setState((old) => ({ ...old, path, loading: false }));
+      return Promise.resolve();
     }
-    try {
-      const d = await api<T>(path);
-      setData(d);
-      setError("");
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
+    if (inFlight.current?.path === path) {
+      inFlight.current.pending = true;
+      return inFlight.current.promise;
     }
+    const active = { path, pending: false, promise: Promise.resolve() };
+    inFlight.current = active;
+    active.promise = (async () => {
+      do {
+        active.pending = false;
+        const request = ++generation.current;
+        try {
+          const data = await api<T>(path);
+          if (request === generation.current && currentPath.current === path)
+            setState({ path, data, error: "", loading: false });
+        } catch (e) {
+          if (request === generation.current && currentPath.current === path)
+            setState((old) => ({ path, data: old.path === path ? old.data : initial, error: (e as Error).message, loading: false }));
+        }
+      } while (active.pending && currentPath.current === path);
+      if (inFlight.current === active) inFlight.current = null;
+    })();
+    return active.promise;
   }, [path]);
   useEffect(() => {
-    setLoading(true);
+    currentPath.current = path;
     void reload();
+    return () => { ++generation.current; if (currentPath.current === path) currentPath.current = null; };
   }, [reload]);
-  return { data, setData, error, loading, reload };
+  const setData = useCallback((value: SetStateAction<T>) => {
+    ++generation.current;
+    if (inFlight.current?.path === path) inFlight.current.pending = true;
+    setState((old) => ({ ...old, path, data: typeof value === "function"
+      ? (value as (previous: T) => T)(old.path === path ? old.data : initial) : value }));
+  }, [path]);
+  return { data: state.path === path ? state.data : initial, setData,
+    error: state.path === path ? state.error : "", loading: state.path !== path || state.loading, reload };
 }
 export function Button({
   children,

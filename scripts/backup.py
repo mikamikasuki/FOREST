@@ -218,6 +218,19 @@ def quarantine_execution(database_url):
             tables = inspect(connection).get_table_names()
             if 'task_runs' in tables:
                 connection.execute(text("UPDATE task_runs SET status='interrupted', pid=NULL, process_created=NULL, worker_id=NULL, error='Restored from backup; review artifacts and explicitly start a new run before execution' WHERE status IN ('queued','running','paused','pausing','waiting','budget_exhausted','cancelling')"))
+            # Derived snapshots/leases must not become current after a restore.
+            for table in ('observed_files','observation_scopes','report_requests','report_jobs','report_dispatch_slots','observation_states'):
+                if table in tables:
+                    connection.execute(text('DELETE FROM '+table))
+            if 'reporter_policies' in tables:
+                for ident, settings in connection.execute(text('SELECT project_id, settings FROM reporter_policies')):
+                    settings = json.loads(settings) if isinstance(settings,str) else dict(settings or {})
+                    settings.update(enabled=False,automatic=False)
+                    encoded=json.dumps(settings)
+                    assignment='CAST(:settings AS JSON)' if engine.dialect.name=='postgresql' else ':settings'
+                    connection.execute(text('UPDATE reporter_policies SET settings='+assignment+', version=version+1 WHERE project_id=:id'), {'settings':encoded,'id':ident})
+            if 'model_requests' in tables:
+                connection.execute(text("UPDATE model_requests SET status='uncertain' WHERE status='reserved'"))
             if 'workers' in tables:
                 connection.execute(text('DELETE FROM workers'))
             if 'projects' in tables:

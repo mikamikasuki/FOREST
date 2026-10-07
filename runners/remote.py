@@ -38,6 +38,7 @@ class RemoteRunner:
             raise ValueError('A valid SSH hostname and username are required')
         self.target = f'{user}@{host}'
         self.options = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10', '-p', str(int(config.get('port', 22)))]
+        if config.get('known_hosts_file'): self.options += ['-o', 'UserKnownHostsFile='+config['known_hosts_file']]
         if config.get('identity_file'): self.options += ['-i', config['identity_file']]
 
     def command(self, argv, timeout=30):
@@ -69,6 +70,36 @@ class RemoteRunner:
         script = "import pathlib,json; p=pathlib.Path(" + repr(job['folder']) + ")/'stdout.txt'; f=p.open('rb'); f.seek(" + str(max(0, int(offset))) + "); data=f.read(" + str(min(max(1, int(limit)), 1_000_000)) + "); print(json.dumps({'text':data.decode(errors='replace'),'offset':f.tell()}))"
         return json.loads(self.command(['python3', '-c', script]))
 
+    def observe(self, job, cursor=''):
+        # The executor already owns this exact remote workspace. No UI-triggered SSH.
+        script = 'ROOT='+repr(job['workdir'])+'\nCURSOR='+repr(cursor)+'\n'+r'''import os,json,pathlib
+root=pathlib.Path(ROOT).resolve(); page=[]; more=False; budget=0
+excluded={'node_modules','__pycache__','agent_session.json','secrets.json','credentials.json','model_context','planning_sessions','model_responses','venv'}
+# Sorted depth-first order and a cursor in that order; no full-tree materialization.
+found=not CURSOR
+for directory,dirs,files in os.walk(root,followlinks=False):
+ dirs[:]=sorted(v for v in dirs if not v.startswith('.') and v not in excluded and not (pathlib.Path(directory)/v).is_symlink())
+ for name in sorted(files):
+  p=pathlib.Path(directory)/name; relative=p.relative_to(root).as_posix()
+  if name.startswith('.') or name in excluded or p.is_symlink() or p.suffix in ('.pem','.key','.p12','.pfx'): continue
+  if not found:
+   if relative==CURSOR: found=True
+   continue
+  if len(page)>=200: more=True; break
+  try:
+   st=p.stat(); item={'path':relative,'size':st.st_size,'mtime_ns':st.st_mtime_ns}
+   if st.st_size<=32768 and budget+st.st_size<=524288:
+    before=p.read_bytes(); after=p.read_bytes(); end=p.stat()
+    if before==after and (st.st_ino,st.st_size,st.st_mtime_ns)==(end.st_ino,end.st_size,end.st_mtime_ns):
+     try: item['content']=before.decode('utf-8'); budget+=len(before)
+     except UnicodeDecodeError: pass
+   page.append(item)
+  except OSError: continue
+ if more: break
+print(json.dumps({'files':page,'cursor':CURSOR,'has_more':more,'next_cursor':page[-1]['path'] if more and page else None,'cursor_found':found}))
+'''
+        return json.loads(self.command(['python3','-c',script]))
+
     def stop(self, job):
         script = "import pathlib,json,subprocess,os,signal,time; s=json.loads((pathlib.Path(" + repr(job['folder']) + ")/'state.json').read_text()); actual=subprocess.run(['ps','-p',str(s['pid']),'-o','lstart='],capture_output=True,text=True).stdout.strip(); "
         script += "\nif s.get('task_id')==" + repr(job['task_id']) + " and actual==s.get('process_created'):\n os.killpg(s['pid'],signal.SIGTERM)\n os.killpg(s['pid'],signal.SIGCONT)\n time.sleep(3)\n try: os.killpg(s['pid'],signal.SIGKILL)\n except ProcessLookupError: pass"
@@ -76,6 +107,7 @@ class RemoteRunner:
 
     def fetch(self, remote_path, local_path):
         opts = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-P', str(int(self.config.get('port', 22)))]
+        if self.config.get('known_hosts_file'): opts += ['-o', 'UserKnownHostsFile='+self.config['known_hosts_file']]
         if self.config.get('identity_file'): opts += ['-i', self.config['identity_file']]
         subprocess.run(['scp', *opts, f'{self.target}:{remote_path}', str(local_path)], check=True, timeout=120)
 
@@ -129,20 +161,37 @@ def execute_remote(config, workspace, output, env=None, require_metrics=False):
     offset = 0
     offset_path = output / 'remote_output_offset.json'
     if offset_path.exists(): offset = int(json.loads(offset_path.read_text()).get('offset', 0))
+    manifest_cursor=''; last_observation=0
     while True:
-        status = runner.status(job)
+        try:
+            status = runner.status(job)
+        except Exception:
+            from services.observation.remote import capture
+            capture(os.environ.get('FOREST_RUN_ID'),None,os.environ.get('FOREST_ATTEMPT_ID'))
+            raise
+        if time.monotonic()-last_observation>=3 or status['status'] in ('completed','failed','cancelled','lost'):
+            from services.observation.remote import capture
+            try:
+                observed=runner.observe(job,manifest_cursor)
+                capture(os.environ.get('FOREST_RUN_ID'),observed,os.environ.get('FOREST_ATTEMPT_ID'))
+                manifest_cursor=observed.get('next_cursor') or ''
+            except Exception:
+                capture(os.environ.get('FOREST_RUN_ID'),None,os.environ.get('FOREST_ATTEMPT_ID'))
+            last_observation=time.monotonic()
         chunk = runner.output(job, offset)
         if chunk['text']: print(chunk['text'], end='', flush=True)
         offset = chunk['offset']; offset_path.write_text(json.dumps({'offset': offset}))
         if status['status'] in ('completed', 'failed', 'cancelled', 'lost'): break
         time.sleep(1)
     (output / 'remote_result.json').write_text(json.dumps(status, indent=2))
-    if status['status'] != 'completed': raise RuntimeError('Remote task '+status['status']+': '+str(status.get('error',status.get('exit_code'))))
     outputs = list(dict.fromkeys(([config.get('metrics_file', 'metrics.json')] if require_metrics else []) + remote.get('outputs', [])))
     for relative in outputs:
         if Path(relative).is_absolute() or '..' in Path(relative).parts: raise ValueError('Output paths must be relative to the remote workspace')
         target = workspace / relative; target.parent.mkdir(parents=True, exist_ok=True)
-        runner.fetch(job['workdir'] + '/' + relative, target)
+        try: runner.fetch(job['workdir'] + '/' + relative, target)
+        except (subprocess.SubprocessError,RuntimeError):
+            if status['status']=='completed': raise
+    if status['status'] != 'completed': raise RuntimeError('Remote task '+status['status']+': '+str(status.get('error',status.get('exit_code'))))
     metrics_path = workspace / config.get('metrics_file', 'metrics.json')
     metrics = json.loads(metrics_path.read_text()) if metrics_path.is_file() else {}
     return {**metrics, 'command_exit_code': status.get('exit_code'), 'remote_execution': status}

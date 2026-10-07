@@ -44,6 +44,8 @@ import {
   Pencil,
   Presentation,
 } from "lucide-react";
+import { ProgressPanel } from "./progress/ProgressPanel";
+import { subscribeProject } from "./progress/events";
 import { api, download, formatDate } from "./api";
 import type { Project, Json, Run } from "./api";
 import {
@@ -305,36 +307,17 @@ function ProjectShell() {
   const location = useLocation();
   const branch = active[0]?.branch_id;
   useEffect(() => {
-    const stream = new EventSource(`/api/projects/${id}/events`);
-    const refresh = () => {
+    if (!id) return;
+    return subscribeProject(id, () => {
       void reload();
       void reloadRuns();
-      void reloadSystem();
       window.dispatchEvent(new Event("forest-refresh"));
-    };
-    [
-      "node_changed",
-      "run_started",
-      "run_progress",
-      "run_finished",
-      "run_completed",
-      "run_failed",
-      "tool_finished",
-      "metric_available",
-      "artifact_available",
-      "compile_finished",
-      "graph_changed",
-      "project_changed",
-      "paper_changed",
-      "controller_changed",
-      "run_changed",
-      "changed",
-      "cursor_reset",
-    ].forEach((e) => stream.addEventListener(e, refresh));
-    stream.onmessage = refresh;
-    stream.onopen = refresh;
-    return () => stream.close();
-  }, [id, reload, reloadRuns, reloadSystem]);
+    });
+  }, [id, reload, reloadRuns]);
+  useEffect(() => {
+    const timer = setInterval(() => void reloadSystem(), 30000);
+    return () => clearInterval(timer);
+  }, [reloadSystem]);
   return (
     <>
       <header className="topbar">
@@ -733,7 +716,12 @@ function Overview() {
   const { id } = useParams();
   const { t, action } = useUI();
   const { data: p, error, reload } = useProject();
-  const { data: runs } = useLoad<Run[]>(`/projects/${id}/runs`, []);
+  const { data: runs, reload: reloadRecent } = useLoad<Run[]>(`/projects/${id}/runs`, []);
+  useEffect(() => {
+    const refresh = () => void reloadRecent();
+    window.addEventListener("forest-refresh", refresh);
+    return () => window.removeEventListener("forest-refresh", refresh);
+  }, [reloadRecent]);
   const [edit, setEdit] = useState(false);
   const [budget, setBudget] = useState("");
   const [mode, setMode] = useState("assisted");
@@ -772,6 +760,7 @@ function Overview() {
           </>
         }
       />
+      <ProgressPanel key={id} projectId={id!} />
       <ResearchControls projectId={id!} onChange={reload} />
       <div className="overview-grid">
         <section className="surface goal-surface">
@@ -886,7 +875,9 @@ function ResearchControls({
   const [autonomous, setAutonomous] = useState(true);
   const [metric, setMetric] = useState("");
   const [direction, setDirection] = useState("min");
-  const { data: session, reload: reloadSession } = useLoad<Json>(`/projects/${projectId}/research`, {controller: {}, decisions: [], active_runs: []});
+  const { data: session, reload: reloadSession } = useLoad<Json>(`/projects/${projectId}/research?overview=true`, {controller: {}, decisions: [], active_runs: []});
+  const [inspectComparisons, setInspectComparisons] = useState(false);
+  const comparisons = useLoad<Json>(inspectComparisons ? `/projects/${projectId}/research` : null, {trials: []});
   useEffect(() => { setMetric(session.objective?.metric || ""); setDirection(session.objective?.direction || "min"); }, [session.objective?.metric, session.objective?.direction]);
   useEffect(() => {
     if (typeof session.controller?.autonomous === "boolean") {
@@ -920,8 +911,11 @@ function ResearchControls({
         <Field label="Metric"><input aria-label="Comparison metric" value={metric} placeholder={session.objective?.metric || "Metric name from metrics.json"} onChange={e => setMetric(e.target.value)} /></Field>
         <select aria-label="Metric direction" value={direction} onChange={e => setDirection(e.target.value)}><option value="min">Lower is better</option><option value="max">Higher is better</option></select>
         <Button onClick={() => action(async () => { await api(`/projects/${projectId}/objective`,"PATCH",{metric,direction}); await reloadSession(); })}>Save objective</Button>
-        {!!session.trials?.length && <table><thead><tr><th>Run</th><th>Value</th><th>Comparison</th></tr></thead><tbody>{session.trials.map((r:Json) => <tr key={r.run_id}><td><code>{r.run_id.slice(0,8)}</code></td><td>{r.value ?? "—"}</td><td>{r.disposition}</td></tr>)}</tbody></table>}
+        <Button busy={inspectComparisons && comparisons.loading} onClick={() => { setInspectComparisons(true); if (inspectComparisons) void comparisons.reload(); }}>Inspect checked comparisons</Button>
+        <ErrorBox error={comparisons.error} />
+        {!!comparisons.data.trials?.length && <table><thead><tr><th>Run</th><th>Value</th><th>Comparison</th></tr></thead><tbody>{comparisons.data.trials.map((r:Json) => <tr key={r.run_id}><td><code>{r.run_id.slice(0,8)}</code></td><td>{r.value ?? "—"}</td><td>{r.disposition}</td></tr>)}</tbody></table>}
       </details>
+      {session.coverage && <small>{session.coverage}</small>}
       {!!session.decisions?.length && <details><summary>Research decisions ({session.decisions.length})</summary>{session.decisions.map((d: Json) => <div key={d.id}><strong>{d.data.action}</strong><p>{d.data.rationale}</p><small>{formatDate(d.created_at)}</small></div>)}</details>}
       <div className="inline-actions">
         {[

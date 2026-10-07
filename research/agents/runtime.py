@@ -82,6 +82,13 @@ class ToolRuntime:
             row.status = status
             row.result = result
             row.elapsed = time.monotonic() - start
+            if status == 'completed' and name in ('write_file','write_file_chunk','python'):
+                from services.observation.files import managed_change
+                try:
+                    relative = str(self.workspace.relative_to(project_dir(pid))) + '/' + (result.get('path') or args.get('path') or 'agent_analysis.py')
+                    managed_change(s, pid, relative, 'managed_tool', action_id)
+                except (OSError, ValueError):
+                    pass  # Current bytes will be reconciled independently.
             emit(s, pid, 'tool_finished', {'run_id': self.run_id, 'tool': name, 'status': status, 'id': action_id})
         print(json.dumps({'tool': name, 'status': status, 'result': result}, ensure_ascii=False), flush=True)
         return result

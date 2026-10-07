@@ -7,7 +7,7 @@ name = "forest-research"
 version = "0.1.0"
 description = "Open, editable, goal-driven research workspace"
 requires-python = ">=3.11"
-dependencies = ["fastapi", "uvicorn[standard]", "sqlalchemy", "psycopg[binary]", "pydantic-settings", "python-multipart", "httpx", "psutil", "numpy", "pandas", "pyarrow", "scipy", "scikit-learn", "matplotlib", "pillow", "sympy", "pypdf", "pybtex", "websockets", "playwright"]
+dependencies = ["fastapi", "uvicorn[standard]", "sqlalchemy", "psycopg[binary]", "pydantic-settings", "PyYAML>=6.0.3,<7", "python-multipart", "httpx", "psutil", "numpy", "pandas", "pyarrow", "scipy", "scikit-learn", "matplotlib", "pillow", "sympy", "pypdf", "pybtex", "websockets", "watchfiles>=1.3.0,<2", "playwright"]
 
 [project.scripts]
 forest = "forest_cli.main:main"

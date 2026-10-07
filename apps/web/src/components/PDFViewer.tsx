@@ -4,7 +4,7 @@ import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
 import { IconButton, ErrorBox } from "../ui";
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
-export default function PDFViewer({ url }: { url: string }) {
+export default function PDFViewer({ url, initialPage = 1 }: { url: string; initialPage?: number }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [pdf, setPdf] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [page, setPage] = useState(1);
@@ -19,7 +19,7 @@ export default function PDFViewer({ url }: { url: string }) {
       .then((doc) => {
         if (current) {
           setPdf(doc);
-          setPage(1);
+          setPage(Math.max(1, Math.min(initialPage, doc.numPages)));
         }
       })
       .catch((e) => {
@@ -30,6 +30,7 @@ export default function PDFViewer({ url }: { url: string }) {
       void loading.destroy();
     };
   }, [url]);
+  useEffect(() => { if (pdf) setPage(Math.max(1, Math.min(initialPage, pdf.numPages))); }, [initialPage, pdf]);
   useEffect(() => {
     let cancelled = false;
     let task: pdfjs.RenderTask | undefined;

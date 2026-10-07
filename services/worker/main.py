@@ -452,8 +452,9 @@ class WorkerLoop:
         elif outcome is None and not alive:
             outcome={'status':'interrupted','exit_code':proc.returncode if proc else None,'error':'Task process ended without a current completion receipt.'}
         with Session.begin() as s:
+            begin_sqlite_write(s)
             s.scalar(select(Project).where(Project.id==value['project_id']).with_for_update())
-            r=s.get(TaskRun,ident)
+            r=s.scalar(select(TaskRun).where(TaskRun.id==ident).with_for_update())
             if not r or r.status in ('cancelled','completed','failed','interrupted','waiting','budget_exhausted'): return
             if r.worker_id!=self.id: return
             if r.config.get('execution_attempt',{}).get('id')!=value['config'].get('execution_attempt',{}).get('id'): return
