@@ -799,6 +799,124 @@ def test_old_revision_result_does_not_overwrite_edited_node(actual_worker):
     assert after["deliverable_status"] == before["deliverable_status"]
 
 
+def test_retry_of_edited_node_preserves_source_revision_and_current_result(actual_worker):
+    h = actual_worker
+    _, node = h.project_node(seconds=1)
+    marker = h.directory / ("retry-source-" + str(uuid.uuid4()))
+    # The marker's existence is checked before it is created so the first run
+    # fails and the retry of the saved config can succeed.
+    source_script = (
+        "import pathlib,sys; marker=pathlib.Path(sys.argv[1]); existed=marker.exists(); "
+        "print('OLD_CONFIG_SUCCESS' if existed else 'FIRST_OLD_CONFIG'); "
+        "marker.touch(); sys.exit(0 if existed else 7)"
+    )
+    source_config = {"kind": "command", "command": [sys.executable, "-c", source_script, str(marker)], "timeout": 10}
+    h.request("PATCH", f"/api/nodes/{node['id']}", json={"config": source_config, "expected_revision": 1})
+    edited_node = h.request("GET", f"/api/nodes/{node['id']}")
+    assert edited_node["revision"] == 1
+
+    source = h.launch(edited_node)
+    assert h.terminal(source)["status"] == "failed"
+    failed_source = h.run(source)
+    assert failed_source["node_revision"] == 1
+    before_edit = h.request("GET", f"/api/nodes/{node['id']}")
+    assert before_edit["latest_run_id"] == source["id"]
+
+    edited_config = {"kind": "command", "command": [sys.executable, "-c", "print('EDITED_CURRENT_CONFIG')"], "timeout": 10}
+    h.request("PATCH", f"/api/nodes/{node['id']}", json={"config": edited_config, "expected_revision": 2})
+    current_before_retry = h.request("GET", f"/api/nodes/{node['id']}")
+    assert current_before_retry["revision"] == 2
+    preserved_fields = ("execution_status", "outputs", "deliverable_status", "latest_run_id",
+                        "verification_status", "results_current", "last_run_id", "result_revision")
+    preserved = {key: current_before_retry.get(key) for key in preserved_fields}
+
+    retry = h.request("POST", f"/api/runs/{source['id']}/retry", json={"request_id": str(uuid.uuid4())})
+    assert retry["node_revision"] == failed_source["node_revision"] == 1
+    assert retry["config"]["command"] == source_config["command"]
+    assert h.terminal(retry)["status"] == "completed"
+    completed_retry = h.run(retry)
+    assert completed_retry["exit_code"] == 0
+    output = (h.output(retry) / "stdout.txt").read_text()
+    assert "OLD_CONFIG_SUCCESS" in output
+
+    current_after_retry = h.request("GET", f"/api/nodes/{node['id']}")
+    assert current_after_retry["revision"] == 2
+    assert current_after_retry["config"] == edited_config
+    assert {key: current_after_retry.get(key) for key in preserved} == preserved
+    assert current_after_retry.get("latest_run_id") != retry["id"]
+
+    control = h.launch(current_after_retry)
+    assert control["config"]["command"] == edited_config["command"]
+    assert control["node_revision"] == 2
+    assert h.terminal(control)["status"] == "completed"
+    assert "EDITED_CURRENT_CONFIG" in (h.output(control) / "stdout.txt").read_text()
+    current_after_control = h.request("GET", f"/api/nodes/{node['id']}")
+    assert current_after_control["latest_run_id"] == control["id"]
+    assert current_after_control["results_current"] is True
+    assert current_after_control["result_revision"] == 2
+
+
+def test_historical_retry_does_not_shadow_current_verified_producer(actual_worker):
+    from test_research_verification_workflow import add_node, arithmetic_command, verification_config
+    h = actual_worker
+    project, node = h.project_node(seconds=0.2)
+    marker = h.directory / ('historical-retry-' + str(uuid.uuid4()))
+    old_config = {'kind': 'command', 'timeout': 10, 'command': [sys.executable, '-c',
+        "import sys; from pathlib import Path; p=Path(sys.argv[1]); existed=p.exists(); p.touch(); sys.exit(0 if existed else 7)", str(marker)]}
+    h.request('PATCH', f"/api/nodes/{node['id']}", json={'config': old_config, 'expected_revision': 1})
+    source = h.launch(node)
+    assert h.terminal(source)['status'] == 'failed'
+    current_config = {'kind': 'experiment', 'command': arithmetic_command(500), 'timeout': 10}
+    h.request('PATCH', f"/api/nodes/{node['id']}", json={'config': current_config, 'expected_revision': 2})
+    current = h.launch(node)
+    assert h.terminal(current)['status'] == 'completed'
+    verifier = add_node(h, project, type='verification', title='Verify current revision', config=verification_config(node))
+    checked = h.launch(verifier)
+    assert h.terminal(checked)['status'] == 'completed'
+    verdict = h.request('GET', f"/api/runs/{current['id']}/verification")
+    assert verdict['verification_status'] == 'accepted', verdict
+
+    historical = h.request('POST', f"/api/runs/{source['id']}/retry", json={'request_id': str(uuid.uuid4())})
+    assert h.terminal(historical)['status'] == 'completed'
+    assert historical['node_revision'] != current['node_revision']
+    verdict = h.request('GET', f"/api/runs/{current['id']}/verification")
+    assert verdict['verification_status'] == 'accepted', verdict
+    rechecked = h.launch(verifier)
+    assert rechecked['dependencies'] == [current['id']]
+    assert h.terminal(rechecked)['status'] == 'completed'
+    consumer = add_node(h, project, type='analysis', title='Consume current measurements',
+        config={'kind': 'command', 'command': [sys.executable, '-c', "from pathlib import Path; assert Path('observed.json').is_file()"]},
+        inputs=[{'node_id': node['id'], 'path': 'metrics.json', 'destination': 'observed.json'}])
+    graph = h.request('GET', f"/api/projects/{project['id']}/graph")
+    h.request('POST', f"/api/projects/{project['id']}/graph/commands", json={
+        'request_id': str(uuid.uuid4()), 'expected_revision': graph['revision'], 'operation': 'add_dependency',
+        'params': {'source': node['id'], 'target': consumer['id']}})
+    consumed = h.launch(consumer)
+    assert consumed['dependencies'] == [current['id']]
+    assert h.terminal(consumed)['status'] == 'completed'
+
+
+def test_same_revision_retry_remains_current(actual_worker):
+    h = actual_worker
+    _, node = h.project_node(seconds=1)
+    marker = h.directory / ("same-revision-retry-" + str(uuid.uuid4()))
+    script = (
+        "import pathlib,sys; marker=pathlib.Path(sys.argv[1]); existed=marker.exists(); "
+        "print('RETRIED' if existed else 'FIRST'); marker.touch(); sys.exit(0 if existed else 7)"
+    )
+    config = {"kind": "command", "command": [sys.executable, "-c", script, str(marker)], "timeout": 10}
+    h.request("PATCH", f"/api/nodes/{node['id']}", json={"config": config, "expected_revision": 1})
+    current = h.request("GET", f"/api/nodes/{node['id']}")
+    source = h.launch(current)
+    assert h.terminal(source)["status"] == "failed"
+    retry = h.request("POST", f"/api/runs/{source['id']}/retry", json={"request_id": str(uuid.uuid4())})
+    assert retry["node_revision"] == source["node_revision"]
+    assert h.terminal(retry)["status"] == "completed"
+    latest = h.request("GET", f"/api/nodes/{node['id']}")
+    assert latest["latest_run_id"] == retry["id"]
+    assert latest["results_current"] is True
+
+
 def test_idempotent_run_budget_timeout_and_measured_resources(actual_worker):
     h = actual_worker
     _, node = h.project_node(seconds=12, timeout=1.7, budget={"max_runs": 1, "seconds": 4, "allow_paid": False})

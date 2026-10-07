@@ -258,8 +258,13 @@ def _lock_project(s, project_id):
 
 
 def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencies=None,
-            requested_timeout_override=_TIMEOUT_UNSET, defer_time_budget_reservation=False):
+            requested_timeout_override=_TIMEOUT_UNSET, defer_time_budget_reservation=False, node_revision=None):
+    retry_snapshot = node_revision is not None
     p = _lock_project(s, project_id)
+    if node is not None:
+        # An edit may have committed while this session waited for the project.
+        # Check promotion against the current row, not the pre-lock identity map.
+        s.refresh(node)
     request_id = request_id or uid()
     old = s.scalar(select(TaskRun).where(TaskRun.project_id == project_id, TaskRun.request_id == request_id))
     if old:
@@ -269,7 +274,7 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     if budget.get('max_runs') is not None and total >= int(budget['max_runs']):
         error('RUN_BUDGET_EXHAUSTED', 'Project run budget exhausted', 409, 'Increase budget or choose a narrower next experiment.')
     dependencies = dependencies or []
-    config = {**(node.config if node else {}), **config}
+    config = deepcopy(config) if retry_snapshot else {**(node.config if node else {}), **config}
     if '_repository_source' in config:
         error('INVALID_CONFIGURATION', 'Source provenance is managed by the runner', 422)
     from services.api.verification import prepare_verification_enqueue
@@ -314,7 +319,7 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     # Attempts belong to one run. A user retry creates a fresh run.
     for key in ('execution_attempt','_recovery_failures','_next_attempt'):
         merged.pop(key, None)
-    if node:
+    if node and not retry_snapshot:
         merged.update(instructions=node.instructions, node_type=node.type, node_title=node.title,
                       context_overrides=deepcopy(node.context_overrides), input_references=deepcopy(node.inputs))
     provider_id = merged.get('provider_id') or p.config.get('provider_id')
@@ -324,7 +329,7 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     provider = s.get(Provider, provider_id) if provider_id else s.scalar(select(Provider).order_by(Provider.created_at))
     if provider:
         merged['provider_snapshot'] = asdict(provider, secrets=True)
-    if kind == 'paper_generate' or (kind == 'paper_compile' and merged.get('source_scope') == 'workspace'):
+    if not retry_snapshot and (kind == 'paper_generate' or (kind == 'paper_compile' and merged.get('source_scope') == 'workspace')):
         from services.api.paper_state import generation_snapshot
         # Server-owned snapshot: callers cannot opt out of revision protection.
         merged['paper_snapshot'] = generation_snapshot(s, project_id)
@@ -336,8 +341,9 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
         'reservation_state': 'deferred' if deferred_reservation else 'held',
         'resume_history': [],
     }
+    run_revision = node_revision if node_revision is not None else node.revision if node else 0
     run = TaskRun(project_id=project_id, node_id=node.id if node else None, branch_id=node.branch_id if node else merged.get('branch_id'),
-                  request_id=request_id, kind=kind, config=merged, node_revision=node.revision if node else 0,
+                  request_id=request_id, kind=kind, config=merged, node_revision=run_revision,
                   dependencies=dependencies or [], priority=int(config.get('priority', 0)),
                   resource={'time_budget': time_budget})
     s.add(run)
@@ -346,7 +352,10 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     if merged.get('provider_snapshot'):
         run.config = {**merged,'provider_snapshot':{**merged['provider_snapshot'],'_usage_context':{'project_id':project_id,'run_id':run.id}}}
     run.output_path = f'runs/{run.id}'
-    if node:
+    # A retry may replay an older immutable config snapshot. Keep it in run
+    # history, but don't make it the current result or execution state for a
+    # node that has since moved to another revision.
+    if node and node.revision == run_revision:
         node.execution_status = 'queued'
         node.extra = {**node.extra, 'latest_run_id': run.id, 'verification_status': 'unverified'}
     emit(s, project_id, 'run_queued', {'run_id': run.id, 'node_id': run.node_id})
@@ -380,7 +389,7 @@ def _validate_inputs(s, node, graph, selected):
                 # Producer outputs remain in their run workspace until an owner
                 # explicitly promotes them. A current completed run is a valid
                 # dependency for a later single-node consumer run too.
-                previous = s.scalar(select(TaskRun).where(TaskRun.node_id == parent.id, TaskRun.status == 'completed')
+                previous = s.scalar(select(TaskRun).where(TaskRun.node_id == parent.id, TaskRun.status == 'completed', TaskRun.node_revision == parent.revision)
                                     .order_by(TaskRun.created_at.desc()))
                 if previous and previous.node_revision == parent.revision:
                     from research.kernel import safe_path
@@ -441,7 +450,7 @@ def enqueue_selected(s, node_ids, request_id=None, overrides=None):
                 dependencies.append(created[edge['source']].id)
             else:
                 parent = get(s, Node, edge['source'])
-                previous = s.scalar(select(TaskRun).where(TaskRun.node_id == parent.id, TaskRun.status == 'completed').order_by(TaskRun.created_at.desc()))
+                previous = s.scalar(select(TaskRun).where(TaskRun.node_id == parent.id, TaskRun.status == 'completed', TaskRun.node_revision == parent.revision).order_by(TaskRun.created_at.desc(), TaskRun.id.desc()))
                 if not previous or previous.node_revision != parent.revision or parent.extra.get('results_current') is False:
                     error('INPUT_UNAVAILABLE', f'Input node {parent.title} has no current completed run', 409,
                           'Run ancestors first or explicitly rebind this dependency.')

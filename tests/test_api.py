@@ -733,6 +733,32 @@ def case_retry_restores_requested_timeout_when_project_budget_is_removed(client,
     assert retried['config']['timeout'] == 30
 
 
+def case_retry_refreshes_node_after_project_lock(client, app):
+    from services.api.db import Session, Node
+    from services.worker.scheduler import enqueue
+    project = create(client)
+    node = add_node(client, project, config={'kind': 'command', 'command': [sys.executable, '-c', 'pass']})
+    with Session() as stale:
+        old = stale.get(Node, node['id'])
+        revision = old.revision
+        with Session.begin() as editor:
+            current = editor.get(Node, node['id'])
+            current.revision += 1
+            current.extra = {**current.extra, 'latest_run_id': 'current-run'}
+            current.execution_status = 'completed'
+        assert old.revision == revision
+        retry = enqueue(stale, project['id'], 'command', old.config, 'stale-retry', old,
+                        node_revision=revision)
+        stale.commit()
+        assert retry.node_revision == revision
+    with Session() as session:
+        current = session.get(Node, node['id'])
+        assert current.revision == revision + 1
+        assert current.extra['latest_run_id'] == 'current-run'
+        assert current.execution_status == 'completed'
+
+
+
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]
 
 
