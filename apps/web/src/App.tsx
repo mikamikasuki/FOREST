@@ -882,6 +882,11 @@ function ResearchControls({
   const [direction, setDirection] = useState("min");
   const { data: session, reload: reloadSession } = useLoad<Json>(`/projects/${projectId}/research`, {controller: {}, decisions: [], active_runs: []});
   useEffect(() => { setMetric(session.objective?.metric || ""); setDirection(session.objective?.direction || "min"); }, [session.objective?.metric, session.objective?.direction]);
+  useEffect(() => {
+    if (typeof session.controller?.autonomous === "boolean") {
+      setAutonomous(session.controller.autonomous);
+    }
+  }, [session.controller?.autonomous]);
   useEffect(() => { const timer = setInterval(() => void reloadSession(), 5000); return () => clearInterval(timer); }, [reloadSession]);
   return (
     <section className="surface research-controls">
