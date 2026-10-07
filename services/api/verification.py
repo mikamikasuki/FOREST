@@ -25,6 +25,24 @@ def _contract(config):
     return validate_contract(config.get('verification'))
 
 
+def _lock_verification_run(session, run_id):
+    """Serialize verifier receipt writes with the worker's terminal update.
+
+    Worker completion locks the project before updating a TaskRun. Use the
+    same lock order here so its resource merge cannot commit a stale snapshot
+    over the service-owned verification receipt.
+    """
+    if session.bind.dialect.name == 'sqlite':
+        # SQLite ignores SELECT FOR UPDATE. Acquire the writer reservation
+        # before reading the run so another transaction cannot commit between
+        # this read and the receipt update.
+        session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+    run = get(session, TaskRun, run_id)
+    session.scalar(select(Project).where(Project.id == run.project_id).with_for_update())
+    session.refresh(run, with_for_update=True)
+    return run
+
+
 def latest_node_run(session, node):
     """Only attempts of the current revision can supersede current evidence."""
     return session.scalar(select(TaskRun).where(TaskRun.node_id == node.id, TaskRun.node_revision == node.revision)
@@ -560,7 +578,7 @@ def dispatch_verification(session, run, *, resolved_inputs=None):
 def finish_verification(run_id):
     """Called by the service executor after actual independent computation."""
     with Session.begin() as session:
-        run = get(session, TaskRun, run_id)
+        run = _lock_verification_run(session, run_id)
         verdict = _evaluate(session, run, execution=True)
         observations = verdict.pop('artifact_observations', [])
         run.resource = {**run.resource, 'verification_receipt': {'checked_at': now(), 'artifact_observations': observations},
