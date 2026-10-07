@@ -415,13 +415,24 @@ async def events(ident:str,request:Request):
     async def stream():
         cursor=request.headers.get('last-event-id',''); last=0
         if cursor:
-            try: last=int(cursor)
+            try: last=max(int(cursor),0)
             except ValueError: pass
         yield 'event: connected\ndata: {}\n\n'
         while not await request.is_disconnected():
             with Session() as s:
                 rows=list(s.scalars(select(Event).where(Event.project_id==ident,Event.sequence>last).order_by(Event.sequence).limit(100)))
-                for e in rows: last=e.sequence; yield f'id: {last}\nevent: {e.type}\ndata: {json.dumps(e.data)}\n\n'
+                gap=None
+                if rows and rows[0].sequence>last+1:
+                    first=rows[0].sequence
+                    latest=s.scalar(select(func.max(Event.sequence)).where(Event.project_id==ident)) or rows[-1].sequence
+                    latest=max(latest,rows[-1].sequence)
+                    gap={'requested_after_sequence':last,'oldest_available_sequence':first,
+                         'latest_available_sequence':latest,'resume_after_sequence':latest}
+                    last=latest
+            if gap:
+                yield f'id: {last}\nevent: cursor_reset\ndata: {json.dumps(gap)}\n\n'
+                continue
+            for e in rows: last=e.sequence; yield f'id: {last}\nevent: {e.type}\ndata: {json.dumps(e.data)}\n\n'
             yield ': heartbeat\n\n'; await asyncio.sleep(1)
     return StreamingResponse(stream(),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})
 _provider_health_cache={}
