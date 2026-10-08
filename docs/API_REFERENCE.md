@@ -659,7 +659,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `DELETE /api/projects/{ident}/file`
 
-Delete the selected file or directory recursively and mark consumers stale; removing the project root is rejected. No expected_revision guard.
+Delete the selected file or directory recursively and mark consumers stale; removing the project root is rejected. Advance and retain file revision generations for removed paths so stale editor tokens conflict if a path is recreated. No expected_revision guard.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -685,7 +685,7 @@ Known domain failures: `400` NOT_FILE; `403` PATH_ESCAPE; `404` NOT_FOUND or MIS
 
 #### `PUT /api/projects/{ident}/file`
 
-FileWrite contains path/content and optional FILE expected_revision. Atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. Return normalized relative path/revision/origin. Omitting expected_revision accepts the current revision.
+FileWrite contains path/content and optional FILE expected_revision. Atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. A first write to a missing path may use expected_revision=0; after deletion it advances that path's retained revision generation. Omitting expected_revision accepts the current revision.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |

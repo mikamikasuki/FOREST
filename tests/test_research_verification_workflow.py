@@ -713,7 +713,7 @@ main()
         assert replacement['path'] == source_path
         current_revision = h.request('GET', f"/api/projects/{project['id']}/file",
                                      params={'path': source_path})
-        assert current_revision['revision'] == 1
+        assert current_revision['revision'] == 3
         (gate / 'release').write_text('continue')
         child.wait(timeout=30)
         assert child.returncode == 0, (directory / 'paired-executor.log').read_text()

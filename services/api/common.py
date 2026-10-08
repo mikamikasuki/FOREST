@@ -7,6 +7,18 @@ from fastapi import HTTPException
 from .db import *
 from .config import settings
 
+DELETED_FILE_REVISION_ORIGIN='deleted'
+RENAMED_FILE_REVISION_ORIGIN='renamed'
+FILE_REVISION_TOMBSTONE_ORIGINS=frozenset((
+    DELETED_FILE_REVISION_ORIGIN, RENAMED_FILE_REVISION_ORIGIN,
+))
+
+def effective_file_origin(origin, fallback):
+    """Return provenance for current bytes, not a retained path tombstone."""
+    if origin in FILE_REVISION_TOMBSTONE_ORIGINS:
+        return fallback
+    return origin or fallback
+
 def error(code,message,status=400,suggestion='',retryable=False):
     raise HTTPException(status,{'code':code,'message':str(message),'retryable':retryable,'suggestion':suggestion})
 def get(s,model,ident,*,for_update=False):

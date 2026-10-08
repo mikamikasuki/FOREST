@@ -428,7 +428,9 @@ def execute(run_id):
             value=analyze(path/'predictions.csv',output/f'analysis_{i}',config)
             with Session() as s:
                 edited=s.scalar(select(FileRevision).where(FileRevision.project_id==pid,FileRevision.path==str((path/'predictions.csv').relative_to(root))))
-            value['source_origin']=edited.origin if edited else 'executor_measurement'
+            value['source_origin']=effective_file_origin(
+                edited.origin if edited else None, 'executor_measurement'
+            )
             if edited and edited.origin=='user_edited': value['evidence_label']='DERIVED_FROM_USER_EDITED_DATA'
             (output/f'analysis_{i}'/'metrics.json').write_text(json.dumps(value,ensure_ascii=False,indent=2))
             results.append(value)
