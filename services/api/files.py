@@ -67,10 +67,13 @@ def _restore_file_publication(path, backup, existed):
     if existed: backup.replace(path)
     else: path.unlink(missing_ok=True)
 
-def _publish_file(ident,relative,path,temporary,backup,origin,expected_revision=None,content=None):
+def _publish_file(ident,relative,path,temporary,backup,origin,expected_revision=None,content=None,overwrite=True):
     from services.worker.scheduler import _lock_project
     existed=False; published=False; flush_completed=False
     with file_publication_lock(ident,relative):
+        if not overwrite and path.exists():
+            error('FILE_EXISTS','Destination already exists',409,
+                  'Review the destination and explicitly choose whether to replace it.')
         existed=path.is_file()
         if existed: shutil.copy2(path,backup)
         if origin=='user_import' and existed:
@@ -378,7 +381,7 @@ def download_file(ident:str,path:str):
     if not p.is_file(): error('NOT_FILE','Choose a file')
     return FileResponse(p,filename=p.name,content_disposition_type='inline')
 @router.post('/api/projects/{ident}/upload')
-async def upload(ident:str,file:UploadFile=File(...),directory:str='uploads'):
+async def upload(ident:str,file:UploadFile=File(...),directory:str='uploads',overwrite:bool=True):
     root=validate_project(ident); p=safe_path(root,directory+'/'+Path(file.filename or 'upload').name)
     relative=str(p.relative_to(root.resolve()))
     total=0; temporary=root/('.forest-upload-'+uid()+'.tmp')
@@ -391,7 +394,7 @@ async def upload(ident:str,file:UploadFile=File(...),directory:str='uploads'):
                 if total>settings.max_upload_mb*1024*1024: error('UPLOAD_TOO_LARGE','Upload exceeds configured limit',413)
                 out.write(chunk)
         await run_in_threadpool(
-            _publish_file,ident,relative,p,temporary,backup,'user_import'
+            _publish_file,ident,relative,p,temporary,backup,'user_import',overwrite=overwrite
         )
     finally:
         temporary.unlink(missing_ok=True)
