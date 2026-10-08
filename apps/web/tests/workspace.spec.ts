@@ -18,6 +18,59 @@ test.afterEach(async ({ request }) => {
   }
 });
 
+test("a stale editor cannot overwrite a file recreated after deletion", async ({
+  page,
+  request,
+}) => {
+  const path = "notes/revision-aba.txt";
+  const initial = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path, content: "original bytes\n", expected_revision: 0 },
+  });
+  expect(initial.ok()).toBeTruthy();
+  expect((await initial.json()).revision).toBe(1);
+
+  await page.goto(`/projects/${projectId}/files`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.getByRole("button", { name: path }).click();
+  const editor = page.locator(".monaco-editor").first();
+  await expect(editor).toContainText("original bytes");
+  await editor.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText("stale editor bytes\n");
+
+  const deleted = await request.delete(`/api/projects/${projectId}/file`, {
+    params: { path },
+  });
+  expect(deleted.ok()).toBeTruthy();
+  const recreated = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path, content: "new bytes\n", expected_revision: 0 },
+  });
+  expect(recreated.ok()).toBeTruthy();
+  expect((await recreated.json()).revision).toBe(3);
+
+  const staleSave = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === `/api/projects/${projectId}/file` &&
+      response.request().method() === "PUT",
+  );
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  expect((await staleSave).status()).toBe(409);
+  await expect(
+    page.getByText("File changed elsewhere", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".modal pre")).toContainText("new bytes");
+  await expect(editor).toContainText("stale editor bytes");
+  const readback = await (
+    await request.get(`/api/projects/${projectId}/file`, { params: { path } })
+  ).json();
+  expect(readback).toMatchObject({
+    path,
+    content: "new bytes\n",
+    revision: 3,
+  });
+});
+
 for (const scenario of [
   {
     name: "silent success",

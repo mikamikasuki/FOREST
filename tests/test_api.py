@@ -162,6 +162,64 @@ def case_file_revision_and_escape(client, app):
     assert client.get(endpoint, params={"path": "code/train.py"}).status_code == 404
 
 
+def case_delete_recreate_invalidates_stale_file_revisions(client, app):
+    project = create(client)
+    endpoint = f"/api/projects/{project['id']}/file"
+
+    path = "notes/revision-aba.txt"
+    original = ok(client.put(endpoint, json={
+        "path": path, "content": "original bytes\n", "expected_revision": 0,
+    }))
+    assert original["revision"] == 1
+    ok(client.delete(endpoint, params={"path": path}))
+    recreated = ok(client.put(endpoint, json={
+        "path": path, "content": "new bytes\n", "expected_revision": 0,
+    }))
+    assert recreated["revision"] == 3
+    stale = client.put(endpoint, json={
+        "path": path, "content": "stale editor\n", "expected_revision": original["revision"],
+    })
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "REVISION_CONFLICT"
+    assert ok(client.get(endpoint, params={"path": path})) == {
+        "path": path, "content": "new bytes\n", "revision": 3, "origin": "user_edited",
+    }
+
+    directory = "results"
+    tracked_path = f"{directory}/tracked.txt"
+    tracked = ok(client.put(endpoint, json={
+        "path": tracked_path, "content": "tracked original\n", "expected_revision": 0,
+    }))
+    untracked_path = f"{directory}/executor-output.txt"
+    workspace = Path(os.environ["FOREST_DATA_DIR"]) / "projects" / project["id"]
+    (workspace / directory / "executor-output.txt").write_text("executor original\n")
+    untracked = ok(client.get(endpoint, params={"path": untracked_path}))
+    assert untracked["revision"] == 0
+    assert untracked["origin"] == "executor_or_import"
+
+    ok(client.delete(endpoint, params={"path": directory}))
+    tracked_new = ok(client.put(endpoint, json={
+        "path": tracked_path, "content": "tracked replacement\n", "expected_revision": 0,
+    }))
+    untracked_new = ok(client.put(endpoint, json={
+        "path": untracked_path, "content": "executor replacement\n", "expected_revision": 0,
+    }))
+    assert tracked_new["revision"] == 3
+    assert untracked_new["revision"] == 2
+
+    stale_tracked = client.put(endpoint, json={
+        "path": tracked_path, "content": "stale tracked editor\n",
+        "expected_revision": tracked["revision"],
+    })
+    stale_untracked = client.put(endpoint, json={
+        "path": untracked_path, "content": "stale executor editor\n",
+        "expected_revision": untracked["revision"],
+    })
+    assert stale_tracked.status_code == stale_untracked.status_code == 409
+    assert ok(client.get(endpoint, params={"path": tracked_path}))["content"] == "tracked replacement\n"
+    assert ok(client.get(endpoint, params={"path": untracked_path}))["content"] == "executor replacement\n"
+
+
 def case_export_import_reference_roundtrip(client, app):
     p = create(client)
     n = add_node(client, p, config={"kind": "command", "command": ["python", "-c", "print(1)"]})

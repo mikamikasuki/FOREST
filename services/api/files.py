@@ -83,7 +83,11 @@ def _publish_file(ident,relative,path,temporary,backup,origin,expected_revision=
                         FileRevision.project_id==ident,FileRevision.path==relative
                     ).with_for_update().execution_options(populate_existing=True))
                     actual=revision.revision if revision else 0
-                    if expected_revision is not None and expected_revision!=actual:
+                    creating_after_delete=(
+                        revision is not None and actual>0
+                        and expected_revision==0 and not path.exists()
+                    )
+                    if expected_revision is not None and expected_revision!=actual and not creating_after_delete:
                         error('REVISION_CONFLICT','File changed in another editor',409,'Reload and merge changes.')
                     if revision is None:
                         revision=FileRevision(project_id=ident,path=relative,revision=0)
@@ -269,11 +273,27 @@ def delete_file(ident:str,path:str):
     with file_publication_lock(ident,path), Session.begin() as s:
         from services.worker.scheduler import _lock_project
         _lock_project(s,ident);editable_workspace(s,ident,p)
+        relative=str(p.relative_to(root.resolve())).replace('\\','/')
+        if p.is_dir():
+            removed_paths={str(item.relative_to(root.resolve())).replace('\\','/') for item in p.rglob('*') if item.is_file()}
+        else:
+            removed_paths={relative}
         if p.is_dir(): shutil.rmtree(p)
         else: p.unlink()
-        relative=str(p.relative_to(root.resolve()))
-        for rev in s.scalars(select(FileRevision).where(FileRevision.project_id==ident)):
-            if rev.path==relative or rev.path.startswith(relative+'/'): s.delete(rev)
+        prefix=relative.rstrip('/')+'/'
+        revisions={rev.path.replace('\\','/'):rev for rev in s.scalars(
+            select(FileRevision).where(FileRevision.project_id==ident).with_for_update()
+        )}
+        removed_paths.update(
+            revision_path for revision_path in revisions
+            if revision_path==relative or revision_path.startswith(prefix)
+        )
+        for removed_path in removed_paths:
+            revision=revisions.get(removed_path)
+            if revision is None:
+                s.add(FileRevision(project_id=ident,path=removed_path,revision=1))
+            else:
+                revision.revision+=1
         touch_dependents(s,ident,relative)
         managed_change(s,ident,relative,'owner_editor')
     return {'deleted':path}
