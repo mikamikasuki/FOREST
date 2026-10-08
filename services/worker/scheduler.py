@@ -444,7 +444,9 @@ def enqueue_selected(s, node_ids, request_id=None, overrides=None):
         return []
     first = get(s, Node, next(iter(selected)))
     p = _lock_project(s, first.project_id)
-    graph = graph_from_db(s, p)
+    # Pre-lock identities may precede an owner edit. Refresh before choosing
+    # the execution kind and checking the graph, not only inside enqueue().
+    graph = graph_from_db(s, p, refresh=True)
     nodes = {n['id']: n for n in graph['nodes']}
     if not selected <= nodes.keys():
         error('CROSS_PROJECT', 'All selected nodes must belong to the same project', 422)
@@ -491,7 +493,7 @@ def enqueue_nodes(s, node_id, scope='single', request_id=None, overrides=None):
     from research.kernel.graph import execution_edges
     node = get(s, Node, node_id)
     p = _lock_project(s, node.project_id)
-    graph = graph_from_db(s, p)
+    graph = graph_from_db(s, p, refresh=True)
     nodes = {n['id']: n for n in graph['nodes'] if not n.get('archived')}
     edges = execution_edges(graph)
     selected = {node_id}

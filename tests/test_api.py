@@ -899,6 +899,33 @@ def case_retry_refreshes_node_after_project_lock(client, app):
 
 
 
+def case_launch_refreshes_execution_kind_after_project_lock(client, app):
+    from services.api.db import Session, Node
+    from services.worker.scheduler import enqueue_nodes, enqueue_selected
+
+    for launch in ('single', 'selected'):
+        project = create(client)
+        nodes = [add_node(client, project, config={'kind': 'agent'}) for _ in range(2)]
+        with Session() as pending:
+            # Both nodes were read before the project lock, while an owner save
+            # could still commit. Hold the stale identities through scheduling.
+            cached = [pending.get(Node, node['id']) for node in nodes]
+            with Session.begin() as editor:
+                for node in nodes:
+                    current = editor.get(Node, node['id'])
+                    current.config = {'kind': 'command', 'command': [sys.executable, '-c', 'pass']}
+                    current.revision += 1
+            assert all(node.config['kind'] == 'agent' for node in cached)
+            if launch == 'single':
+                runs = enqueue_nodes(pending, nodes[0]['id'], request_id='fresh-kind')
+            else:
+                runs = enqueue_selected(pending, [node['id'] for node in nodes], request_id='fresh-kind')
+            pending.commit()
+            assert all(run.kind == run.config['kind'] == 'command' for run in runs)
+            assert all(run.node_revision == node['revision'] + 1 for run in runs
+                       for node in nodes if node['id'] == run.node_id)
+
+
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]
 
 

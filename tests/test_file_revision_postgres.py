@@ -71,6 +71,13 @@ def _upload(client, endpoint, filename, content):
 
 
 @requires_disposable_database
+def test_postgres_launch_refreshes_execution_kind(api_client):
+    from test_api import case_launch_refreshes_execution_kind_after_project_lock
+
+    case_launch_refreshes_execution_kind_after_project_lock(api_client, None)
+
+
+@requires_disposable_database
 def test_postgres_upload_revisions_and_stale_put(api_client):
     client = api_client
     project, file_endpoint, upload_endpoint = _project_file(client)

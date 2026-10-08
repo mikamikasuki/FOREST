@@ -26,10 +26,23 @@ test("owner creates a project, runs silent success/failure, and follows a scoped
     const config = workerPage.getByLabel("Agent / model / tools / budget / parameters");
     for (const [command, status] of [["sleep 3", "completed"], ["sleep 3; exit 7", "failed"]]) {
       await config.fill(JSON.stringify({ kind: "command", command: ["/bin/sh", "-c", command], timeout: 15 }));
+      const saveResponse = workerPage.waitForResponse(response =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/projects/${projectId}/graph/commands`));
       await workerPage.getByRole("button", { name: "Save changes", exact: true }).click();
+      expect((await saveResponse).ok()).toBeTruthy();
       await workerPage.getByRole("button", { name: "Run node", exact: true }).click();
       await expect(overview.locator(".progress-counts")).toContainText("running: 1");
-      await expect(overview.locator(".progress-counts")).toContainText(`${status}: 1`, { timeout: 20000 });
+      try {
+        await expect(overview.locator(".progress-counts")).toContainText(`${status}: 1`, { timeout: 20000 });
+      } catch (error) {
+        const runs = await (await request.get(`/api/projects/${projectId}/runs`)).json();
+        const details = await Promise.all(runs.map(async (run: {id: string; kind: string; status: string; error: string | null}) => ({
+          id: run.id, kind: run.kind, status: run.status, error: run.error,
+          output: await (await request.get(`/api/runs/${run.id}/output`)).json(),
+        })));
+        throw new Error(`${String(error)}\nActual run failures: ${JSON.stringify(details)}`);
+      }
     }
     const persisted = await (await request.get(`/api/projects/${projectId}/progress`)).json();
     expect(persisted.facts.filter((fact: { value: string; applicability: string }) => fact.value === "completed").every((fact: { applicability: string }) => fact.applicability === "historical")).toBeTruthy();
