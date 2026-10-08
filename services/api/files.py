@@ -160,7 +160,7 @@ def preview_file(ident:str,path:str,offset:int=Query(default=0,ge=0,le=10_000_00
     try:
         if suffix in ('.csv','.tsv'):
             separator='\t' if suffix=='.tsv' else ','
-            options={'sep':separator,'encoding':'utf-8-sig','on_bad_lines':'error','index_col':False}
+            options={'sep':separator,'encoding':'utf-8-sig','on_bad_lines':'error','index_col':False,'dtype':str}
             with warnings.catch_warnings():
                 warnings.simplefilter('error',pd.errors.ParserWarning)
                 columns=[str(c) for c in pd.read_csv(p,nrows=0,**options).columns]
@@ -169,6 +169,7 @@ def preview_file(ident:str,path:str,offset:int=Query(default=0,ge=0,le=10_000_00
                 with pd.read_csv(p,chunksize=2048,**options) as reader:
                     for chunk in reader:
                         if returned<limit and total+len(chunk)>offset:
+                            chunk=infer_csv_column_types(chunk)
                             start=max(0,offset-total)
                             page=chunk.iloc[start:start+limit-returned,:100]
                             selected.append(page); returned+=len(page)

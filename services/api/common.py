@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import secrets
 from pathlib import Path
 from sqlalchemy import select, delete, func
@@ -18,6 +19,28 @@ def effective_file_origin(origin, fallback):
     if origin in FILE_REVISION_TOMBSTONE_ORIGINS:
         return fallback
     return origin or fallback
+
+ZERO_PADDED_NUMERIC=re.compile(r'^[+-]?0\d')
+
+def infer_csv_column_types(frame):
+    """Restore numeric/boolean columns on a raw-text (dtype=str) CSV frame.
+
+    Default read_csv type inference silently rewrites zero-padded text
+    identifiers (02108 -> 2108, 000123 -> 123, 0000 -> 0), corrupting the
+    raw-data readback. Reading as raw text and converting only columns
+    without zero-padded values preserves the stored representation while
+    genuinely numeric columns stay numeric for sorting and display."""
+    import pandas as pd
+    for column in frame.columns:
+        series=frame[column]
+        if not pd.api.types.is_string_dtype(series): continue
+        values=series.dropna()
+        if values.empty or values.str.contains(ZERO_PADDED_NUMERIC).any(): continue
+        try: frame[column]=pd.to_numeric(series)
+        except (TypeError,ValueError,OverflowError):
+            if values.isin(('True','False')).all():
+                frame[column]=series.map({'True':True,'False':False})
+    return frame
 
 def error(code,message,status=400,suggestion='',retryable=False):
     raise HTTPException(status,{'code':code,'message':str(message),'retryable':retryable,'suggestion':suggestion})
