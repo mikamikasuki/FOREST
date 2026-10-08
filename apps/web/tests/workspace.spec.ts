@@ -1,4 +1,6 @@
 import { test, expect } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 let projectId = "";
 test.beforeEach(async ({ request }) => {
   const response = await request.post("/api/projects", {
@@ -16,6 +18,61 @@ test.afterEach(async ({ request }) => {
     expect(response.ok()).toBeTruthy();
     projectId = "";
   }
+});
+
+test("a stale editor cannot overwrite a file recreated after deletion", async ({
+  page,
+  request,
+}) => {
+  const path = "notes/revision-aba.txt";
+  const initial = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path, content: "original bytes\n", expected_revision: 0 },
+  });
+  expect(initial.ok()).toBeTruthy();
+  expect((await initial.json()).revision).toBe(1);
+
+  await page.goto(`/projects/${projectId}/files`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.getByRole("button", { name: path }).click();
+  const editor = page.locator(".monaco-editor").first();
+  await expect(editor).toContainText("original bytes");
+  await editor.click();
+  await page.keyboard.press(
+    process.platform === "darwin" ? "Meta+A" : "Control+A",
+  );
+  await page.keyboard.insertText("stale editor bytes\n");
+
+  const deleted = await request.delete(`/api/projects/${projectId}/file`, {
+    params: { path },
+  });
+  expect(deleted.ok()).toBeTruthy();
+  const recreated = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path, content: "new bytes\n" },
+  });
+  expect(recreated.ok()).toBeTruthy();
+  expect((await recreated.json()).revision).toBe(3);
+
+  const staleSave = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === `/api/projects/${projectId}/file` &&
+      response.request().method() === "PUT",
+  );
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  expect((await staleSave).status()).toBe(409);
+  await expect(
+    page.getByText("File changed elsewhere", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".modal pre")).toContainText("new bytes");
+  await expect(editor).toContainText("stale editor bytes");
+  const readback = await (
+    await request.get(`/api/projects/${projectId}/file`, { params: { path } })
+  ).json();
+  expect(readback).toMatchObject({
+    path,
+    content: "new bytes\n",
+    revision: 3,
+  });
 });
 
 for (const scenario of [
@@ -157,6 +214,105 @@ test("graph updates remain stable and persist a node created through the inspect
   ).json();
   expect(graph.nodes[0].title).toBe("Edited through inspector");
   expect(errors).toEqual([]);
+});
+
+test("a stale editor cannot recreate an untracked file after another tab renames it", async ({
+  page,
+  request,
+}) => {
+  const dataDir = process.env.FOREST_DATA_DIR;
+  if (!dataDir)
+    throw new Error("FOREST_DATA_DIR is required for this browser test");
+  const oldPath = "outputs/untracked-result.txt";
+  const newPath = "outputs/renamed-result.txt";
+  const originalContent = "executor result\n";
+  const diskPath = join(dataDir, "projects", projectId, oldPath);
+  await mkdir(join(dataDir, "projects", projectId, "outputs"), {
+    recursive: true,
+  });
+  await writeFile(diskPath, originalContent);
+
+  const opened = await request.get(
+    `/api/projects/${projectId}/file?path=${encodeURIComponent(oldPath)}`,
+  );
+  expect(await opened.json()).toMatchObject({
+    content: originalContent,
+    revision: 0,
+    origin: "executor_or_import",
+  });
+
+  await page.goto(`/projects/${projectId}/files`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.getByTitle(oldPath).click();
+  await expect(page.locator(".file-toolbar")).toContainText(oldPath);
+  await page.locator(".monaco-editor").click();
+  await page.keyboard.press(
+    process.platform === "darwin" ? "Meta+A" : "Control+A",
+  );
+  await page.keyboard.insertText("stale edit from tab one\n");
+
+  const secondTab = await page.context().newPage();
+  await secondTab.goto(`/projects/${projectId}/files`, {
+    waitUntil: "domcontentloaded",
+  });
+  await secondTab.getByTitle(oldPath).click();
+  secondTab.once("dialog", (dialog) => dialog.accept(newPath));
+  await secondTab.getByRole("button", { name: "Rename" }).click();
+  await expect(secondTab.locator(".file-toolbar")).toContainText(newPath);
+
+  const saveResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PUT" &&
+      response.url().includes(`/api/projects/${projectId}/file`),
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+  expect((await saveResponse).status()).toBe(409);
+  const recoveryPath = "outputs/recovered-result.txt";
+  const missingFileConflict = page.getByRole("dialog", {
+    name: "File deleted or renamed",
+  });
+  await expect(missingFileConflict).toBeVisible();
+  await expect(
+    missingFileConflict.getByRole("button", { name: "Save as" }),
+  ).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept(recoveryPath));
+  await missingFileConflict.getByRole("button", { name: "Save as" }).click();
+  await expect(page.locator(".file-toolbar")).toContainText(recoveryPath);
+  await page.locator(".monaco-editor").click();
+  await page.keyboard.press(
+    process.platform === "darwin" ? "Meta+A" : "Control+A",
+  );
+  await page.keyboard.insertText("updated recovered draft\n");
+  const recoveredSave = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === `/api/projects/${projectId}/file` &&
+      response.request().method() === "PUT",
+  );
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  expect((await recoveredSave).status()).toBe(200);
+
+  const stalePath = await request.get(
+    `/api/projects/${projectId}/file?path=${encodeURIComponent(oldPath)}`,
+  );
+  const renamedPath = await request.get(
+    `/api/projects/${projectId}/file?path=${encodeURIComponent(newPath)}`,
+  );
+  expect(stalePath.status()).toBe(404);
+  expect(await renamedPath.json()).toMatchObject({
+    content: originalContent,
+    revision: 0,
+  });
+  const recovered = await request.get(
+    `/api/projects/${projectId}/file?path=${encodeURIComponent(recoveryPath)}`,
+  );
+  expect(await recovered.json()).toMatchObject({
+    path: recoveryPath,
+    content: "updated recovered draft\n",
+    revision: 2,
+    origin: "user_edited",
+  });
+  await secondTab.close();
 });
 
 test("Overview reload and continue preserve the saved autonomous-planning setting", async ({
@@ -575,4 +731,192 @@ test("narrow workspace opens a dismissible inspector and keeps the searched node
   ).json();
   expect(after.revision).toBe(before.revision);
   expect(after.nodes).toEqual(before.nodes);
+});
+
+test("Paper full-manuscript picker lists completed runs from this project", async ({
+  page,
+  request,
+}) => {
+  const budget = await request.patch(`/api/projects/${projectId}`, {
+    data: { budget: { max_runs: 5, seconds: 120, allow_paid: false } },
+  });
+  expect(budget.ok()).toBeTruthy();
+
+  const graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const command = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "experiment",
+          title: "Paper run picker numeric metrics",
+          config: {
+            kind: "command",
+            command: [
+              "/usr/bin/python3",
+              "-c",
+              "import json; from pathlib import Path; Path('metrics.json').write_text(json.dumps({'score': 7, 'observations': 3}))",
+            ],
+            timeout: 20,
+          },
+        },
+      },
+    },
+  );
+  expect(command.ok()).toBeTruthy();
+
+  const started = await request.post(`/api/nodes/${nodeId}/run`, {
+    data: { request_id: crypto.randomUUID(), scope: "single" },
+  });
+  expect(started.ok()).toBeTruthy();
+  const queued = await started.json();
+  let completedRun: any;
+  await expect
+    .poll(
+      async () => {
+        const current = await request.get(`/api/runs/${queued.id}`);
+        completedRun = await current.json();
+        return completedRun.status;
+      },
+      { timeout: 30000 },
+    )
+    .toBe("completed");
+  expect(completedRun.exit_code).toBe(0);
+
+  const runsPath = `/api/projects/${projectId}/runs`;
+  const evidenceResponse = await request.get(runsPath, {
+    params: { include_manuscript_evidence: "true" },
+  });
+  expect(evidenceResponse.status()).toBe(200);
+  const runs = await evidenceResponse.json();
+  const eligibleRun = runs.find((run: { id: string }) => run.id === queued.id);
+  expect(eligibleRun).toMatchObject({
+    id: queued.id,
+    project_id: projectId,
+    status: "completed",
+    kind: "command",
+    manuscript_evidence: {
+      ready: true,
+      numeric_measurements: 2,
+    },
+  });
+  expect(eligibleRun.manuscript_evidence.metrics_file).toBeTruthy();
+
+  const metricsPath = `${eligibleRun.output_path}/${eligibleRun.manuscript_evidence.metrics_file}`;
+  const metricsResponse = await request.get(`/api/projects/${projectId}/file`, {
+    params: { path: metricsPath },
+  });
+  expect(metricsResponse.status()).toBe(200);
+  const metricsArtifact = await metricsResponse.json();
+  expect(JSON.parse(metricsArtifact.content)).toEqual({
+    score: 7,
+    observations: 3,
+  });
+
+  const waitForProjectRuns = () =>
+    page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === runsPath &&
+        url.searchParams.get("include_manuscript_evidence") === "true"
+      );
+    });
+  const initialRunsResponse = waitForProjectRuns();
+  await page.goto(`/projects/${projectId}/paper`);
+  const initialResponse = await initialRunsResponse;
+  expect(initialResponse.status()).toBe(200);
+  expect(
+    (await initialResponse.json()).every(
+      (run: { project_id: string }) => run.project_id === projectId,
+    ),
+  ).toBe(true);
+
+  const picker = page
+    .locator("details.paper-layout")
+    .filter({ hasText: "Generate a full manuscript from actual experiments" });
+  await picker
+    .getByText("Generate a full manuscript from actual experiments", {
+      exact: true,
+    })
+    .click();
+  const runLabel = `command · ${queued.id.slice(0, 8)}`;
+  const runCheckbox = picker.getByRole("checkbox", { name: runLabel });
+  const generate = picker.getByRole("button", {
+    name: "Generate full manuscript",
+    exact: true,
+  });
+  await expect(runCheckbox).toBeVisible();
+  await expect(generate).toBeDisabled();
+  await runCheckbox.check();
+  await expect(generate).toBeEnabled();
+
+  const reloadedRunsResponse = waitForProjectRuns();
+  await page.reload();
+  const reloadedResponse = await reloadedRunsResponse;
+  expect(reloadedResponse.status()).toBe(200);
+  const reloadedRuns = await reloadedResponse.json();
+  expect(
+    reloadedRuns.find((run: { id: string }) => run.id === queued.id),
+  ).toMatchObject({
+    project_id: projectId,
+    manuscript_evidence: { ready: true },
+  });
+  await picker
+    .getByText("Generate a full manuscript from actual experiments", {
+      exact: true,
+    })
+    .click();
+  await expect(
+    picker.getByRole("checkbox", { name: runLabel }),
+  ).toBeVisible();
+  await expect(generate).toBeDisabled();
+});
+
+test("Paper full-manuscript picker keeps the empty-project control", async ({
+  page,
+}) => {
+  const runsPath = `/api/projects/${projectId}/runs`;
+  const evidenceResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === runsPath &&
+      url.searchParams.get("include_manuscript_evidence") === "true"
+    );
+  });
+  await page.goto(`/projects/${projectId}/paper`);
+  const evidenceResponse = await evidenceResponsePromise;
+  expect(evidenceResponse.status()).toBe(200);
+  expect(await evidenceResponse.json()).toEqual([]);
+
+  const picker = page
+    .locator("details.paper-layout")
+    .filter({ hasText: "Generate a full manuscript from actual experiments" });
+  await picker
+    .getByText("Generate a full manuscript from actual experiments", {
+      exact: true,
+    })
+    .click();
+
+  await expect(
+    picker.getByText(
+      "Complete an experiment that produces readable numeric metrics.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(picker.getByRole("checkbox")).toHaveCount(0);
+  await expect(
+    picker.getByRole("button", {
+      name: "Generate full manuscript",
+      exact: true,
+    }),
+  ).toBeDisabled();
 });

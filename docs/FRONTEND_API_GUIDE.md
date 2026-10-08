@@ -126,6 +126,12 @@ newer value without merging edits defeats conflict detection.
 | Manuscript source, layout, compilation, figure insertion, review application | Paper revision | Paper, compile/layout runs and preview; review proposals also bind their original paper revision. |
 | Text file write | Revision returned by file read | File and dependent research outputs. An untracked file initially reads as revision 0. |
 
+Deleting a file advances and retains its per-path revision generation, including
+for files inside a deleted directory. A new write to a missing path may use
+`expected_revision: 0`; the server advances the retained generation. Once that
+path is recreated, a pre-delete editor token receives `409 REVISION_CONFLICT`
+and must reload or merge before saving.
+
 Graph commands support adding/editing/deleting nodes and dependencies, inserting
 nodes, forking/cloning/reparenting paths, splitting/grouping nodes, merging
 branches, pruning/restoring/selecting branches, and undo/redo. Preview an edit

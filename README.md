@@ -152,6 +152,26 @@ See [Deployment](https://github.com/mikamikasuki/FOREST/blob/main/docs/DEPLOYMEN
 
 See [Security](https://github.com/mikamikasuki/FOREST/blob/main/SECURITY.md) and [Deployment](https://github.com/mikamikasuki/FOREST/blob/main/docs/DEPLOYMENT.md) for execution boundaries and configuration.
 
+### Local Executor Cleanup
+
+The local worker owns the process handles for commands it starts. After ordinary
+cancellation or project deletion, it polls those owned handles and releases the
+handle and log-progress offset only after the child exits. A deleted run row
+allows the worker to poll its existing handle; it does not authorize killing a
+live process or scanning unrelated PIDs. Active and paused runs remain with the
+normal monitor and result-reconciliation path. Pending-intervention runs remain
+under their existing intervention and monitor-skip guards. This behavior is
+limited to local worker-owned processes; it does not add remote/container cleanup
+or worker-crash recovery guarantees.
+
+The focused backend regression population is
+`tests/test_worker_reaping.py`, `tests/test_worker.py`, and
+`tests/test_budget_lifecycle.py`, run serially without `pytest-xdist`. Keep the
+reaping regression and the existing cancellation, budget, and monitor controls
+together when checking this lifecycle. This Python-only change is checked with
+Python AST parsing and Git whitespace validation; those checks are not static
+typing, and no frontend build or TypeScript check is part of this scope.
+
 ---
 
 ## Submission Workflow

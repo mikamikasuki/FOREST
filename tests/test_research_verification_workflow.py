@@ -567,3 +567,384 @@ def test_paired_statistics_retain_consumed_upload_across_same_path_replacement(r
     assert retry_analysis_reopened['data']['input_provenance'] == expected_retry_provenance
     assert v1_file_after_replacement.status_code == 200
     assert v1_file_after_replacement.content == v2_bytes
+
+
+def test_paired_analysis_is_stale_if_source_is_replaced_before_publication(tmp_path):
+    directory = tmp_path / 'paired-analysis-publication-race'
+    directory.mkdir()
+    h = Harness(directory)
+    try:
+        h.start_api()
+        project = h.request('POST', '/api/projects', json={
+            'name': 'Paired publication race ' + str(uuid.uuid4())[:8],
+            'mode': 'manual',
+            'goal': 'Keep paired results stale when their source is replaced in flight.',
+            'budget': {'max_runs': 20, 'seconds': 180, 'allow_paid': False},
+        })
+        source_path = 'uploads/paired.csv'
+        v1_bytes = b'unit,baseline,candidate\nu1,10,8\nu2,20,17\n'
+        v2_bytes = b'unit,baseline,candidate\nu1,10,13\nu2,20,24\n'
+
+        def upload(content):
+            response = h.client.post(
+                f"/api/projects/{project['id']}/upload",
+                params={'directory': 'uploads'},
+                files={'file': ('paired.csv', content, 'text/csv')})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        upload(v1_bytes)
+        queued = h.request('POST', f"/api/projects/{project['id']}/statistics/paired", json={
+            'path': source_path, 'unit_column': 'unit', 'baseline_column': 'baseline',
+            'candidate_column': 'candidate', 'direction': 'lower', 'bootstrap_samples': 100,
+        })
+
+        gate = directory / 'paired-gate'
+        gate.mkdir()
+        h.env['FOREST_TEST_PAIRED_GATE_DIR'] = str(gate)
+        executor = r'''
+import os, sys, time
+from pathlib import Path
+from research.validation import statistics
+gate = Path(os.environ['FOREST_TEST_PAIRED_GATE_DIR'])
+original = statistics.paired_csv
+def gated(*args, **kwargs):
+    (gate / 'entered').write_text('copied')
+    deadline = time.monotonic() + 30
+    while not (gate / 'release').exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('test did not release paired analysis')
+        time.sleep(0.01)
+    return original(*args, **kwargs)
+statistics.paired_csv = gated
+from services.worker.execute import main
+sys.argv = ['forest-paired-race-test', '--run-id', sys.argv[1]]
+main()
+'''
+        child = h.spawn('paired-executor', [sys.executable, '-c', executor, queued['id']])
+        wait_until(lambda: (gate / 'entered').is_file())
+
+        replacement = upload(v2_bytes)
+        assert replacement['path'] == source_path
+        current_revision = h.request('GET', f"/api/projects/{project['id']}/file",
+                                     params={'path': source_path})
+        assert current_revision['revision'] > 1
+        (gate / 'release').write_text('continue')
+        child.wait(timeout=30)
+        assert child.returncode == 0, (directory / 'paired-executor.log').read_text()
+
+        analyses = h.request('GET', '/api/analyses', params={'project_id': project['id']})
+        assert len(analyses) == 1, analyses
+        analysis = analyses[0]
+        assert analysis['status'] == 'needs_update', analysis
+        assert analysis['data']['input_provenance']['sha256'] == hashlib.sha256(v1_bytes).hexdigest()
+        assert analysis['data']['input_provenance']['size_bytes'] == len(v1_bytes)
+        assert analysis['data']['stale_reason'] == 'Bound upstream material changed: ' + source_path
+        assert any(item['source_id'] == source_path for item in analysis['data']['stale_dependencies'])
+        retained = h.client.get(f"/api/projects/{project['id']}/download",
+                                params={'path': analysis['data']['path']})
+        assert retained.status_code == 200 and retained.content == v1_bytes
+        current = h.client.get(f"/api/projects/{project['id']}/download",
+                               params={'path': source_path})
+        assert current.status_code == 200 and current.content == v2_bytes
+    finally:
+        h.cleanup()
+
+
+def test_paired_analysis_is_stale_if_source_is_deleted_and_recreated_before_publication(tmp_path):
+    directory = tmp_path / 'paired-analysis-delete-recreate-race'
+    directory.mkdir()
+    h = Harness(directory)
+    try:
+        h.start_api()
+        project = h.request('POST', '/api/projects', json={
+            'name': 'Paired delete recreate race ' + str(uuid.uuid4())[:8],
+            'mode': 'manual',
+            'goal': 'Keep paired results stale when their source is deleted and recreated in flight.',
+            'budget': {'max_runs': 20, 'seconds': 180, 'allow_paid': False},
+        })
+        source_path = 'uploads/paired.csv'
+        v1_bytes = b'unit,baseline,candidate\nu1,10,8\nu2,20,17\n'
+        v2_bytes = b'unit,baseline,candidate\nu1,10,13\nu2,20,24\n'
+
+        def upload(content):
+            response = h.client.post(
+                f"/api/projects/{project['id']}/upload",
+                params={'directory': 'uploads'},
+                files={'file': ('paired.csv', content, 'text/csv')})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        upload(v1_bytes)
+        queued = h.request('POST', f"/api/projects/{project['id']}/statistics/paired", json={
+            'path': source_path, 'unit_column': 'unit', 'baseline_column': 'baseline',
+            'candidate_column': 'candidate', 'direction': 'lower', 'bootstrap_samples': 100,
+        })
+
+        gate = directory / 'paired-gate'
+        gate.mkdir()
+        h.env['FOREST_TEST_PAIRED_GATE_DIR'] = str(gate)
+        executor = r'''
+import os, sys, time
+from pathlib import Path
+gate = Path(os.environ['FOREST_TEST_PAIRED_GATE_DIR'])
+from research.validation import statistics
+original = statistics.paired_csv
+def gated(*args, **kwargs):
+    (gate / 'entered').write_text('copied')
+    deadline = time.monotonic() + 30
+    while not (gate / 'release').exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('test did not release paired analysis')
+        time.sleep(0.01)
+    return original(*args, **kwargs)
+statistics.paired_csv = gated
+from services.worker.execute import main
+sys.argv = ['forest-paired-delete-recreate-test', '--run-id', sys.argv[1]]
+main()
+'''
+        child = h.spawn('paired-executor', [sys.executable, '-c', executor, queued['id']])
+        wait_until(lambda: (gate / 'entered').is_file())
+
+        deleted = h.client.delete(
+            f"/api/projects/{project['id']}/file", params={'path': source_path})
+        assert deleted.status_code == 200, deleted.text
+        replacement = upload(v2_bytes)
+        assert replacement['path'] == source_path
+        current_revision = h.request('GET', f"/api/projects/{project['id']}/file",
+                                     params={'path': source_path})
+        assert current_revision['revision'] == 3
+        (gate / 'release').write_text('continue')
+        child.wait(timeout=30)
+        assert child.returncode == 0, (directory / 'paired-executor.log').read_text()
+
+        analyses = h.request('GET', '/api/analyses', params={'project_id': project['id']})
+        assert len(analyses) == 1, analyses
+        analysis = analyses[0]
+        assert analysis['status'] == 'needs_update', analysis
+        assert analysis['data']['input_provenance']['sha256'] == hashlib.sha256(v1_bytes).hexdigest()
+        assert analysis['data']['input_provenance']['size_bytes'] == len(v1_bytes)
+        assert analysis['data']['stale_reason'] == 'Bound upstream material changed: ' + source_path
+        assert any(item['source_id'] == source_path for item in analysis['data']['stale_dependencies'])
+        retained = h.client.get(f"/api/projects/{project['id']}/download",
+                                params={'path': analysis['data']['path']})
+        assert retained.status_code == 200 and retained.content == v1_bytes
+        current = h.client.get(f"/api/projects/{project['id']}/download",
+                               params={'path': source_path})
+        assert current.status_code == 200 and current.content == v2_bytes
+    finally:
+        h.cleanup()
+
+
+def test_paired_analysis_remains_current_if_replacement_precedes_source_copy(tmp_path):
+    directory = tmp_path / 'paired-analysis-replacement-before-copy'
+    directory.mkdir()
+    h = Harness(directory)
+    try:
+        h.start_api()
+        project = h.request('POST', '/api/projects', json={
+            'name': 'Paired replacement before copy ' + str(uuid.uuid4())[:8],
+            'mode': 'manual',
+            'goal': 'Keep results current when the worker copies the latest source version.',
+            'budget': {'max_runs': 20, 'seconds': 180, 'allow_paid': False},
+        })
+        source_path = 'uploads/paired.csv'
+        v1_bytes = b'unit,baseline,candidate\nu1,10,8\nu2,20,17\n'
+        v2_bytes = b'unit,baseline,candidate\nu1,10,13\nu2,20,24\n'
+
+        def upload(content):
+            response = h.client.post(
+                f"/api/projects/{project['id']}/upload",
+                params={'directory': 'uploads'},
+                files={'file': ('paired.csv', content, 'text/csv')})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        upload(v1_bytes)
+        queued = h.request('POST', f"/api/projects/{project['id']}/statistics/paired", json={
+            'path': source_path, 'unit_column': 'unit', 'baseline_column': 'baseline',
+            'candidate_column': 'candidate', 'direction': 'lower', 'bootstrap_samples': 100,
+        })
+
+        gate = directory / 'paired-gate'
+        gate.mkdir()
+        h.env['FOREST_TEST_PAIRED_GATE_DIR'] = str(gate)
+        h.env['FOREST_TEST_PAIRED_SOURCE_PATH'] = str(
+            directory / 'data' / 'projects' / project['id'] / source_path)
+        executor = r'''
+import os, sys, time
+from pathlib import Path
+gate = Path(os.environ['FOREST_TEST_PAIRED_GATE_DIR'])
+source = Path(os.environ['FOREST_TEST_PAIRED_SOURCE_PATH']).resolve()
+original_open = Path.open
+paused = False
+def gated_open(self, *args, **kwargs):
+    global paused
+    if self.resolve() == source and args and args[0] == 'rb' and not paused:
+        paused = True
+        (gate / 'entered').write_text('before-source-copy')
+        deadline = time.monotonic() + 30
+        while not (gate / 'release').exists():
+            if time.monotonic() >= deadline:
+                raise TimeoutError('test did not release paired source copy')
+            time.sleep(0.01)
+    return original_open(self, *args, **kwargs)
+Path.open = gated_open
+from services.worker.execute import main
+sys.argv = ['forest-paired-before-copy-test', '--run-id', sys.argv[1]]
+main()
+'''
+        child = h.spawn('paired-executor', [sys.executable, '-c', executor, queued['id']])
+        wait_until(lambda: (gate / 'entered').is_file())
+
+        replacement = upload(v2_bytes)
+        assert replacement['path'] == source_path
+        current_revision = h.request('GET', f"/api/projects/{project['id']}/file",
+                                     params={'path': source_path})
+        assert current_revision['revision'] > 1
+        (gate / 'release').write_text('continue')
+        child.wait(timeout=30)
+        assert child.returncode == 0, (directory / 'paired-executor.log').read_text()
+
+        analyses = h.request('GET', '/api/analyses', params={'project_id': project['id']})
+        assert len(analyses) == 1, analyses
+        analysis = analyses[0]
+        assert analysis['status'] == 'ready_for_review', analysis
+        assert 'stale_reason' not in analysis['data'], analysis['data']
+        assert analysis['data']['input_provenance']['sha256'] == hashlib.sha256(v2_bytes).hexdigest()
+        assert analysis['data']['input_provenance']['size_bytes'] == len(v2_bytes)
+        retained = h.client.get(f"/api/projects/{project['id']}/download",
+                                params={'path': analysis['data']['path']})
+        assert retained.status_code == 200 and retained.content == v2_bytes
+        current = h.client.get(f"/api/projects/{project['id']}/download",
+                               params={'path': source_path})
+        assert current.status_code == 200 and current.content == v2_bytes
+    finally:
+        h.cleanup()
+
+
+def test_paired_analysis_waits_for_failed_publication_file_restore(tmp_path):
+    directory = tmp_path / 'paired-analysis-file-restore-race'
+    directory.mkdir()
+    h = Harness(directory)
+    original_data_dir = None
+    try:
+        h.start_api()
+        project = h.request('POST', '/api/projects', json={
+            'name': 'Paired file restore race ' + str(uuid.uuid4())[:8],
+            'mode': 'manual',
+            'goal': 'Do not publish an analysis from transient bytes during file rollback.',
+            'budget': {'max_runs': 20, 'seconds': 180, 'allow_paid': False},
+        })
+        source_path = 'uploads/paired.csv'
+        v1_bytes = b'unit,baseline,candidate\nu1,10,8\nu2,20,17\n'
+        transient_bytes = b'unit,baseline,candidate\nu1,10,13\nu2,20,24\n'
+
+        def upload(content):
+            response = h.client.post(
+                f"/api/projects/{project['id']}/upload",
+                params={'directory': 'uploads'},
+                files={'file': ('paired.csv', content, 'text/csv')})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        upload(v1_bytes)
+        queued = h.request('POST', f"/api/projects/{project['id']}/statistics/paired", json={
+            'path': source_path, 'unit_column': 'unit', 'baseline_column': 'baseline',
+            'candidate_column': 'candidate', 'direction': 'lower', 'bootstrap_samples': 100,
+        })
+
+        gate = directory / 'paired-gate'
+        gate.mkdir()
+        source_file = directory / 'data' / 'projects' / project['id'] / source_path
+        h.env['FOREST_TEST_PAIRED_GATE_DIR'] = str(gate)
+        h.env['FOREST_TEST_PAIRED_SOURCE_PATH'] = str(source_file)
+        executor = r'''
+import os, sys, time
+from contextlib import contextmanager
+from pathlib import Path
+gate = Path(os.environ['FOREST_TEST_PAIRED_GATE_DIR'])
+source = Path(os.environ['FOREST_TEST_PAIRED_SOURCE_PATH']).resolve()
+original_open = Path.open
+def gated_open(self, *args, **kwargs):
+    if self.resolve() == source and args and args[0] == 'rb' and not (gate / 'source_opened').exists():
+        (gate / 'source_opened').write_text('reading transient publication bytes')
+        deadline = time.monotonic() + 30
+        while not (gate / 'copy_release').exists():
+            if time.monotonic() >= deadline:
+                raise TimeoutError('test did not release paired source copy')
+            time.sleep(0.01)
+    return original_open(self, *args, **kwargs)
+Path.open = gated_open
+from research.validation import statistics
+original_statistics = statistics.paired_csv
+def gated_statistics(*args, **kwargs):
+    (gate / 'compute_entered').write_text('source copied')
+    deadline = time.monotonic() + 30
+    while not (gate / 'compute_release').exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('test did not release paired computation')
+        time.sleep(0.01)
+    return original_statistics(*args, **kwargs)
+statistics.paired_csv = gated_statistics
+import services.api.files as file_api
+real_guard = file_api.file_publication_lock
+@contextmanager
+def tracked_guard(project_id, relative):
+    (gate / 'publication_lock_attempted').write_text(relative)
+    with real_guard(project_id, relative):
+        yield
+file_api.file_publication_lock = tracked_guard
+from services.worker.execute import main
+sys.argv = ['forest-paired-file-restore-test', '--run-id', sys.argv[1]]
+main()
+'''
+        child = h.spawn('paired-executor', [sys.executable, '-c', executor, queued['id']])
+        wait_until(lambda: (gate / 'source_opened').is_file())
+
+        from services.api.config import settings
+        from services.api.files import file_publication_lock
+        original_data_dir = settings.data_dir
+        settings.data_dir = (directory / 'data').resolve()
+
+        def replace_source(content):
+            temporary = source_file.with_name('.paired-rollback-test.tmp')
+            temporary.write_bytes(content)
+            temporary.replace(source_file)
+
+        try:
+            with file_publication_lock(project['id'], source_path):
+                # Model _publish_file's transient replace while its file lock
+                # is held, followed by rollback compensation restoring V1.
+                replace_source(transient_bytes)
+                (gate / 'copy_release').write_text('continue')
+                wait_until(lambda: (gate / 'compute_entered').is_file())
+                (gate / 'compute_release').write_text('continue')
+                wait_until(lambda: (gate / 'publication_lock_attempted').is_file())
+                assert child.poll() is None
+                assert h.request('GET', '/api/analyses',
+                                 params={'project_id': project['id']}) == []
+                replace_source(v1_bytes)
+        finally:
+            settings.data_dir = original_data_dir
+
+        child.wait(timeout=30)
+        assert child.returncode == 0, (directory / 'paired-executor.log').read_text()
+        analyses = h.request('GET', '/api/analyses', params={'project_id': project['id']})
+        assert len(analyses) == 1, analyses
+        analysis = analyses[0]
+        assert analysis['status'] == 'needs_update', analysis
+        assert analysis['data']['input_provenance']['sha256'] == hashlib.sha256(transient_bytes).hexdigest()
+        assert analysis['data']['input_provenance']['size_bytes'] == len(transient_bytes)
+        assert analysis['data']['stale_reason'] == 'Bound upstream material changed: ' + source_path
+        retained = h.client.get(f"/api/projects/{project['id']}/download",
+                                params={'path': analysis['data']['path']})
+        assert retained.status_code == 200 and retained.content == transient_bytes
+        current = h.client.get(f"/api/projects/{project['id']}/download",
+                               params={'path': source_path})
+        assert current.status_code == 200 and current.content == v1_bytes
+    finally:
+        if original_data_dir is not None:
+            from services.api.config import settings
+            settings.data_dir = original_data_dir
+        h.cleanup()

@@ -1,7 +1,9 @@
 import io
 import json
+import lzma
 import shutil
 import sqlite3
+import zlib
 from contextlib import contextmanager
 import zipfile
 import math
@@ -131,8 +133,11 @@ def read_file(ident:str,path:str):
             rev=s.scalar(select(FileRevision).where(
                 FileRevision.project_id==ident,FileRevision.path==relative
             ).with_for_update().execution_options(populate_existing=True))
+            origin=effective_file_origin(
+                rev.origin if rev else None, 'executor_or_import'
+            )
             return {'path':relative,'content':content,'revision':rev.revision if rev else 0,
-                    'origin':rev.origin if rev else 'executor_or_import'}
+                    'origin':origin}
 
 @router.get('/api/projects/{ident}/file/preview')
 def preview_file(ident:str,path:str,offset:int=Query(default=0,ge=0,le=10_000_000),limit:int=Query(default=100,ge=1,le=500)):
@@ -269,11 +274,34 @@ def delete_file(ident:str,path:str):
     with file_publication_lock(ident,path), Session.begin() as s:
         from services.worker.scheduler import _lock_project
         _lock_project(s,ident);editable_workspace(s,ident,p)
+        # FileRevision paths use the same native relative spelling as read/write.
+        # On POSIX a backslash is a valid filename character, so translating it
+        # to '/' aliases a filename with a distinct nested path.
+        relative=str(p.relative_to(root.resolve()))
+        if p.is_dir():
+            removed_paths={str(item.relative_to(root.resolve())) for item in p.rglob('*') if item.is_file()}
+        else:
+            removed_paths={relative}
         if p.is_dir(): shutil.rmtree(p)
         else: p.unlink()
-        relative=str(p.relative_to(root.resolve()))
-        for rev in s.scalars(select(FileRevision).where(FileRevision.project_id==ident)):
-            if rev.path==relative or rev.path.startswith(relative+'/'): s.delete(rev)
+        prefix=relative.rstrip(os.sep)+os.sep
+        revisions={rev.path:rev for rev in s.scalars(
+            select(FileRevision).where(FileRevision.project_id==ident).with_for_update()
+        )}
+        removed_paths.update(
+            revision_path for revision_path in revisions
+            if revision_path==relative or revision_path.startswith(prefix)
+        )
+        for removed_path in removed_paths:
+            revision=revisions.get(removed_path)
+            if revision is None:
+                s.add(FileRevision(
+                    project_id=ident,path=removed_path,revision=1,
+                    origin=DELETED_FILE_REVISION_ORIGIN
+                ))
+            else:
+                revision.revision+=1
+                revision.origin=DELETED_FILE_REVISION_ORIGIN
         touch_dependents(s,ident,relative)
         managed_change(s,ident,relative,'owner_editor')
     return {'deleted':path}
@@ -284,12 +312,63 @@ def rename_file(ident:str,body:dict=Body(...)):
         from services.worker.scheduler import _lock_project
         _lock_project(s,ident);editable_workspace(s,ident,src);editable_workspace(s,ident,dst)
         if dst.exists(): error('FILE_EXISTS','Destination already exists',409)
+        relative_native=str(src.relative_to(root.resolve()))
+        new_relative_native=str(dst.relative_to(root.resolve()))
+        relative=relative_native
+        new_relative=new_relative_native
+        prefix=relative.rstrip(os.sep)+os.sep
+        moved_native_paths=(
+            {str(item.relative_to(root.resolve()))
+             for item in src.rglob('*') if item.is_file()}
+            if src.is_dir() else {relative_native}
+        )
+        moved_paths=moved_native_paths
+        revisions=list(s.scalars(
+            select(FileRevision).where(FileRevision.project_id==ident).with_for_update()
+        ))
+        revisions_by_path={rev.path:rev for rev in revisions}
+        moved_revision_paths={path for path in revisions_by_path
+                              if path==relative or path.startswith(prefix)}
+        for previous in moved_paths:
+            suffix=previous[len(relative):].lstrip(os.sep)
+            new_path=(str(Path(new_relative_native)/Path(suffix))
+                      if suffix else new_relative_native)
+            source_revision=revisions_by_path.get(previous)
+            destination_revision=revisions_by_path.get(new_path)
+            source_generation=source_revision.revision if source_revision else 0
+            destination_generation=destination_revision.revision if destination_revision else 0
+            if source_revision is not None or destination_revision is not None:
+                live_origin=(source_revision.origin if source_revision else 'executor_or_import')
+                if live_origin in (DELETED_FILE_REVISION_ORIGIN,RENAMED_FILE_REVISION_ORIGIN):
+                    live_origin='executor_or_import'
+                next_generation=max(source_generation,destination_generation)+1
+                if destination_revision is None:
+                    s.add(FileRevision(
+                        project_id=ident,path=new_path,revision=next_generation,
+                        origin=live_origin
+                    ))
+                else:
+                    destination_revision.revision=next_generation
+                    destination_revision.origin=live_origin
+            if source_revision is None:
+                s.add(FileRevision(
+                    project_id=ident,path=previous,revision=1,
+                    origin=RENAMED_FILE_REVISION_ORIGIN
+                ))
+            else:
+                source_revision.revision=source_generation+1
+                source_revision.origin=RENAMED_FILE_REVISION_ORIGIN
+            touch_dependents(s,ident,previous)
+        for previous in moved_revision_paths-moved_paths:
+            revision=revisions_by_path[previous]
+            revision.revision+=1
+            revision.origin=RENAMED_FILE_REVISION_ORIGIN
+            touch_dependents(s,ident,previous)
+        # Keep the old path's generation after the move. Untracked executor/import
+        # files have no FileRevision row yet, so they need a revision-1 tombstone
+        # to invalidate an editor that opened them at revision 0.
+        s.flush()
         dst.parent.mkdir(parents=True,exist_ok=True);src.rename(dst)
-        relative=str(src.relative_to(root.resolve()));new_relative=str(dst.relative_to(root.resolve()))
-        for rev in s.scalars(select(FileRevision).where(FileRevision.project_id==ident)):
-            if rev.path==relative or rev.path.startswith(relative+'/'):
-                previous=rev.path;rev.path=new_relative+previous[len(relative):];rev.revision+=1
-                touch_dependents(s,ident,previous)
         touch_dependents(s,ident,relative)
         managed_change(s,ident,relative,'owner_editor');managed_change(s,ident,new_relative,'owner_editor')
     return {'path':body['new_path']}
@@ -357,6 +436,30 @@ def imported_run_timestamp(value, fallback=None):
     except ValueError: error('INVALID_ARCHIVE','Run timestamps must be ISO 8601 strings')
     return value
 
+@contextmanager
+def cleanup_project_import_on_failure():
+    """Remove a new workspace when the import body fails before commit.
+
+    This context must exit before the transaction manager attempts to commit:
+    a commit exception can have an ambiguous outcome, so deleting the workspace
+    then could leave a committed project row without its files.
+    """
+    root = None
+
+    def remember_root(path):
+        nonlocal root
+        root = path
+
+    try:
+        yield remember_root
+    except BaseException:
+        if root is not None:
+            try:
+                shutil.rmtree(root)
+            except FileNotFoundError:
+                pass
+        raise
+
 @router.post('/api/projects/import')
 async def import_project(file:UploadFile=File(...)):
     from research.kernel import validate_graph,ArtifactResolver
@@ -384,7 +487,7 @@ async def import_project(file:UploadFile=File(...)):
             'started_at':imported_run_timestamp(r.get('started_at')),
             'finished_at':imported_run_timestamp(r.get('finished_at'))
         }
-    with Session.begin() as s:
+    with Session.begin() as s, cleanup_project_import_on_failure() as remember_import_root:
         orig=manifest['project']; config=dict(orig.get('config',{})); controller=config.get('controller')
         if isinstance(controller,dict):
             # Runtime references belong to the source project; imported runs are
@@ -395,7 +498,7 @@ async def import_project(file:UploadFile=File(...)):
                 # Import is not an instruction to resume a research controller.
                 controller.update(status='paused',phase='PLAN')
             config['controller']=controller
-        p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),mode=mode,budget=orig.get('budget',{}),config=config); root=project_dir(p.id)
+        p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),mode=mode,budget=orig.get('budget',{}),config=config); root=project_dir(p.id); remember_import_root(root)
         graph=manifest['graph']; old_id=graph['project_id']; mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(manifest.get('resources',{}).values())+[manifest.get('papers',[]),manifest.get('runs',[])]:
             for item in rows: mapping.setdefault(item['id'],uid())
@@ -425,7 +528,12 @@ async def import_project(file:UploadFile=File(...)):
         save_graph(s,p,graph)
         for info in z.infolist():
             if not info.filename.startswith('files/') or info.is_dir(): continue
-            dest=safe_path(root,remap(info.filename[6:])); dest.parent.mkdir(parents=True,exist_ok=True); dest.write_bytes(z.read(info))
+            try:
+                contents=z.read(info)
+            except (zipfile.BadZipFile, EOFError, lzma.LZMAError, NotImplementedError, OSError,
+                    RuntimeError, ValueError, zlib.error):
+                error('INVALID_ARCHIVE','Archive contains a corrupt or unreadable file member')
+            dest=safe_path(root,remap(info.filename[6:])); dest.parent.mkdir(parents=True,exist_ok=True); dest.write_bytes(contents)
         for key,rows in manifest.get('resources',{}).items():
             model=RESOURCE_MODELS.get(key)
             if model:

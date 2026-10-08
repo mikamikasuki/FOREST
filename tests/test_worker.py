@@ -306,6 +306,87 @@ def test_real_process_survives_client_close_and_api_restart(actual_worker):
     assert (h.output(run) / "result.json").is_file()
 
 
+def test_paper_picker_and_api_require_numeric_metrics_from_real_runs(actual_worker):
+    h = actual_worker
+    project = h.request("POST", "/api/projects", json={
+        "name": "Paper evidence eligibility " + str(uuid.uuid4())[:8],
+        "goal": "Use completed local computation as manuscript evidence",
+        "budget": {"max_runs": 5, "seconds": 120, "allow_paid": False},
+    })
+
+    def add_command(title, source):
+        graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+        node_id = str(uuid.uuid4())
+        result = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+            "request_id": str(uuid.uuid4()),
+            "expected_revision": graph["revision"],
+            "operation": "add_node",
+            "targets": [],
+            "params": {
+                "id": node_id,
+                "branch_id": graph["branches"][0]["id"],
+                "type": "experiment",
+                "title": title,
+                "config": {"kind": "command", "command": [sys.executable, "-c", source], "timeout": 20},
+            },
+        })
+        node = next(item for item in result["graph"]["nodes"] if item["id"] == node_id)
+        return h.terminal(h.launch(node), timeout=30)
+
+    missing_metrics = add_command("Completed command without measurements", "print('completed without metrics')")
+    assert missing_metrics["status"] == "completed"
+    assert not (h.output(missing_metrics) / "metrics.json").exists()
+    runs = h.request("GET", f"/api/projects/{project['id']}/runs?include_manuscript_evidence=true")
+    missing_entry = next(run for run in runs if run["id"] == missing_metrics["id"])
+    assert missing_entry["manuscript_evidence"]["ready"] is False
+
+    rejected = h.client.post(f"/api/papers/{project['id']}/generate", json={
+        "request_id": str(uuid.uuid4()),
+        "run_ids": [missing_metrics["id"]],
+        "figure_ids": [],
+        "manuscript_type": "full_paper",
+    })
+    assert rejected.status_code == 422, rejected.text
+    assert rejected.json()["detail"]["code"] == "INVALID_EVIDENCE"
+    assert "metrics file" in rejected.json()["detail"]["message"]
+    current_runs = h.request("GET", f"/api/projects/{project['id']}/runs")
+    assert all(run["kind"] != "paper_generate" for run in current_runs)
+
+    measured = add_command(
+        "Completed arithmetic command with measured output",
+        "import json; from pathlib import Path; total=sum(range(100)); Path('metrics.json').write_text(json.dumps({'sum': total})); print(total)",
+    )
+    assert measured["status"] == "completed"
+    metrics = h.output(measured) / "workspace" / "metrics.json"
+    assert json.loads(metrics.read_text())["sum"] == sum(range(100))
+    runs = h.request("GET", f"/api/projects/{project['id']}/runs?include_manuscript_evidence=true")
+    measured_entry = next(run for run in runs if run["id"] == measured["id"])
+    assert measured_entry["manuscript_evidence"] == {
+        "ready": True,
+        "metrics_file": "workspace/metrics.json",
+        "numeric_measurements": 1,
+    }
+
+    oversized = add_command(
+        "Completed command with an oversized integer metric",
+        "from pathlib import Path; Path('metrics.json').write_text('{\"measurement\":' + '9' * 400 + '}')",
+    )
+    assert oversized["status"] == "completed"
+    runs = h.request("GET", f"/api/projects/{project['id']}/runs?include_manuscript_evidence=true")
+    oversized_entry = next(run for run in runs if run["id"] == oversized["id"])
+    assert oversized_entry["manuscript_evidence"]["ready"] is False
+    assert "supported numeric range" in oversized_entry["manuscript_evidence"]["reason"]
+
+    oversized_rejected = h.client.post(f"/api/papers/{project['id']}/generate", json={
+        "request_id": str(uuid.uuid4()),
+        "run_ids": [oversized["id"]],
+        "figure_ids": [],
+        "manuscript_type": "full_paper",
+    })
+    assert oversized_rejected.status_code == 422, oversized_rejected.text
+    assert oversized_rejected.json()["detail"]["code"] == "INVALID_EVIDENCE"
+
+
 def test_pause_resume_stops_and_restarts_actual_process_group(actual_worker):
     h = actual_worker
     _, node = h.project_node(seconds=4, child=True)

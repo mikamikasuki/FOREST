@@ -5285,6 +5285,24 @@
           "kind": {
             "type": "string"
           },
+          "manuscript_evidence": {
+            "additionalProperties": true,
+            "properties": {
+              "metrics_file": {
+                "type": "string"
+              },
+              "numeric_measurements": {
+                "type": "integer"
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
           "metrics": {
             "$ref": "#/components/schemas/JsonObject"
           },
@@ -15269,7 +15287,7 @@
     },
     "/api/papers/{ident}/generate": {
       "post": {
-        "description": "Resolve paper/project ID. Require a nonempty run_ids list of completed runs in this project. manuscript_type defaults full_paper. Other generation options are extensible. Return Run for generation/review workflow, not automatically applied manuscript text.",
+        "description": "Resolve paper/project ID. Require a nonempty run_ids list of completed experiment/command/agent runs in this project, each with a readable metrics file containing finite numeric measurements. Reject invalid evidence before enqueue and recheck it during generation. manuscript_type defaults full_paper. Other generation options are extensible. Return Run for generation/review workflow, not automatically applied manuscript text.",
         "operationId": "generate_manuscript_api_papers__ident__generate_post",
         "parameters": [
           {
@@ -15332,6 +15350,16 @@
               }
             },
             "description": "NOT_FOUND"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "GOAL_APPLICABILITY_REQUIRED"
           },
           "422": {
             "content": {
@@ -16939,7 +16967,7 @@
     },
     "/api/projects/{ident}/file": {
       "delete": {
-        "description": "Delete the selected file or directory recursively and mark consumers stale; removing the project root is rejected. No expected_revision guard.",
+        "description": "Delete the selected file or directory recursively and mark consumers stale; removing the project root is rejected. Advance and retain file revision generations for removed paths so stale editor tokens conflict if a path is recreated. No expected_revision guard.",
         "operationId": "delete_file_api_projects__ident__file_delete",
         "parameters": [
           {
@@ -17205,7 +17233,7 @@
         }
       },
       "put": {
-        "description": "FileWrite contains path/content and optional FILE expected_revision. Atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. Return normalized relative path/revision/origin. Omitting expected_revision accepts the current revision.",
+        "description": "FileWrite contains path/content and optional FILE expected_revision. Atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. A first write to a missing path may use expected_revision=0; after deletion it advances that path's retained revision generation. Omitting expected_revision accepts the current revision.",
         "operationId": "write_file_api_projects__ident__file_put",
         "parameters": [
           {
@@ -21077,7 +21105,7 @@
     },
     "/api/projects/{ident}/runs": {
       "get": {
-        "description": "Bare Run array, created_at descending; limit capped at 500. This list does not add tools and does not apply the single-run provider_snapshot filter.",
+        "description": "Bare Run array, created_at descending; limit capped at 500. include_manuscript_evidence=true adds a readiness result based on each completed experiment/command/agent run's readable numeric metrics artifact.",
         "operationId": "runs_api_projects__ident__runs_get",
         "parameters": [
           {
@@ -21090,6 +21118,7 @@
             }
           },
           {
+            "description": "Maximum number of runs, capped at 500.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -21100,6 +21129,7 @@
             }
           },
           {
+            "description": "Number of runs to skip.",
             "in": "query",
             "name": "offset",
             "required": false,
@@ -21107,6 +21137,17 @@
               "default": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Attach manuscript evidence readiness and validation details.",
+            "in": "query",
+            "name": "include_manuscript_evidence",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Manuscript Evidence",
+              "type": "boolean"
             }
           }
         ],

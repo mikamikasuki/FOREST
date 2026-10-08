@@ -9,7 +9,7 @@ import shutil
 import signal
 import subprocess
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 import httpx
@@ -178,7 +178,34 @@ def delete_project(ident:str):
 @app.post('/api/projects/{ident}/duplicate')
 def duplicate_project(ident:str):
     import copy
-    with Session.begin() as s:
+    @contextmanager
+    def duplicate_transaction():
+        root = None
+        body_failed = False
+
+        def remember_project(project_id):
+            nonlocal root
+            root = project_dir(project_id)
+
+        try:
+            with Session.begin() as session:
+                try:
+                    yield session, remember_project
+                except BaseException:
+                    # An exception in the transaction body guarantees rollback.
+                    body_failed = True
+                    raise
+        except BaseException:
+            # A commit error can have an ambiguous outcome; preserve the
+            # workspace unless the transaction body itself failed and rolled back.
+            if body_failed and root is not None:
+                try:
+                    shutil.rmtree(root)
+                except FileNotFoundError:
+                    pass
+            raise
+
+    with duplicate_transaction() as (s, remember_project):
         from services.worker.scheduler import _lock_project
         p=_lock_project(s,ident)
         graph=copy.deepcopy(graph_from_db(s,p)); graph.pop('_history',None)
@@ -192,7 +219,9 @@ def duplicate_project(ident:str):
             for item in rows: mapping.setdefault(item['id'],uid())
         for item in history_ids(history):mapping.setdefault(item,uid())
         mode=p.mode if p.mode in ('auto','assisted','manual') else 'assisted'
-        new=make_project(s,p.name+' · Copy',p.goal,p.description,mode=mode,budget=copy.deepcopy(p.budget),config=copy.deepcopy(p.config))
+        duplicate_id=uid()
+        remember_project(duplicate_id)
+        new=make_project(s,p.name+' · Copy',p.goal,p.description,id=duplicate_id,mode=mode,budget=copy.deepcopy(p.budget),config=copy.deepcopy(p.config))
         def remap(value):
             if isinstance(value,dict): return {k:remap(v) for k,v in value.items()}
             if isinstance(value,list): return [remap(v) for v in value]
@@ -295,8 +324,23 @@ def compare_branches(left:str,right:str):
         runs=[asdict(r) for r in s.scalars(select(TaskRun).where(TaskRun.branch_id.in_([left,right])))]
         return {**comparison,'left':asdict(a),'right':asdict(b),'runs':runs}
 @app.get('/api/projects/{ident}/runs')
-def runs(ident:str,limit:int=100,offset:int=0):
-    with Session() as s: get(s,Project,ident); return [asdict(r) for r in s.scalars(select(TaskRun).where(TaskRun.project_id==ident).order_by(TaskRun.created_at.desc()).limit(min(limit,500)).offset(offset))]
+def runs(ident:str,limit:int=100,offset:int=0,include_manuscript_evidence:bool=False):
+    with Session() as s:
+        get(s,Project,ident)
+        records=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident).order_by(TaskRun.created_at.desc()).limit(min(limit,500)).offset(offset)))
+        result=[asdict(r) for r in records]
+        if include_manuscript_evidence:
+            from research.paper.evidence import manuscript_metrics_eligibility
+            for run, record in zip(records, result):
+                eligibility={'ready':False,'reason':'Run must be a completed experiment, command, or agent'}
+                if run.status=='completed' and run.kind in ('experiment','command','agent'):
+                    try:
+                        directory=safe_path(project_dir(ident),run.output_path)
+                        eligibility=manuscript_metrics_eligibility(directory,run.config.get('metrics_file','metrics.json'),run_id=run.id)
+                    except (OSError,ValueError) as exc:
+                        eligibility={'ready':False,'reason':str(exc)}
+                record['manuscript_evidence']=eligibility
+        return result
 @app.get('/api/runs/{ident}')
 def run(ident:str):
     with Session() as s:
