@@ -9,6 +9,7 @@ from services.api.db import TaskRun, Node, Figure, PaperDocument, ResearchClaim,
 REFERENCE_KEYS = {
     'run_id': 'run', 'run_ids': 'run', 'source_run_ids': 'run', 'evidence_run_ids': 'run',
     'analysis_run_id': 'run', 'analysis_run_ids': 'run', 'compile_run_id': 'run',
+    'source_analysis_id': 'analysis',
     'node_id': 'node', 'source_node_id': 'node', 'producer_node_id': 'node',
     'figure_id': 'figure', 'figure_ids': 'figure', 'claim_id': 'claim', 'claim_ids': 'claim',
     'source_id': 'source', 'source_ids': 'source', 'verification_node_id': 'node',
