@@ -21,9 +21,55 @@ def _numbers(value, pointer=''):
         for index, item in enumerate(value):
             yield from _numbers(item, pointer + '/' + str(index))
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
-        if not math.isfinite(value):
+        try:
+            finite = math.isfinite(value)
+        except OverflowError as exc:
+            raise ValueError(f'Metric at {pointer} exceeds the supported numeric range') from exc
+        if not finite:
             raise ValueError(f'Nonfinite metric at {pointer}; repair or explicitly explain the missing measurement')
         yield pointer, value
+
+
+def resolve_run_metrics_file(directory, configured='metrics.json'):
+    """Return the run-relative metrics artifact path used by manuscript generation."""
+    root = Path(directory).resolve()
+    if (root / 'metrics.json').is_file():
+        return 'metrics.json'
+    if not isinstance(configured, str) or not configured:
+        configured = 'metrics.json'
+    configured_path = Path(configured)
+    if configured_path.is_absolute() or '..' in configured_path.parts:
+        raise ValueError('Configured metrics file must stay inside the run workspace')
+    return (Path('workspace') / configured_path).as_posix()
+
+
+def read_metrics_artifact(directory, metrics_file='metrics.json', *, run_id=None):
+    """Read and validate the same finite numeric metric contract used for papers."""
+    root = Path(directory).resolve()
+    prefix = f'Run {run_id} ' if run_id else 'Run '
+    if not isinstance(metrics_file, str) or not metrics_file:
+        raise ValueError(prefix + 'has no readable metrics file inside its output directory')
+    source = (root / metrics_file).resolve()
+    if not source.is_relative_to(root) or not source.is_file():
+        raise ValueError(prefix + 'has no readable metrics file inside its output directory')
+    try:
+        metrics = json.loads(source.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(prefix + 'has a metrics file that is not readable JSON') from exc
+    try:
+        leaves = list(_numbers(metrics))
+    except ValueError as exc:
+        raise ValueError(prefix + str(exc)) from exc
+    if not leaves:
+        raise ValueError(prefix + 'contains no finite numeric measurements')
+    return metrics, leaves, source.relative_to(root).as_posix()
+
+
+def manuscript_metrics_eligibility(directory, configured='metrics.json', *, run_id=None):
+    """Expose the manuscript evidence check without returning metric contents."""
+    metrics_file = resolve_run_metrics_file(directory, configured)
+    _, leaves, relative = read_metrics_artifact(directory, metrics_file, run_id=run_id)
+    return {'ready': True, 'metrics_file': relative, 'numeric_measurements': len(leaves)}
 
 
 def _method_context(config):
@@ -115,13 +161,8 @@ def collect_evidence(runs, sources=None, claims=None, *, required_run_ids=None, 
             raise ValueError(f'Run {run_id} is not completed')
         directory = Path(run['directory']).resolve()
         run_directories[run_id] = directory
-        source = (directory / run.get('metrics_file', 'metrics.json')).resolve()
-        if not source.is_relative_to(directory) or not source.is_file():
-            raise ValueError(f'Run {run_id} has no readable metrics file inside its output directory')
-        metrics = json.loads(source.read_text())
-        leaves = list(_numbers(metrics))
-        if not leaves:
-            raise ValueError(f'Run {run_id} contains no finite numeric measurements')
+        metrics, leaves, metrics_file = read_metrics_artifact(
+            directory, run.get('metrics_file', 'metrics.json'), run_id=run_id)
         context = _method_context(run.get('config', {}))
         # Explicit method artifacts augment task configuration with actual saved conditions.
         for name in ('config.json', 'design.json', 'environment.json', 'workspace/config.json', 'workspace/design.json', 'workspace/environment.json'):
@@ -148,7 +189,7 @@ def collect_evidence(runs, sources=None, claims=None, *, required_run_ids=None, 
                                            'run_id': run_id, 'path': str((manifest.parent / item['path']).relative_to(directory)),
                                            '_explicit_artifact': False, '_manifest_parent': str(manifest.parent)})
         bundle['runs'].append({'id': run_id, 'status': 'completed', 'directory': str(directory),
-                               'metrics_file': str(source.relative_to(directory)), 'metrics': metrics,
+                               'metrics_file': metrics_file, 'metrics': metrics,
                                'method_context': context})
         for pointer, value in leaves:
             bundle['metrics'].append({'id': 'm' + str(len(bundle['metrics'])), 'run_id': run_id,

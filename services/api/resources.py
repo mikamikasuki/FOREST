@@ -306,12 +306,18 @@ def generate_manuscript(ident:str,body:dict=Body(...)):
             error('EVIDENCE_REQUIRED','Select the completed scientific runs for the full manuscript',422)
         for run_id in body['run_ids']:
             run=get(s,TaskRun,run_id)
-            if run.project_id!=p.project_id or run.status!='completed':
-                error('INVALID_EVIDENCE','Manuscript evidence must be completed runs in this project',422)
+            if run.project_id!=p.project_id or run.status!='completed' or run.kind not in ('experiment','command','agent'):
+                error('INVALID_EVIDENCE','Manuscript evidence must be completed experiment, command, or agent runs in this project',422)
             from services.interventions.applicability import goal_applicability
             applicable=goal_applicability(s,run)
             if not applicable['ready']:
                 error('GOAL_APPLICABILITY_REQUIRED','Review manuscript evidence against the current goal: '+run.id,409)
+            from research.paper.evidence import manuscript_metrics_eligibility
+            try:
+                manuscript_metrics_eligibility(safe_path(project_dir(p.project_id),run.output_path,True),
+                    run.config.get('metrics_file','metrics.json'),run_id=run.id)
+            except (OSError,ValueError) as exc:
+                error('INVALID_EVIDENCE',str(exc),422,suggestion='Select a completed run with a readable metrics file containing finite numeric measurements.')
         return asdict(enqueue(s,p.project_id,'paper_generate',{**body,'manuscript_type':body.get('manuscript_type','full_paper')},body.get('request_id')))
 @router.post('/api/papers/{ident}/figures')
 def insert_paper_figure(ident:str,body:dict=Body(...)):
