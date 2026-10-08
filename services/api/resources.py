@@ -256,7 +256,20 @@ def compare_experiments(body:dict=Body(...)):
         return {'runs':rows,**comparison}
 @router.post('/api/analysis/run')
 def analysis(body:dict=Body(...)):
-    with Session.begin() as s: return asdict(enqueue(s,body['project_id'],'analysis',body,body.get('request_id')))
+    with Session.begin() as s:
+        run_ids=body.get('run_ids')
+        if run_ids is not None:
+            if (not isinstance(run_ids,list) or not run_ids
+                    or any(not isinstance(run_id,str) or not run_id.strip() for run_id in run_ids)
+                    or len(run_ids)!=len(set(run_ids))):
+                error('INVALID_RUN_SELECTION','Select a nonempty list of unique run IDs',422)
+            runs=[get(s,TaskRun,run_id) for run_id in run_ids]
+            if any(run.project_id!=body['project_id'] for run in runs):
+                error('CROSS_PROJECT','Selected runs must belong to this project',422)
+            if any(run.status!='completed' for run in runs):
+                error('INELIGIBLE_RUNS','Only completed runs can be analyzed',422,
+                      'Remove queued, running, failed, or cancelled runs from the selection.')
+        return asdict(enqueue(s,body['project_id'],'analysis',body,body.get('request_id')))
 @router.get('/api/data/{ident}/rows')
 def data_rows(ident:str,path:str|None=None,offset:int=0,limit:int=100,filter:str='',sort:str='',descending:bool=False):
     import pandas as pd
