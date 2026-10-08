@@ -25,8 +25,6 @@ except ImportError:  # pragma: no cover - exercised by native Windows runtimes.
     fcntl=None
     import msvcrt
 router=APIRouter()
-DELETED_FILE_REVISION_ORIGIN='deleted'
-RENAMED_FILE_REVISION_ORIGIN='renamed'
 
 def validate_project(ident):
     with Session() as s: get(s,Project,ident)
@@ -135,9 +133,9 @@ def read_file(ident:str,path:str):
             rev=s.scalar(select(FileRevision).where(
                 FileRevision.project_id==ident,FileRevision.path==relative
             ).with_for_update().execution_options(populate_existing=True))
-            origin=rev.origin if rev else 'executor_or_import'
-            if origin in (DELETED_FILE_REVISION_ORIGIN,RENAMED_FILE_REVISION_ORIGIN):
-                origin='executor_or_import'
+            origin=effective_file_origin(
+                rev.origin if rev else None, 'executor_or_import'
+            )
             return {'path':relative,'content':content,'revision':rev.revision if rev else 0,
                     'origin':origin}
 

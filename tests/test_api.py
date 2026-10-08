@@ -1321,6 +1321,43 @@ def case_launch_refreshes_execution_kind_after_project_lock(client, app):
                        for node in nodes if node['id'] == run.node_id)
 
 
+def case_regenerated_run_output_does_not_inherit_file_tombstone_origin(client, app):
+    from services.api.common import effective_file_origin
+    from services.api.db import FileRevision, Session, TaskRun
+
+    assert effective_file_origin('deleted', 'executor_measurement') == 'executor_measurement'
+    assert effective_file_origin('renamed', 'executor_measurement') == 'executor_measurement'
+    assert effective_file_origin('user_edited', 'executor_measurement') == 'user_edited'
+
+    project = create(client)
+    node = add_node(client, project, config={
+        'kind': 'command', 'command': [sys.executable, '-c', 'pass'],
+    })
+    run = ok(client.post(f"/api/nodes/{node['id']}/run", json={
+        'request_id': 'run-for-regenerated-output-provenance',
+    }))
+    relative = run['output_path'] + '/predictions.csv'
+    root = Path(os.environ['FOREST_DATA_DIR']) / 'projects' / project['id']
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('measurement\n7\n')
+    with Session.begin() as session:
+        session.get(TaskRun, run['id']).status = 'completed'
+
+    ok(client.delete(f"/api/projects/{project['id']}/file", params={'path': relative}))
+    with Session() as session:
+        tombstone = session.query(FileRevision).filter_by(
+            project_id=project['id'], path=relative
+        ).one()
+        assert tombstone.origin == 'deleted'
+
+    # Run output files are written directly, so this path leaves the retained
+    # tombstone row untouched when the same artifact path reappears.
+    path.write_text('measurement\n8\n')
+    rows = ok(client.get(f"/api/data/{run['id']}/rows"))
+    assert rows['origin'] == 'measured', rows
+
+
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]
 
 

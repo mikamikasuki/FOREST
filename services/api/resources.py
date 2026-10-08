@@ -271,7 +271,8 @@ def data_rows(ident:str,path:str|None=None,offset:int=0,limit:int=100,filter:str
         mask=frame.astype(str).apply(lambda col:col.str.contains(filter,case=False,regex=False)).any(axis=1); frame=frame[mask]
     if sort in frame.columns: frame=frame.sort_values(sort,ascending=not descending)
     with Session() as s: revision=s.scalar(select(FileRevision).where(FileRevision.project_id==pid,FileRevision.path==rel))
-    origin=revision.origin if revision else 'measured' if run else rec.data.get('source_origin','derived')
+    fallback='measured' if run else rec.data.get('source_origin','derived')
+    origin=effective_file_origin(revision.origin if revision else None,fallback)
     return {'columns':list(frame.columns),'rows':json.loads(frame.iloc[max(0,offset):max(0,offset)+min(limit,1000)].to_json(orient='records')),'total':len(frame),'origin':origin}
 @router.post('/api/figures/{ident}/render')
 def render_figure(ident:str,body:dict=Body(default={})):
