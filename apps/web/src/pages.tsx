@@ -2237,7 +2237,10 @@ function PaperGeneration({
   reload: () => Promise<void>;
 }) {
   const { t, action } = useUI();
-  const { data: runs } = useLoad<Run[]>(`/projects/${projectId}/runs`, []);
+  const { data: runs } = useLoad<Run[]>(
+    `/projects/${projectId}/runs?include_manuscript_evidence=true`,
+    [],
+  );
   const { data: figures } = useLoad<RecordItem[]>(
     `/figures?project_id=${projectId}`,
     [],
@@ -2249,7 +2252,8 @@ function PaperGeneration({
   const completed = runs.filter(
     (run) =>
       run.status === "completed" &&
-      ["experiment", "command", "agent"].includes(run.kind),
+      ["experiment", "command", "agent"].includes(run.kind) &&
+      run.manuscript_evidence?.ready === true,
   );
   const reviewed = figures.filter(
     (figure) =>
@@ -2313,7 +2317,12 @@ function PaperGeneration({
             </label>
           ))}
           {!completed.length && (
-            <p>{t("先完成实际实验。", "Complete actual experiments first.")}</p>
+            <p>
+              {t(
+                "先完成能生成可读数值指标的实验。",
+                "Complete an experiment that produces readable numeric metrics.",
+              )}
+            </p>
           )}
         </Field>
         <Field label={t("必须插入的已评审图片", "Reviewed figures to include")}>
