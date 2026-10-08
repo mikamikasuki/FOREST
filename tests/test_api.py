@@ -338,6 +338,61 @@ def case_rename_invalidates_stale_untracked_file_path(client, app):
     }
 
 
+def case_posix_backslash_file_revision_keys(client, app):
+    assert os.name == "posix"
+    project = create(client)
+    endpoint = f"/api/projects/{project['id']}/file"
+    project_root = Path(os.environ["FOREST_DATA_DIR"]) / "projects" / project["id"]
+
+    # On POSIX this is one filename containing a backslash, distinct from the
+    # nested path with the same spelling after an incorrect backslash rewrite.
+    backslash_path = r"records\entry.txt"
+    slash_path = "records/entry.txt"
+    untracked = project_root / backslash_path
+    untracked.parent.mkdir(parents=True, exist_ok=True)
+    untracked.write_text("original backslash-name bytes\n")
+    opened = ok(client.get(endpoint, params={"path": backslash_path}))
+    assert opened["revision"] == 0
+
+    ok(client.delete(endpoint, params={"path": backslash_path}))
+    nested_create = ok(client.put(endpoint, json={
+        "path": slash_path,
+        "content": "independent nested file\n",
+        "expected_revision": 0,
+    }))
+    assert nested_create["revision"] == 1
+
+    stale = client.put(endpoint, json={
+        "path": backslash_path,
+        "content": "stale backslash editor\n",
+        "expected_revision": opened["revision"],
+    })
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "REVISION_CONFLICT"
+    assert client.get(endpoint, params={"path": backslash_path}).status_code == 404
+    assert ok(client.get(endpoint, params={"path": slash_path}))["content"] == "independent nested file\n"
+
+    rename_source = r"rename\untracked.txt"
+    rename_target = r"renamed\untracked.txt"
+    source = project_root / rename_source
+    source.write_text("rename source bytes\n")
+    rename_opened = ok(client.get(endpoint, params={"path": rename_source}))
+    assert rename_opened["revision"] == 0
+    ok(client.post(
+        f"/api/projects/{project['id']}/file/rename",
+        json={"path": rename_source, "new_path": rename_target},
+    ))
+    stale_rename = client.put(endpoint, json={
+        "path": rename_source,
+        "content": "stale renamed editor\n",
+        "expected_revision": rename_opened["revision"],
+    })
+    assert stale_rename.status_code == 409
+    assert stale_rename.json()["detail"]["code"] == "REVISION_CONFLICT"
+    assert client.get(endpoint, params={"path": rename_source}).status_code == 404
+    assert ok(client.get(endpoint, params={"path": rename_target}))["content"] == "rename source bytes\n"
+
+
 def case_export_import_reference_roundtrip(client, app):
     p = create(client)
     n = add_node(client, p, config={"kind": "command", "command": ["python", "-c", "print(1)"]})
@@ -1146,6 +1201,8 @@ CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswi
 
 @pytest.mark.parametrize("case", CASES)
 def test_isolated_api_scenario(tmp_path, case):
+    if case == "posix_backslash_file_revision_keys" and os.name != "posix":
+        pytest.skip("Backslashes are filename characters only on POSIX")
     env = {**os.environ, "FOREST_DATA_DIR": str(tmp_path / "data"), "FOREST_DATABASE_URL": "sqlite:///" + str(tmp_path / "isolated.sqlite"),
            "FOREST_OWNER_TOKEN": "isolated-test-owner-token", "FOREST_MODEL": "", "PYTHONPATH": str(ROOT)}
     result = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--case", case], cwd=ROOT, env=env, capture_output=True, text=True, timeout=50)

@@ -274,15 +274,18 @@ def delete_file(ident:str,path:str):
     with file_publication_lock(ident,path), Session.begin() as s:
         from services.worker.scheduler import _lock_project
         _lock_project(s,ident);editable_workspace(s,ident,p)
-        relative=str(p.relative_to(root.resolve())).replace('\\','/')
+        # FileRevision paths use the same native relative spelling as read/write.
+        # On POSIX a backslash is a valid filename character, so translating it
+        # to '/' aliases a filename with a distinct nested path.
+        relative=str(p.relative_to(root.resolve()))
         if p.is_dir():
-            removed_paths={str(item.relative_to(root.resolve())).replace('\\','/') for item in p.rglob('*') if item.is_file()}
+            removed_paths={str(item.relative_to(root.resolve())) for item in p.rglob('*') if item.is_file()}
         else:
             removed_paths={relative}
         if p.is_dir(): shutil.rmtree(p)
         else: p.unlink()
-        prefix=relative.rstrip('/')+'/'
-        revisions={rev.path.replace('\\','/'):rev for rev in s.scalars(
+        prefix=relative.rstrip(os.sep)+os.sep
+        revisions={rev.path:rev for rev in s.scalars(
             select(FileRevision).where(FileRevision.project_id==ident).with_for_update()
         )}
         removed_paths.update(
@@ -311,28 +314,27 @@ def rename_file(ident:str,body:dict=Body(...)):
         if dst.exists(): error('FILE_EXISTS','Destination already exists',409)
         relative_native=str(src.relative_to(root.resolve()))
         new_relative_native=str(dst.relative_to(root.resolve()))
-        relative=relative_native.replace('\\','/')
-        new_relative=new_relative_native.replace('\\','/')
-        prefix=relative.rstrip('/')+'/'
+        relative=relative_native
+        new_relative=new_relative_native
+        prefix=relative.rstrip(os.sep)+os.sep
         moved_native_paths=(
             {str(item.relative_to(root.resolve()))
              for item in src.rglob('*') if item.is_file()}
             if src.is_dir() else {relative_native}
         )
-        moved_paths={path.replace('\\','/') for path in moved_native_paths}
-        native_paths={path.replace('\\','/'):path for path in moved_native_paths}
+        moved_paths=moved_native_paths
         revisions=list(s.scalars(
             select(FileRevision).where(FileRevision.project_id==ident).with_for_update()
         ))
-        revisions_by_path={rev.path.replace('\\','/'):rev for rev in revisions}
+        revisions_by_path={rev.path:rev for rev in revisions}
         moved_revision_paths={path for path in revisions_by_path
                               if path==relative or path.startswith(prefix)}
         for previous in moved_paths:
-            suffix=previous[len(relative):].lstrip('/')
+            suffix=previous[len(relative):].lstrip(os.sep)
             new_path=(str(Path(new_relative_native)/Path(suffix))
                       if suffix else new_relative_native)
             source_revision=revisions_by_path.get(previous)
-            destination_revision=revisions_by_path.get(new_path.replace('\\','/'))
+            destination_revision=revisions_by_path.get(new_path)
             source_generation=source_revision.revision if source_revision else 0
             destination_generation=destination_revision.revision if destination_revision else 0
             if source_revision is not None or destination_revision is not None:
@@ -350,7 +352,7 @@ def rename_file(ident:str,body:dict=Body(...)):
                     destination_revision.origin=live_origin
             if source_revision is None:
                 s.add(FileRevision(
-                    project_id=ident,path=native_paths[previous],revision=1,
+                    project_id=ident,path=previous,revision=1,
                     origin=RENAMED_FILE_REVISION_ORIGIN
                 ))
             else:
