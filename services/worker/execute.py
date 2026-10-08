@@ -330,14 +330,6 @@ def execute(run_id):
             temporary.replace(input_artifact)
         finally:
             temporary.unlink(missing_ok=True)
-        try:
-            current_source=safe_path(root,source_path)
-            current_digest=hashlib.sha256()
-            with current_source.open('rb') as current:
-                while chunk:=current.read(1024*1024): current_digest.update(chunk)
-            source_matches_current=current_digest.hexdigest()==digest.hexdigest()
-        except OSError:
-            source_matches_current=False
         input_artifact_path=input_artifact.relative_to(root.resolve()).as_posix()
         input_provenance={'artifact_path':input_artifact_path,'source_path':source_path,
                           'sha256':digest.hexdigest(),'size_bytes':size_bytes}
@@ -385,6 +377,18 @@ def execute(run_id):
             current_revision=s.scalar(select(FileRevision).where(
                 FileRevision.project_id==pid,FileRevision.path==source_path
             ).with_for_update().execution_options(populate_existing=True))
+            # Deleting a file removes its FileRevision row, so a subsequent
+            # upload can reuse the captured revision number. Recheck the bytes
+            # under the project lock immediately before publishing to catch
+            # delete/recreate races as well as ordinary replacements.
+            try:
+                current_source=safe_path(root,source_path)
+                current_digest=hashlib.sha256()
+                with current_source.open('rb') as current:
+                    while chunk:=current.read(1024*1024): current_digest.update(chunk)
+                source_matches_current=current_digest.hexdigest()==digest.hexdigest()
+            except OSError:
+                source_matches_current=False
             source_changed=(
                 (current_revision.revision if current_revision else 0)!=source_revision or
                 not source_matches_current)
