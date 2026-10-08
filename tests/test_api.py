@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import io
 import json
+import lzma
 import os
 import socket
+import struct
 import subprocess
 import sys
 import zipfile
@@ -284,6 +286,129 @@ def case_unsafe_and_invalid_archive_rejected(client, app):
         archive.writestr("forest-project.json", json.dumps(manifest))
     assert client.post("/api/projects/import", files={"file": ("invalid.zip", out.getvalue())}).status_code == 422
     assert len(ok(client.get("/api/projects"))) == 1
+
+
+def case_late_corrupt_archive_returns_invalid_archive_without_orphan_workspace(client, app):
+    source = create(client)
+    contents = {
+        "code/00-before-corruption.bin": "valid member written before failure",
+        "code/zz-corrupt.bin": "late CRC member " + ("0123456789abcdef" * 16),
+    }
+    for path, value in contents.items():
+        response = client.put(
+            f"/api/projects/{source['id']}/file",
+            json={"path": path, "content": value, "expected_revision": 0},
+        )
+        assert response.status_code == 200, response.text
+
+    exported = client.post(f"/api/projects/{source['id']}/export", json={})
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+    corrupt_name = "files/code/zz-corrupt.bin"
+    ordered_entries = [(name, value) for name, value in entries if name != corrupt_name]
+    ordered_entries.append((corrupt_name, dict(entries)[corrupt_name]))
+    malformed = io.BytesIO()
+    with zipfile.ZipFile(malformed, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name, value in ordered_entries:
+            archive.writestr(name, value)
+
+    damaged = bytearray(malformed.getvalue())
+    with zipfile.ZipFile(io.BytesIO(damaged)) as archive:
+        info = archive.getinfo(corrupt_name)
+        assert json.loads(archive.read("forest-project.json"))["format"] == "forest-project-v1"
+        local_header = struct.unpack_from("<IHHHHHIIIHH", damaged, info.header_offset)
+        assert local_header[0] == 0x04034B50
+        data_offset = info.header_offset + 30 + local_header[-2] + local_header[-1]
+        damaged[data_offset] ^= 1
+    with zipfile.ZipFile(io.BytesIO(damaged)) as archive:
+        with pytest.raises(zipfile.BadZipFile, match="Bad CRC-32"):
+            archive.read(corrupt_name)
+
+    projects_root = Path(os.environ["FOREST_DATA_DIR"]) / "projects"
+    existing_directories = {path.name for path in projects_root.iterdir()}
+    rejected = client.post(
+        "/api/projects/import",
+        files={"file": ("late-corrupt.zip", bytes(damaged), "application/zip")},
+    )
+    assert rejected.status_code == 400
+    assert rejected.json()["detail"]["code"] == "INVALID_ARCHIVE"
+    assert {path.name for path in projects_root.iterdir()} == existing_directories
+    assert len(ok(client.get("/api/projects"))) == 1
+    assert ok(client.get(f"/api/projects/{source['id']}"))["id"] == source["id"]
+
+    imported = ok(client.post(
+        "/api/projects/import",
+        files={"file": ("valid-control.zip", exported.content, "application/zip")},
+    ))
+    for path, value in contents.items():
+        readback = ok(client.get(
+            f"/api/projects/{imported['id']}/file", params={"path": path}
+        ))
+        assert readback["content"] == value
+
+
+def case_bzip2_and_lzma_corruption_return_invalid_archive_without_orphan_workspace(client, app):
+    source = create(client)
+    contents = {
+        "code/00-before-corruption.bin": "valid member written before failure",
+        "code/zz-corrupt.bin": "compressed archive probe " * 1000,
+    }
+    for path, value in contents.items():
+        response = client.put(
+            f"/api/projects/{source['id']}/file",
+            json={"path": path, "content": value, "expected_revision": 0},
+        )
+        assert response.status_code == 200, response.text
+
+    exported = client.post(f"/api/projects/{source['id']}/export", json={})
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        entries = [(item.filename, archive.read(item.filename)) for item in archive.infolist()]
+
+    corrupt_name = "files/code/zz-corrupt.bin"
+    for method, corrupt_offset in ((zipfile.ZIP_BZIP2, 0), (zipfile.ZIP_LZMA, "middle")):
+        ordered_entries = [(name, value) for name, value in entries if name != corrupt_name]
+        ordered_entries.append((corrupt_name, dict(entries)[corrupt_name]))
+        malformed = io.BytesIO()
+        with zipfile.ZipFile(malformed, "w", compression=method) as archive:
+            for name, value in ordered_entries:
+                archive.writestr(name, value)
+
+        damaged = bytearray(malformed.getvalue())
+        with zipfile.ZipFile(io.BytesIO(damaged)) as archive:
+            info = archive.getinfo(corrupt_name)
+            header = struct.unpack_from("<IHHHHHIIIHH", damaged, info.header_offset)
+            assert header[0] == 0x04034B50
+            data_offset = info.header_offset + 30 + header[-2] + header[-1]
+            offset = corrupt_offset if corrupt_offset != "middle" else max(1, info.compress_size // 2)
+            damaged[data_offset + offset] ^= 0x80
+
+        with zipfile.ZipFile(io.BytesIO(damaged)) as archive:
+            with pytest.raises(OSError if method == zipfile.ZIP_BZIP2 else lzma.LZMAError):
+                archive.read(corrupt_name)
+
+        projects_root = Path(os.environ["FOREST_DATA_DIR"]) / "projects"
+        existing_directories = {path.name for path in projects_root.iterdir()}
+        rejected = client.post(
+            "/api/projects/import",
+            files={"file": ("late-corrupt-compressed.zip", bytes(damaged), "application/zip")},
+        )
+        assert rejected.status_code == 400
+        assert rejected.json()["detail"]["code"] == "INVALID_ARCHIVE"
+        assert {path.name for path in projects_root.iterdir()} == existing_directories
+        assert len(ok(client.get("/api/projects"))) == 1
+        assert ok(client.get(f"/api/projects/{source['id']}"))["id"] == source["id"]
+
+    imported = ok(client.post(
+        "/api/projects/import",
+        files={"file": ("valid-control.zip", exported.content, "application/zip")},
+    ))
+    for path, value in contents.items():
+        readback = ok(client.get(
+            f"/api/projects/{imported['id']}/file", params={"path": path}
+        ))
+        assert readback["content"] == value
 
 
 def case_visitors_shares_and_origin_denial(client, app):
