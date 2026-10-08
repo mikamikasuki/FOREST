@@ -38,7 +38,9 @@ test("a stale editor cannot overwrite a file recreated after deletion", async ({
   const editor = page.locator(".monaco-editor").first();
   await expect(editor).toContainText("original bytes");
   await editor.click();
-  await page.keyboard.press("Control+A");
+  await page.keyboard.press(
+    process.platform === "darwin" ? "Meta+A" : "Control+A",
+  );
   await page.keyboard.insertText("stale editor bytes\n");
 
   const deleted = await request.delete(`/api/projects/${projectId}/file`, {
@@ -46,7 +48,7 @@ test("a stale editor cannot overwrite a file recreated after deletion", async ({
   });
   expect(deleted.ok()).toBeTruthy();
   const recreated = await request.put(`/api/projects/${projectId}/file`, {
-    data: { path, content: "new bytes\n", expected_revision: 0 },
+    data: { path, content: "new bytes\n" },
   });
   expect(recreated.ok()).toBeTruthy();
   expect((await recreated.json()).revision).toBe(3);
@@ -245,7 +247,9 @@ test("a stale editor cannot recreate an untracked file after another tab renames
   await page.getByTitle(oldPath).click();
   await expect(page.locator(".file-toolbar")).toContainText(oldPath);
   await page.locator(".monaco-editor").click();
-  await page.keyboard.press("Control+A");
+  await page.keyboard.press(
+    process.platform === "darwin" ? "Meta+A" : "Control+A",
+  );
   await page.keyboard.insertText("stale edit from tab one\n");
 
   const secondTab = await page.context().newPage();
@@ -264,6 +268,29 @@ test("a stale editor cannot recreate an untracked file after another tab renames
   );
   await page.getByRole("button", { name: "Save" }).click();
   expect((await saveResponse).status()).toBe(409);
+  const recoveryPath = "outputs/recovered-result.txt";
+  const missingFileConflict = page.getByRole("dialog", {
+    name: "File deleted or renamed",
+  });
+  await expect(missingFileConflict).toBeVisible();
+  await expect(
+    missingFileConflict.getByRole("button", { name: "Save as" }),
+  ).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept(recoveryPath));
+  await missingFileConflict.getByRole("button", { name: "Save as" }).click();
+  await expect(page.locator(".file-toolbar")).toContainText(recoveryPath);
+  await page.locator(".monaco-editor").click();
+  await page.keyboard.press(
+    process.platform === "darwin" ? "Meta+A" : "Control+A",
+  );
+  await page.keyboard.insertText("updated recovered draft\n");
+  const recoveredSave = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === `/api/projects/${projectId}/file` &&
+      response.request().method() === "PUT",
+  );
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  expect((await recoveredSave).status()).toBe(200);
 
   const stalePath = await request.get(
     `/api/projects/${projectId}/file?path=${encodeURIComponent(oldPath)}`,
@@ -275,6 +302,15 @@ test("a stale editor cannot recreate an untracked file after another tab renames
   expect(await renamedPath.json()).toMatchObject({
     content: originalContent,
     revision: 0,
+  });
+  const recovered = await request.get(
+    `/api/projects/${projectId}/file?path=${encodeURIComponent(recoveryPath)}`,
+  );
+  expect(await recovered.json()).toMatchObject({
+    path: recoveryPath,
+    content: "updated recovered draft\n",
+    revision: 2,
+    origin: "user_edited",
   });
   await secondTab.close();
 });

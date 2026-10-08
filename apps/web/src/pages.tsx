@@ -2478,7 +2478,11 @@ export function FilesPage() {
   const [diff, setDiff] = useState(false);
   const [tablePreview, setTablePreview] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [conflict, setConflict] = useState<Json | null>(null);
+  const [conflict, setConflict] = useState<
+    | { kind: "changed"; content: string; revision: number }
+    | { kind: "missing"; path: string }
+    | null
+  >(null);
   const extension = path.split(".").pop()?.toLowerCase();
   const image = ["png", "jpg", "jpeg", "svg", "webp", "gif"].includes(
     extension || "",
@@ -2522,9 +2526,19 @@ export function FilesPage() {
       await reload();
     } catch (e) {
       if ((e as any).status === 409) {
-        setConflict(
-          await api(`/projects/${id}/file?path=${encodeURIComponent(path)}`),
-        );
+        try {
+          const latest = await api(
+            `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+          );
+          setConflict({
+            kind: "changed",
+            content: latest.content,
+            revision: latest.revision,
+          });
+        } catch (readError) {
+          if ((readError as any).status !== 404) throw readError;
+          setConflict({ kind: "missing", path });
+        }
         return;
       }
       throw e;
@@ -2820,30 +2834,45 @@ export function FilesPage() {
       {conflict && (
         <Modal
           wide
-          title={t("文件已被另一处修改", "File changed elsewhere")}
+          title={
+            conflict.kind === "missing"
+              ? t("文件已被删除或改名", "File deleted or renamed")
+              : t("文件已被另一处修改", "File changed elsewhere")
+          }
           onClose={() => setConflict(null)}
         >
           <p>
-            {t(
-              "比较服务端内容，再选择覆盖或另存；你的当前编辑保留在编辑器中。",
-              "Compare the server content, then overwrite or save separately. Your current edit remains in the editor.",
-            )}
+            {conflict.kind === "missing"
+              ? t(
+                  "此路径已不存在。你的草稿仍保留在编辑器中，可以另存到新路径。",
+                  "This path no longer exists. Your draft remains in the editor and can be saved to a new path.",
+                )
+              : t(
+                  "比较服务端内容，再选择覆盖或另存；你的当前编辑保留在编辑器中。",
+                  "Compare the server content, then overwrite or save separately. Your current edit remains in the editor.",
+                )}
           </p>
-          <pre className="json-view">{conflict.content}</pre>
+          {conflict.kind === "changed" && (
+            <pre className="json-view">{conflict.content}</pre>
+          )}
           <div className="modal-actions">
-            <Button
-              onClick={() => {
-                setOriginal(conflict.content);
-                setRevision(conflict.revision);
-                setConflict(null);
-                setDiff(true);
-              }}
-            >
-              {t("在差异视图中合并", "Merge in comparison view")}
-            </Button>
-            <Button onClick={() => action(() => save(true))}>
-              {t("用当前内容覆盖", "Overwrite with current content")}
-            </Button>
+            {conflict.kind === "changed" && (
+              <>
+                <Button
+                  onClick={() => {
+                    setOriginal(conflict.content);
+                    setRevision(conflict.revision);
+                    setConflict(null);
+                    setDiff(true);
+                  }}
+                >
+                  {t("在差异视图中合并", "Merge in comparison view")}
+                </Button>
+                <Button onClick={() => action(() => save(true))}>
+                  {t("用当前内容覆盖", "Overwrite with current content")}
+                </Button>
+              </>
+            )}
             <Button
               className="primary"
               onClick={() => {
@@ -2853,13 +2882,15 @@ export function FilesPage() {
                 );
                 if (next)
                   void action(async () => {
-                    await api(
+                    const saved = await api(
                       `/projects/${id}/file?path=${encodeURIComponent(next)}`,
                       "PUT",
                       { path: next, content },
                     );
                     setConflict(null);
                     setPath(next);
+                    setRevision(saved.revision);
+                    setOriginal(content);
                     setDirty(false);
                     await reload();
                   });
