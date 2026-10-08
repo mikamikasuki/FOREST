@@ -746,6 +746,7 @@ multipart/form-data field file; directory is a QUERY parameter, default uploads.
 | --- | --- | --- | --- | --- |
 | `ident` | path | string | yes |  |
 | `directory` | query | string | no | Default `uploads`.  |
+| `overwrite` | query | boolean | no | Default `True`.  |
 
 Body: `multipart/form-data`: `Body_upload_api_projects__ident__upload_post`; required.
 

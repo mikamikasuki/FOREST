@@ -21740,6 +21740,16 @@
               "title": "Directory",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "overwrite",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Overwrite",
+              "type": "boolean"
+            }
           }
         ],
         "requestBody": {
