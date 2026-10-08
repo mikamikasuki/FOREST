@@ -1,5 +1,6 @@
 import io
 import json
+import lzma
 import shutil
 import sqlite3
 import zlib
@@ -447,7 +448,8 @@ async def import_project(file:UploadFile=File(...)):
             if not info.filename.startswith('files/') or info.is_dir(): continue
             try:
                 contents=z.read(info)
-            except (zipfile.BadZipFile, EOFError, NotImplementedError, RuntimeError, ValueError, zlib.error):
+            except (zipfile.BadZipFile, EOFError, lzma.LZMAError, NotImplementedError, OSError,
+                    RuntimeError, ValueError, zlib.error):
                 error('INVALID_ARCHIVE','Archive contains a corrupt or unreadable file member')
             dest=safe_path(root,remap(info.filename[6:])); dest.parent.mkdir(parents=True,exist_ok=True); dest.write_bytes(contents)
         for key,rows in manifest.get('resources',{}).items():
