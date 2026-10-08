@@ -1502,7 +1502,7 @@ function NodeInspector({
                       await api(
                         `/nodes/${node.id}/context/rebuild`,
                         "POST",
-                        {},
+                        parseJson(overrides),
                       ),
                     ),
                   )
