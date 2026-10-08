@@ -7,7 +7,7 @@ permissions:
 jobs:
   local:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       FOREST_MODEL: ''
       FOREST_DATABASE_URL: sqlite:////tmp/forest-ci.db

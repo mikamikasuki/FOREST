@@ -383,20 +383,22 @@ class WorkerLoop:
                     emit(s,r.project_id,'run_resumed',{'run_id':r.id,'reason':'Awaited work is ready'})
 
     def reap_cancelled(self):
-        """Reap locally owned executor children after API-side cancellation.
+        """Reap exited local executor children after cancellation or row deletion.
 
-        Cancellation persists a terminal run state in the API process, so the
-        normal monitor query no longer selects that run. Keep polling the
-        worker-owned Popen until the stopped child exits, then release both the
-        process handle and its progress offset.
+        Cancellation and project deletion remove runs from the normal monitor
+        query. Keep polling only worker-owned Popen handles whose row is missing
+        or cancelled, and release both bookkeeping entries after the child exits.
         """
         if not self.processes:
             return
         identifiers = list(self.processes)
         with Session() as s:
-            cancelled = set(s.scalars(select(TaskRun.id).where(
-                TaskRun.id.in_(identifiers), TaskRun.status == 'cancelled')))
-        for ident in cancelled:
+            rows = s.execute(select(TaskRun.id, TaskRun.status).where(
+                TaskRun.id.in_(identifiers))).all()
+        statuses = dict(rows)
+        for ident in identifiers:
+            if ident in statuses and statuses[ident] != 'cancelled':
+                continue
             proc = self.processes.get(ident)
             if proc is not None and proc.poll() is not None:
                 self.processes.pop(ident, None)
