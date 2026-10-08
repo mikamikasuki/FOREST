@@ -343,14 +343,60 @@ def execute(run_id):
                 input_stream=retained)
         result['input_provenance']=input_provenance
         (output/'metrics.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False))
-        with Session.begin() as s:
-            provenance={}
-            run_ids=list(config.get('run_ids',[]))
-            if paired_input:
-                run_ids=list(dict.fromkeys([*run_ids,paired_input['source_run_id']]))
-                provenance={'source_run_id':paired_input['source_run_id'],
-                    'source_path':paired_input['source_path'],'checked_path':paired_input['checked_path']}
-            item=Analysis(project_id=pid,title=config.get('title','Paired statistical analysis'),data={**result,'run_ids':run_ids,'analysis_run_id':run_id,'path':input_artifact_path,'source_path':source_path,'metrics_path':str((output/'metrics.json').relative_to(root)),**({'verification_input':provenance} if provenance else {})},status='ready_for_review');s.add(item)
+        provenance={}
+        run_ids=list(config.get('run_ids',[]))
+        if paired_input:
+            run_ids=list(dict.fromkeys([*run_ids,paired_input['source_run_id']]))
+            provenance={'source_run_id':paired_input['source_run_id'],
+                'source_path':paired_input['source_path'],'checked_path':paired_input['checked_path']}
+        dependency_bindings=[{
+            'source_kind':'file',
+            'source_id':source_path,
+            'target_path':'/input_provenance/source_path',
+            'artifact_path':input_artifact_path,
+            'target_artifact_path':input_artifact_path,
+        }]
+        analysis_data={
+            **result,
+            'run_ids':run_ids,
+            'analysis_run_id':run_id,
+            'path':input_artifact_path,
+            'source_path':source_path,
+            'metrics_path':str((output/'metrics.json').relative_to(root)),
+            'dependency_bindings':dependency_bindings,
+            **({'verification_input':provenance} if provenance else {}),
+        }
+        from services.worker.scheduler import _lock_project
+        from services.api.common import touch_dependents
+        from services.api.files import file_publication_lock
+        # File publishers acquire the publication lock before the project
+        # writer lock. Match that order so failed-publication compensation
+        # cannot expose transient bytes between DB rollback and file restore.
+        with file_publication_lock(pid,source_path):
+            with Session.begin() as s:
+                _lock_project(s,pid)
+                try:
+                    current_source=safe_path(root,source_path)
+                    current_digest=hashlib.sha256()
+                    with current_source.open('rb') as current:
+                        while chunk:=current.read(1024*1024): current_digest.update(chunk)
+                    source_matches_current=current_digest.hexdigest()==digest.hexdigest()
+                except OSError:
+                    source_matches_current=False
+                # The content digest is authoritative. Check under both the
+                # file-publication lock and project lock immediately before
+                # insertion, then keep both until dependent invalidation commits.
+                source_changed=not source_matches_current
+                item=Analysis(project_id=pid,
+                    title=config.get('title','Paired statistical analysis'),
+                    data=analysis_data,status='ready_for_review')
+                s.add(item)
+                s.flush()
+                if source_changed:
+                    # A replacement may have invalidated existing dependents
+                    # before this result was published. Re-run canonical
+                    # invalidation while publisher lock order is still held.
+                    touch_dependents(s,pid,source_path)
         return result
     if kind=='review' and config.get('review_scope')=='statistics':
         from research.validation.review import statistical_review_prompt,validate_statistical_review
