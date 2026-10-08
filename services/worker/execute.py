@@ -1,6 +1,7 @@
 """One durable task process. Parent worker owns scheduling and process control."""
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -308,8 +309,40 @@ def execute(run_id):
         return result
     if kind=='analysis' and config.get('analysis_type')=='paired':
         from research.validation.statistics import paired_csv
-        data=paired_input['path'] if paired_input else safe_path(root,config['path'],True)
-        result=paired_csv(data,unit_column=config['unit_column'],baseline_column=config['baseline_column'],candidate_column=config['candidate_column'],direction=config.get('direction','lower'),confidence=float(config.get('confidence',.95)),bootstrap_samples=int(config.get('bootstrap_samples',5000)),seed=int(config.get('seed',0)),meaningful_effect=float(config.get('meaningful_effect',0)),output=output/'metrics.json')
+        source=paired_input['path'] if paired_input else safe_path(root,config['path'],True)
+        source_path=(paired_input['source_path'] if paired_input else
+                     source.relative_to(root.resolve()).as_posix())
+        safe_path(root,source_path,True)
+        input_artifact=safe_path(output,'paired-input.csv')
+        temporary=safe_path(output,'.paired-input-'+uid()+'.tmp')
+        digest=hashlib.sha256()
+        size_bytes=0
+        try:
+            with source.open('rb') as incoming, temporary.open('xb') as retained:
+                while chunk:=incoming.read(1024*1024):
+                    retained.write(chunk)
+                    digest.update(chunk)
+                    size_bytes+=len(chunk)
+            temporary.replace(input_artifact)
+        finally:
+            temporary.unlink(missing_ok=True)
+        input_artifact_path=input_artifact.relative_to(root.resolve()).as_posix()
+        input_provenance={'artifact_path':input_artifact_path,'source_path':source_path,
+                          'sha256':digest.hexdigest(),'size_bytes':size_bytes}
+        with input_artifact.open(newline='') as retained:
+            result=paired_csv(
+                input_artifact,
+                unit_column=config['unit_column'],
+                baseline_column=config['baseline_column'],
+                candidate_column=config['candidate_column'],
+                direction=config.get('direction','lower'),
+                confidence=float(config.get('confidence',.95)),
+                bootstrap_samples=int(config.get('bootstrap_samples',5000)),
+                seed=int(config.get('seed',0)),
+                meaningful_effect=float(config.get('meaningful_effect',0)),
+                input_stream=retained)
+        result['input_provenance']=input_provenance
+        (output/'metrics.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False))
         with Session.begin() as s:
             provenance={}
             run_ids=list(config.get('run_ids',[]))
@@ -317,7 +350,7 @@ def execute(run_id):
                 run_ids=list(dict.fromkeys([*run_ids,paired_input['source_run_id']]))
                 provenance={'source_run_id':paired_input['source_run_id'],
                     'source_path':paired_input['source_path'],'checked_path':paired_input['checked_path']}
-            item=Analysis(project_id=pid,title=config.get('title','Paired statistical analysis'),data={**result,'run_ids':run_ids,'path':str(data.relative_to(root)),**({'verification_input':provenance} if provenance else {})},status='ready_for_review');s.add(item)
+            item=Analysis(project_id=pid,title=config.get('title','Paired statistical analysis'),data={**result,'run_ids':run_ids,'analysis_run_id':run_id,'path':input_artifact_path,'source_path':source_path,'metrics_path':str((output/'metrics.json').relative_to(root)),**({'verification_input':provenance} if provenance else {})},status='ready_for_review');s.add(item)
         return result
     if kind=='review' and config.get('review_scope')=='statistics':
         from research.validation.review import statistical_review_prompt,validate_statistical_review
