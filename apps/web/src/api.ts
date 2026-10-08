@@ -55,6 +55,12 @@ export type Run = {
   error: string | null;
   metrics: Json;
   output_path: string;
+  manuscript_evidence?: {
+    ready: boolean;
+    reason?: string;
+    metrics_file?: string;
+    numeric_measurements?: number;
+  };
 };
 
 export function executionLinks(graph: Graph): (Graph["edges"][number] & { implicit?: boolean })[] {

@@ -60,11 +60,10 @@ def latest_experiment(s,pid,ids=None):
 
 def statistical_run_evidence(root, selected):
     """Read every explicitly selected scientific artifact with its saved design."""
-    from research.paper.evidence import collect_evidence
+    from research.paper.evidence import collect_evidence, resolve_run_metrics_file
     return collect_evidence([{'id':run.id,'status':run.status,
         'directory':str(safe_path(root,run.output_path,True)),
-        'metrics_file':('metrics.json' if (safe_path(root,run.output_path,True)/'metrics.json').is_file()
-                        else 'workspace/'+run.config.get('metrics_file','metrics.json')),
+        'metrics_file':resolve_run_metrics_file(safe_path(root,run.output_path,True),run.config.get('metrics_file','metrics.json')),
         'config':{key:value for key,value in run.config.items() if key not in ('provider_snapshot','env')}}
         for run in selected])
 
@@ -532,7 +531,8 @@ def execute(run_id):
                 sources=[asdict(x) for x in s.scalars(select(SourcePaper).where(SourcePaper.project_id==pid))]
                 claims=[{'id':x.id,**x.data} for x in s.scalars(select(ResearchClaim).where(ResearchClaim.project_id==pid))]
                 figures=manuscript_figures(s,pid,root,selected,config.get('figure_ids'))
-            evidence=collect_evidence(runs=[{'id':r.id,'status':r.status,'directory':str(safe_path(root,r.output_path,True)), 'metrics_file':('metrics.json' if (safe_path(root,r.output_path,True)/'metrics.json').exists() else 'workspace/'+r.config.get('metrics_file','metrics.json')), 'config':{k:v for k,v in r.config.items() if k not in ('provider_snapshot','env')}} for r in selected],sources=sources,claims=claims,required_run_ids=config.get('run_ids'),figures=figures)
+            from research.paper.evidence import resolve_run_metrics_file
+            evidence=collect_evidence(runs=[{'id':r.id,'status':r.status,'directory':str(safe_path(root,r.output_path,True)), 'metrics_file':resolve_run_metrics_file(safe_path(root,r.output_path,True),r.config.get('metrics_file','metrics.json')), 'config':{k:v for k,v in r.config.items() if k not in ('provider_snapshot','env')}} for r in selected],sources=sources,claims=claims,required_run_ids=config.get('run_ids'),figures=figures)
             if has_saved_response:
                 from research.paper.model_draft import draft_from_saved_response
                 with Session() as s: origin,response_path,original_evidence=saved_paper_response(s,pid,config,run_id)
