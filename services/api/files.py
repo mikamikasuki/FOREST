@@ -23,6 +23,8 @@ except ImportError:  # pragma: no cover - exercised by native Windows runtimes.
     fcntl=None
     import msvcrt
 router=APIRouter()
+DELETED_FILE_REVISION_ORIGIN='deleted'
+RENAMED_FILE_REVISION_ORIGIN='renamed'
 
 def validate_project(ident):
     with Session() as s: get(s,Project,ident)
@@ -83,11 +85,7 @@ def _publish_file(ident,relative,path,temporary,backup,origin,expected_revision=
                         FileRevision.project_id==ident,FileRevision.path==relative
                     ).with_for_update().execution_options(populate_existing=True))
                     actual=revision.revision if revision else 0
-                    creating_after_delete=(
-                        revision is not None and actual>0
-                        and expected_revision==0 and not path.exists()
-                    )
-                    if expected_revision is not None and expected_revision!=actual and not creating_after_delete:
+                    if expected_revision is not None and expected_revision!=actual:
                         error('REVISION_CONFLICT','File changed in another editor',409,'Reload and merge changes.')
                     if revision is None:
                         revision=FileRevision(project_id=ident,path=relative,revision=0)
@@ -135,8 +133,11 @@ def read_file(ident:str,path:str):
             rev=s.scalar(select(FileRevision).where(
                 FileRevision.project_id==ident,FileRevision.path==relative
             ).with_for_update().execution_options(populate_existing=True))
+            origin=rev.origin if rev else 'executor_or_import'
+            if origin in (DELETED_FILE_REVISION_ORIGIN,RENAMED_FILE_REVISION_ORIGIN):
+                origin='executor_or_import'
             return {'path':relative,'content':content,'revision':rev.revision if rev else 0,
-                    'origin':rev.origin if rev else 'executor_or_import'}
+                    'origin':origin}
 
 @router.get('/api/projects/{ident}/file/preview')
 def preview_file(ident:str,path:str,offset:int=Query(default=0,ge=0,le=10_000_000),limit:int=Query(default=100,ge=1,le=500)):
@@ -291,9 +292,13 @@ def delete_file(ident:str,path:str):
         for removed_path in removed_paths:
             revision=revisions.get(removed_path)
             if revision is None:
-                s.add(FileRevision(project_id=ident,path=removed_path,revision=1))
+                s.add(FileRevision(
+                    project_id=ident,path=removed_path,revision=1,
+                    origin=DELETED_FILE_REVISION_ORIGIN
+                ))
             else:
                 revision.revision+=1
+                revision.origin=DELETED_FILE_REVISION_ORIGIN
         touch_dependents(s,ident,relative)
         managed_change(s,ident,relative,'owner_editor')
     return {'deleted':path}
@@ -304,12 +309,64 @@ def rename_file(ident:str,body:dict=Body(...)):
         from services.worker.scheduler import _lock_project
         _lock_project(s,ident);editable_workspace(s,ident,src);editable_workspace(s,ident,dst)
         if dst.exists(): error('FILE_EXISTS','Destination already exists',409)
+        relative_native=str(src.relative_to(root.resolve()))
+        new_relative_native=str(dst.relative_to(root.resolve()))
+        relative=relative_native.replace('\\','/')
+        new_relative=new_relative_native.replace('\\','/')
+        prefix=relative.rstrip('/')+'/'
+        moved_native_paths=(
+            {str(item.relative_to(root.resolve()))
+             for item in src.rglob('*') if item.is_file()}
+            if src.is_dir() else {relative_native}
+        )
+        moved_paths={path.replace('\\','/') for path in moved_native_paths}
+        native_paths={path.replace('\\','/'):path for path in moved_native_paths}
+        revisions=list(s.scalars(
+            select(FileRevision).where(FileRevision.project_id==ident).with_for_update()
+        ))
+        revisions_by_path={rev.path.replace('\\','/'):rev for rev in revisions}
+        moved_revision_paths={path for path in revisions_by_path
+                              if path==relative or path.startswith(prefix)}
+        for previous in moved_paths:
+            suffix=previous[len(relative):].lstrip('/')
+            new_path=(str(Path(new_relative_native)/Path(suffix))
+                      if suffix else new_relative_native)
+            source_revision=revisions_by_path.get(previous)
+            destination_revision=revisions_by_path.get(new_path.replace('\\','/'))
+            source_generation=source_revision.revision if source_revision else 0
+            destination_generation=destination_revision.revision if destination_revision else 0
+            if source_revision is not None or destination_revision is not None:
+                live_origin=(source_revision.origin if source_revision else 'executor_or_import')
+                if live_origin in (DELETED_FILE_REVISION_ORIGIN,RENAMED_FILE_REVISION_ORIGIN):
+                    live_origin='executor_or_import'
+                next_generation=max(source_generation,destination_generation)+1
+                if destination_revision is None:
+                    s.add(FileRevision(
+                        project_id=ident,path=new_path,revision=next_generation,
+                        origin=live_origin
+                    ))
+                else:
+                    destination_revision.revision=next_generation
+                    destination_revision.origin=live_origin
+            if source_revision is None:
+                s.add(FileRevision(
+                    project_id=ident,path=native_paths[previous],revision=1,
+                    origin=RENAMED_FILE_REVISION_ORIGIN
+                ))
+            else:
+                source_revision.revision=source_generation+1
+                source_revision.origin=RENAMED_FILE_REVISION_ORIGIN
+            touch_dependents(s,ident,previous)
+        for previous in moved_revision_paths-moved_paths:
+            revision=revisions_by_path[previous]
+            revision.revision+=1
+            revision.origin=RENAMED_FILE_REVISION_ORIGIN
+            touch_dependents(s,ident,previous)
+        # Keep the old path's generation after the move. Untracked executor/import
+        # files have no FileRevision row yet, so they need a revision-1 tombstone
+        # to invalidate an editor that opened them at revision 0.
+        s.flush()
         dst.parent.mkdir(parents=True,exist_ok=True);src.rename(dst)
-        relative=str(src.relative_to(root.resolve()));new_relative=str(dst.relative_to(root.resolve()))
-        for rev in s.scalars(select(FileRevision).where(FileRevision.project_id==ident)):
-            if rev.path==relative or rev.path.startswith(relative+'/'):
-                previous=rev.path;rev.path=new_relative+previous[len(relative):];rev.revision+=1
-                touch_dependents(s,ident,previous)
         touch_dependents(s,ident,relative)
         managed_change(s,ident,relative,'owner_editor');managed_change(s,ident,new_relative,'owner_editor')
     return {'path':body['new_path']}

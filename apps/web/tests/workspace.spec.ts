@@ -1,4 +1,6 @@
 import { test, expect } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 let projectId = "";
 test.beforeEach(async ({ request }) => {
   const response = await request.post("/api/projects", {
@@ -210,6 +212,71 @@ test("graph updates remain stable and persist a node created through the inspect
   ).json();
   expect(graph.nodes[0].title).toBe("Edited through inspector");
   expect(errors).toEqual([]);
+});
+
+test("a stale editor cannot recreate an untracked file after another tab renames it", async ({
+  page,
+  request,
+}) => {
+  const dataDir = process.env.FOREST_DATA_DIR;
+  if (!dataDir)
+    throw new Error("FOREST_DATA_DIR is required for this browser test");
+  const oldPath = "outputs/untracked-result.txt";
+  const newPath = "outputs/renamed-result.txt";
+  const originalContent = "executor result\n";
+  const diskPath = join(dataDir, "projects", projectId, oldPath);
+  await mkdir(join(dataDir, "projects", projectId, "outputs"), {
+    recursive: true,
+  });
+  await writeFile(diskPath, originalContent);
+
+  const opened = await request.get(
+    `/api/projects/${projectId}/file?path=${encodeURIComponent(oldPath)}`,
+  );
+  expect(await opened.json()).toMatchObject({
+    content: originalContent,
+    revision: 0,
+    origin: "executor_or_import",
+  });
+
+  await page.goto(`/projects/${projectId}/files`, {
+    waitUntil: "domcontentloaded",
+  });
+  await page.getByTitle(oldPath).click();
+  await expect(page.locator(".file-toolbar")).toContainText(oldPath);
+  await page.locator(".monaco-editor").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText("stale edit from tab one\n");
+
+  const secondTab = await page.context().newPage();
+  await secondTab.goto(`/projects/${projectId}/files`, {
+    waitUntil: "domcontentloaded",
+  });
+  await secondTab.getByTitle(oldPath).click();
+  secondTab.once("dialog", (dialog) => dialog.accept(newPath));
+  await secondTab.getByRole("button", { name: "Rename" }).click();
+  await expect(secondTab.locator(".file-toolbar")).toContainText(newPath);
+
+  const saveResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PUT" &&
+      response.url().includes(`/api/projects/${projectId}/file`),
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+  expect((await saveResponse).status()).toBe(409);
+
+  const stalePath = await request.get(
+    `/api/projects/${projectId}/file?path=${encodeURIComponent(oldPath)}`,
+  );
+  const renamedPath = await request.get(
+    `/api/projects/${projectId}/file?path=${encodeURIComponent(newPath)}`,
+  );
+  expect(stalePath.status()).toBe(404);
+  expect(await renamedPath.json()).toMatchObject({
+    content: originalContent,
+    revision: 0,
+  });
+  await secondTab.close();
 });
 
 test("Overview reload and continue preserve the saved autonomous-planning setting", async ({
