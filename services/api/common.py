@@ -24,8 +24,10 @@ def safe_path(root:Path,relative:str,must_exist=False):
     if must_exist and not candidate.exists(): error('MISSING_ARTIFACT',f'Missing project file: {relative}',404)
     return candidate
 
-def graph_from_db(s,p):
-    graph={'project_id':p.id,'revision':p.revision,'nodes':[asdict(n) for n in s.scalars(select(Node).where(Node.project_id==p.id))], 'edges':[asdict(e) for e in s.scalars(select(Edge).where(Edge.project_id==p.id))], 'branches':[asdict(b) for b in s.scalars(select(Branch).where(Branch.project_id==p.id))]}
+def graph_from_db(s,p,*,refresh=False):
+    def rows(model):
+        return s.scalars(select(model).where(model.project_id==p.id).execution_options(populate_existing=refresh))
+    graph={'project_id':p.id,'revision':p.revision,'nodes':[asdict(n) for n in rows(Node)], 'edges':[asdict(e) for e in rows(Edge)], 'branches':[asdict(b) for b in rows(Branch)]}
     graph.update(p.graph_meta or {})
     graph['goal']=p.goal
     graph['budget']=p.budget
