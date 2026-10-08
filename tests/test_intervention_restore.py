@@ -9,15 +9,14 @@ import sys
 from tests.test_intervention_worker import intervention_harness
 
 ROOT=Path(__file__).resolve().parents[1]
-LEGACY=ROOT.parent/'codex-live-reporting'
 
 
 def test_legacy_schema_upgrade_serializes_concurrent_migrators(tmp_path,intervention_harness):
     h=intervention_harness
     env={**os.environ,'FOREST_DATABASE_URL':h.env['FOREST_DATABASE_URL'],'FOREST_DATA_DIR':str(tmp_path/'source'),
-         'FOREST_MODEL':'','PYTHONPATH':str(LEGACY)}
-    legacy="from services.api.db import migrate,Session,Project; migrate();\nwith Session.begin() as s:s.add(Project(id='legacy-retained-project',name='Retained old schema',goal='Preserve actual stored data'))"
-    seeded=subprocess.run([sys.executable,'-c',legacy],cwd=LEGACY,env=env,capture_output=True,text=True,timeout=30)
+         'FOREST_MODEL':'','PYTHONPATH':str(ROOT)}
+    fixture=ROOT/'tests'/'fixtures'/'seed_legacy_v3_schema.py'
+    seeded=subprocess.run([sys.executable,str(fixture)],cwd=ROOT,env=env,capture_output=True,text=True,timeout=30)
     assert seeded.returncode==0,seeded.stderr
     env['PYTHONPATH']=str(ROOT)
     processes=[subprocess.Popen([sys.executable,'-m','services.api.db'],cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for _ in range(4)]
