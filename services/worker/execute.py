@@ -313,10 +313,6 @@ def execute(run_id):
         source_path=(paired_input['source_path'] if paired_input else
                      source.relative_to(root.resolve()).as_posix())
         safe_path(root,source_path,True)
-        with Session() as s:
-            revision=s.scalar(select(FileRevision).where(
-                FileRevision.project_id==pid,FileRevision.path==source_path))
-            source_revision=revision.revision if revision else 0
         input_artifact=safe_path(output,'paired-input.csv')
         temporary=safe_path(output,'.paired-input-'+uid()+'.tmp')
         digest=hashlib.sha256()
@@ -374,13 +370,6 @@ def execute(run_id):
             from services.worker.scheduler import _lock_project
             from services.api.common import touch_dependents
             _lock_project(s,pid)
-            current_revision=s.scalar(select(FileRevision).where(
-                FileRevision.project_id==pid,FileRevision.path==source_path
-            ).with_for_update().execution_options(populate_existing=True))
-            # Deleting a file removes its FileRevision row, so a subsequent
-            # upload can reuse the captured revision number. Recheck the bytes
-            # under the project lock immediately before publishing to catch
-            # delete/recreate races as well as ordinary replacements.
             try:
                 current_source=safe_path(root,source_path)
                 current_digest=hashlib.sha256()
@@ -389,9 +378,11 @@ def execute(run_id):
                 source_matches_current=current_digest.hexdigest()==digest.hexdigest()
             except OSError:
                 source_matches_current=False
-            source_changed=(
-                (current_revision.revision if current_revision else 0)!=source_revision or
-                not source_matches_current)
+            # The content digest is authoritative: a replacement can happen
+            # while the worker opens/copies the source. If those copied bytes
+            # still match the source under the project lock, a pre-copy
+            # FileRevision comparison would mark valid evidence stale.
+            source_changed=not source_matches_current
             item=Analysis(project_id=pid,
                 title=config.get('title','Paired statistical analysis'),
                 data=analysis_data,status='ready_for_review')

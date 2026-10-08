@@ -734,3 +734,90 @@ main()
         assert current.status_code == 200 and current.content == v2_bytes
     finally:
         h.cleanup()
+
+
+def test_paired_analysis_remains_current_if_replacement_precedes_source_copy(tmp_path):
+    directory = tmp_path / 'paired-analysis-replacement-before-copy'
+    directory.mkdir()
+    h = Harness(directory)
+    try:
+        h.start_api()
+        project = h.request('POST', '/api/projects', json={
+            'name': 'Paired replacement before copy ' + str(uuid.uuid4())[:8],
+            'mode': 'manual',
+            'goal': 'Keep results current when the worker copies the latest source version.',
+            'budget': {'max_runs': 20, 'seconds': 180, 'allow_paid': False},
+        })
+        source_path = 'uploads/paired.csv'
+        v1_bytes = b'unit,baseline,candidate\nu1,10,8\nu2,20,17\n'
+        v2_bytes = b'unit,baseline,candidate\nu1,10,13\nu2,20,24\n'
+
+        def upload(content):
+            response = h.client.post(
+                f"/api/projects/{project['id']}/upload",
+                params={'directory': 'uploads'},
+                files={'file': ('paired.csv', content, 'text/csv')})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        upload(v1_bytes)
+        queued = h.request('POST', f"/api/projects/{project['id']}/statistics/paired", json={
+            'path': source_path, 'unit_column': 'unit', 'baseline_column': 'baseline',
+            'candidate_column': 'candidate', 'direction': 'lower', 'bootstrap_samples': 100,
+        })
+
+        gate = directory / 'paired-gate'
+        gate.mkdir()
+        h.env['FOREST_TEST_PAIRED_GATE_DIR'] = str(gate)
+        h.env['FOREST_TEST_PAIRED_SOURCE_PATH'] = str(
+            directory / 'data' / 'projects' / project['id'] / source_path)
+        executor = r'''
+import os, sys, time
+from pathlib import Path
+gate = Path(os.environ['FOREST_TEST_PAIRED_GATE_DIR'])
+source = Path(os.environ['FOREST_TEST_PAIRED_SOURCE_PATH']).resolve()
+original_open = Path.open
+paused = False
+def gated_open(self, *args, **kwargs):
+    global paused
+    if self.resolve() == source and args and args[0] == 'rb' and not paused:
+        paused = True
+        (gate / 'entered').write_text('before-source-copy')
+        deadline = time.monotonic() + 30
+        while not (gate / 'release').exists():
+            if time.monotonic() >= deadline:
+                raise TimeoutError('test did not release paired source copy')
+            time.sleep(0.01)
+    return original_open(self, *args, **kwargs)
+Path.open = gated_open
+from services.worker.execute import main
+sys.argv = ['forest-paired-before-copy-test', '--run-id', sys.argv[1]]
+main()
+'''
+        child = h.spawn('paired-executor', [sys.executable, '-c', executor, queued['id']])
+        wait_until(lambda: (gate / 'entered').is_file())
+
+        replacement = upload(v2_bytes)
+        assert replacement['path'] == source_path
+        current_revision = h.request('GET', f"/api/projects/{project['id']}/file",
+                                     params={'path': source_path})
+        assert current_revision['revision'] > 1
+        (gate / 'release').write_text('continue')
+        child.wait(timeout=30)
+        assert child.returncode == 0, (directory / 'paired-executor.log').read_text()
+
+        analyses = h.request('GET', '/api/analyses', params={'project_id': project['id']})
+        assert len(analyses) == 1, analyses
+        analysis = analyses[0]
+        assert analysis['status'] == 'ready_for_review', analysis
+        assert 'stale_reason' not in analysis['data'], analysis['data']
+        assert analysis['data']['input_provenance']['sha256'] == hashlib.sha256(v2_bytes).hexdigest()
+        assert analysis['data']['input_provenance']['size_bytes'] == len(v2_bytes)
+        retained = h.client.get(f"/api/projects/{project['id']}/download",
+                                params={'path': analysis['data']['path']})
+        assert retained.status_code == 200 and retained.content == v2_bytes
+        current = h.client.get(f"/api/projects/{project['id']}/download",
+                               params={'path': source_path})
+        assert current.status_code == 200 and current.content == v2_bytes
+    finally:
+        h.cleanup()
