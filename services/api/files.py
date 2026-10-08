@@ -1,7 +1,9 @@
 import io
 import json
+import lzma
 import shutil
 import sqlite3
+import zlib
 from contextlib import contextmanager
 import zipfile
 import math
@@ -436,6 +438,30 @@ def imported_run_timestamp(value, fallback=None):
     except ValueError: error('INVALID_ARCHIVE','Run timestamps must be ISO 8601 strings')
     return value
 
+@contextmanager
+def cleanup_project_import_on_failure():
+    """Remove a new workspace when the import body fails before commit.
+
+    This context must exit before the transaction manager attempts to commit:
+    a commit exception can have an ambiguous outcome, so deleting the workspace
+    then could leave a committed project row without its files.
+    """
+    root = None
+
+    def remember_root(path):
+        nonlocal root
+        root = path
+
+    try:
+        yield remember_root
+    except BaseException:
+        if root is not None:
+            try:
+                shutil.rmtree(root)
+            except FileNotFoundError:
+                pass
+        raise
+
 @router.post('/api/projects/import')
 async def import_project(file:UploadFile=File(...)):
     from research.kernel import validate_graph,ArtifactResolver
@@ -463,7 +489,7 @@ async def import_project(file:UploadFile=File(...)):
             'started_at':imported_run_timestamp(r.get('started_at')),
             'finished_at':imported_run_timestamp(r.get('finished_at'))
         }
-    with Session.begin() as s:
+    with Session.begin() as s, cleanup_project_import_on_failure() as remember_import_root:
         orig=manifest['project']; config=dict(orig.get('config',{})); controller=config.get('controller')
         if isinstance(controller,dict):
             # Runtime references belong to the source project; imported runs are
@@ -474,7 +500,7 @@ async def import_project(file:UploadFile=File(...)):
                 # Import is not an instruction to resume a research controller.
                 controller.update(status='paused',phase='PLAN')
             config['controller']=controller
-        p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),mode=mode,budget=orig.get('budget',{}),config=config); root=project_dir(p.id)
+        p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),mode=mode,budget=orig.get('budget',{}),config=config); root=project_dir(p.id); remember_import_root(root)
         graph=manifest['graph']; old_id=graph['project_id']; mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(manifest.get('resources',{}).values())+[manifest.get('papers',[]),manifest.get('runs',[])]:
             for item in rows: mapping.setdefault(item['id'],uid())
@@ -504,7 +530,12 @@ async def import_project(file:UploadFile=File(...)):
         save_graph(s,p,graph)
         for info in z.infolist():
             if not info.filename.startswith('files/') or info.is_dir(): continue
-            dest=safe_path(root,remap(info.filename[6:])); dest.parent.mkdir(parents=True,exist_ok=True); dest.write_bytes(z.read(info))
+            try:
+                contents=z.read(info)
+            except (zipfile.BadZipFile, EOFError, lzma.LZMAError, NotImplementedError, OSError,
+                    RuntimeError, ValueError, zlib.error):
+                error('INVALID_ARCHIVE','Archive contains a corrupt or unreadable file member')
+            dest=safe_path(root,remap(info.filename[6:])); dest.parent.mkdir(parents=True,exist_ok=True); dest.write_bytes(contents)
         for key,rows in manifest.get('resources',{}).items():
             model=RESOURCE_MODELS.get(key)
             if model:
