@@ -324,8 +324,23 @@ def compare_branches(left:str,right:str):
         runs=[asdict(r) for r in s.scalars(select(TaskRun).where(TaskRun.branch_id.in_([left,right])))]
         return {**comparison,'left':asdict(a),'right':asdict(b),'runs':runs}
 @app.get('/api/projects/{ident}/runs')
-def runs(ident:str,limit:int=100,offset:int=0):
-    with Session() as s: get(s,Project,ident); return [asdict(r) for r in s.scalars(select(TaskRun).where(TaskRun.project_id==ident).order_by(TaskRun.created_at.desc()).limit(min(limit,500)).offset(offset))]
+def runs(ident:str,limit:int=100,offset:int=0,include_manuscript_evidence:bool=False):
+    with Session() as s:
+        get(s,Project,ident)
+        records=list(s.scalars(select(TaskRun).where(TaskRun.project_id==ident).order_by(TaskRun.created_at.desc()).limit(min(limit,500)).offset(offset)))
+        result=[asdict(r) for r in records]
+        if include_manuscript_evidence:
+            from research.paper.evidence import manuscript_metrics_eligibility
+            for run, record in zip(records, result):
+                eligibility={'ready':False,'reason':'Run must be a completed experiment, command, or agent'}
+                if run.status=='completed' and run.kind in ('experiment','command','agent'):
+                    try:
+                        directory=safe_path(project_dir(ident),run.output_path)
+                        eligibility=manuscript_metrics_eligibility(directory,run.config.get('metrics_file','metrics.json'),run_id=run.id)
+                    except (OSError,ValueError) as exc:
+                        eligibility={'ready':False,'reason':str(exc)}
+                record['manuscript_evidence']=eligibility
+        return result
 @app.get('/api/runs/{ident}')
 def run(ident:str):
     with Session() as s:

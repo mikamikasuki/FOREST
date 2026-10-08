@@ -1172,7 +1172,7 @@ Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND or MISSING_ARTIFACT; `
 
 #### `POST /api/papers/{ident}/generate`
 
-Resolve paper/project ID. Require a nonempty run_ids list of completed runs in this project. manuscript_type defaults full_paper. Other generation options are extensible. Return Run for generation/review workflow, not automatically applied manuscript text.
+Resolve paper/project ID. Require a nonempty run_ids list of completed experiment/command/agent runs in this project, each with a readable metrics file containing finite numeric measurements. Reject invalid evidence before enqueue and recheck it during generation. manuscript_type defaults full_paper. Other generation options are extensible. Return Run for generation/review workflow, not automatically applied manuscript text.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1182,7 +1182,7 @@ Body: `application/json`: `PaperGenerationRequest`; required.
 
 Success `200`: `application/json`: `Run`.
 
-Known domain failures: `404` NOT_FOUND; `422` EVIDENCE_REQUIRED or INVALID_EVIDENCE.
+Known domain failures: `404` NOT_FOUND; `409` GOAL_APPLICABILITY_REQUIRED; `422` EVIDENCE_REQUIRED or INVALID_EVIDENCE.
 
 #### `POST /api/papers/{ident}/layout`
 
@@ -2260,13 +2260,14 @@ Known domain failures: `400` Scheduling/input errors; `404` NOT_FOUND; `409` Sub
 
 #### `GET /api/projects/{ident}/runs`
 
-Bare Run array, created_at descending; limit capped at 500. This list does not add tools and does not apply the single-run provider_snapshot filter.
+Bare Run array, created_at descending; limit capped at 500. include_manuscript_evidence=true adds a readiness result based on each completed experiment/command/agent run's readable numeric metrics artifact.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
 | `ident` | path | string | yes |  |
-| `limit` | query | integer | no | Default `100`.  |
-| `offset` | query | integer | no | Default `0`.  |
+| `limit` | query | integer | no | Default `100`. Maximum number of runs, capped at 500. |
+| `offset` | query | integer | no | Default `0`. Number of runs to skip. |
+| `include_manuscript_evidence` | query | boolean | no | Default `False`. Attach manuscript evidence readiness and validation details. |
 
 Success `200`: `application/json`: `Run[]`.
 
@@ -4291,6 +4292,7 @@ A queued or saved task run. A successful submission means it was enqueued, not t
 | `output_path` | string | yes | Path relative to the project workspace. |
 | `metrics` | JsonObject | yes |  |
 | `resource` | JsonObject | yes |  |
+| `manuscript_evidence` | object | no |  |
 
 Additional properties: extensible JSON.
 

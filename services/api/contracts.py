@@ -100,7 +100,9 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "started_at": field("string", nullable=True), "finished_at": field("string", nullable=True),
         "exit_code": field("integer", nullable=True), "error": field("string", nullable=True),
         "output_path": field("string", "Path relative to the project workspace."),
-        "metrics": J, "resource": J},
+        "metrics": J, "resource": J,
+        "manuscript_evidence": obj({"ready": B, "reason": S, "metrics_file": S,
+            "numeric_measurements": I})},
         ("id", "project_id", "node_id", "branch_id", "request_id", "kind", "status", "config", "node_revision", "priority", "dependencies", "worker_id", "pid", "process_created", "started_at", "finished_at", "exit_code", "error", "output_path", "metrics", "resource"),
         "A queued or saved task run. A successful submission means it was enqueued, not that its scientific work completed. Configuration redaction differs by view; see the endpoint description."),
     "ToolExecution": obj({**IDENTITY, "run_id": S, "tool": S, "arguments": J,
@@ -494,7 +496,7 @@ operation("post", "/api/branches/{ident}/run", "Runs", "Enqueue a branch executi
 operation("get", "/api/branches/compare", "Graph", "Compare branch workspaces",
     "Require left and right branch IDs in the same project. Return the BranchWorkspace file/config comparison plus full left/right branch records and the combined run list.", obj({"left": ref("Branch"), "right": ref("Branch"), "runs": array(ref("Run"))}, ("left", "right", "runs")), errors={400: "CROSS_PROJECT", 404: "NOT_FOUND"})
 operation("get", "/api/projects/{ident}/runs", "Runs", "List saved project runs",
-    "Bare Run array, created_at descending; limit capped at 500. This list does not add tools and does not apply the single-run provider_snapshot filter.", array(ref("Run")), errors={404: "NOT_FOUND"})
+    "Bare Run array, created_at descending; limit capped at 500. include_manuscript_evidence=true adds a readiness result based on each completed experiment/command/agent run's readable numeric metrics artifact.", array(ref("Run")), errors={404: "NOT_FOUND"}, parameters={"limit": "Maximum number of runs, capped at 500.", "offset": "Number of runs to skip.", "include_manuscript_evidence": "Attach manuscript evidence readiness and validation details."})
 operation("get", "/api/runs/{ident}", "Runs", "Inspect a run and tool executions",
     "Return RunDetail. Remove config.provider_snapshot and attach tools ordered by created_at; other task-specific configuration keys remain as saved.", ref("RunDetail"), errors={404: "NOT_FOUND"})
 operation("post", "/api/runs/{ident}/{action}", "Runs", "Control a saved run",
@@ -605,7 +607,7 @@ operation("get", "/api/papers/{ident}", "Manuscripts", "Read or initialize a pro
 operation("patch", "/api/papers/{ident}", "Manuscripts", "Save manuscript text and metadata",
     "Resolve paper/project ID, optionally compare the PaperDocument revision, shallow-merge body.data and set manual/needs_update state. Increment paper revision; source/bibtex changes clear previous layout checks and write the working source. Return PaperRecord.", ref("PaperRecord"), body="PaperPatch", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
 operation("post", "/api/papers/{ident}/generate", "Manuscripts", "Enqueue source-grounded manuscript generation",
-    "Resolve paper/project ID. Require a nonempty run_ids list of completed runs in this project. manuscript_type defaults full_paper. Other generation options are extensible. Return Run for generation/review workflow, not automatically applied manuscript text.", ref("Run"), body="PaperGenerationRequest", errors={404: "NOT_FOUND", 422: "EVIDENCE_REQUIRED or INVALID_EVIDENCE"})
+    "Resolve paper/project ID. Require a nonempty run_ids list of completed experiment/command/agent runs in this project, each with a readable metrics file containing finite numeric measurements. Reject invalid evidence before enqueue and recheck it during generation. manuscript_type defaults full_paper. Other generation options are extensible. Return Run for generation/review workflow, not automatically applied manuscript text.", ref("Run"), body="PaperGenerationRequest", errors={404: "NOT_FOUND", 409: "GOAL_APPLICABILITY_REQUIRED", 422: "EVIDENCE_REQUIRED or INVALID_EVIDENCE"})
 operation("post", "/api/papers/{ident}/figures", "Manuscripts", "Insert a reviewed figure at an exact text anchor",
     "Require CURRENT paper expected_revision, figure_id and anchor_text. Figure must be from this project and ready_for_review/available with a rendered PDF or image. Copy chosen output/supporting assets, insert caption/local label and binding, increment paper revision and invalidate layout checks. caption defaults figure caption/title; span defaults column. Return PaperRecord.", ref("PaperRecord"), body="PaperFigureRequest", errors={403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 409: "REVISION_CONFLICT or FIGURE_UNAVAILABLE", 422: "CROSS_PROJECT or INVALID_FIGURE_ANCHOR"})
 operation("post", "/api/papers/{ident}/compile", "Manuscripts", "Enqueue compilation of the saved manuscript",
