@@ -2237,7 +2237,7 @@ function PaperGeneration({
   reload: () => Promise<void>;
 }) {
   const { t, action } = useUI();
-  const { data: runs } = useLoad<Run[]>(`/projects/${projectId}/runs`, []);
+  const { data: runs } = useLoad<Run[]>(`/runs?project_id=${projectId}`, []);
   const { data: figures } = useLoad<RecordItem[]>(
     `/figures?project_id=${projectId}`,
     [],
