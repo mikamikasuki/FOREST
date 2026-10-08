@@ -567,3 +567,85 @@ def test_paired_statistics_retain_consumed_upload_across_same_path_replacement(r
     assert retry_analysis_reopened['data']['input_provenance'] == expected_retry_provenance
     assert v1_file_after_replacement.status_code == 200
     assert v1_file_after_replacement.content == v2_bytes
+
+
+def test_paired_analysis_is_stale_if_source_is_replaced_before_publication(tmp_path):
+    directory = tmp_path / 'paired-analysis-publication-race'
+    directory.mkdir()
+    h = Harness(directory)
+    try:
+        h.start_api()
+        project = h.request('POST', '/api/projects', json={
+            'name': 'Paired publication race ' + str(uuid.uuid4())[:8],
+            'mode': 'manual',
+            'goal': 'Keep paired results stale when their source is replaced in flight.',
+            'budget': {'max_runs': 20, 'seconds': 180, 'allow_paid': False},
+        })
+        source_path = 'uploads/paired.csv'
+        v1_bytes = b'unit,baseline,candidate\nu1,10,8\nu2,20,17\n'
+        v2_bytes = b'unit,baseline,candidate\nu1,10,13\nu2,20,24\n'
+
+        def upload(content):
+            response = h.client.post(
+                f"/api/projects/{project['id']}/upload",
+                params={'directory': 'uploads'},
+                files={'file': ('paired.csv', content, 'text/csv')})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        upload(v1_bytes)
+        queued = h.request('POST', f"/api/projects/{project['id']}/statistics/paired", json={
+            'path': source_path, 'unit_column': 'unit', 'baseline_column': 'baseline',
+            'candidate_column': 'candidate', 'direction': 'lower', 'bootstrap_samples': 100,
+        })
+
+        gate = directory / 'paired-gate'
+        gate.mkdir()
+        h.env['FOREST_TEST_PAIRED_GATE_DIR'] = str(gate)
+        executor = r'''
+import os, sys, time
+from pathlib import Path
+from research.validation import statistics
+gate = Path(os.environ['FOREST_TEST_PAIRED_GATE_DIR'])
+original = statistics.paired_csv
+def gated(*args, **kwargs):
+    (gate / 'entered').write_text('copied')
+    deadline = time.monotonic() + 30
+    while not (gate / 'release').exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('test did not release paired analysis')
+        time.sleep(0.01)
+    return original(*args, **kwargs)
+statistics.paired_csv = gated
+from services.worker.execute import main
+sys.argv = ['forest-paired-race-test', '--run-id', sys.argv[1]]
+main()
+'''
+        child = h.spawn('paired-executor', [sys.executable, '-c', executor, queued['id']])
+        wait_until(lambda: (gate / 'entered').is_file())
+
+        replacement = upload(v2_bytes)
+        assert replacement['path'] == source_path
+        current_revision = h.request('GET', f"/api/projects/{project['id']}/file",
+                                     params={'path': source_path})
+        assert current_revision['revision'] > 1
+        (gate / 'release').write_text('continue')
+        child.wait(timeout=30)
+        assert child.returncode == 0, (directory / 'paired-executor.log').read_text()
+
+        analyses = h.request('GET', '/api/analyses', params={'project_id': project['id']})
+        assert len(analyses) == 1, analyses
+        analysis = analyses[0]
+        assert analysis['status'] == 'needs_update', analysis
+        assert analysis['data']['input_provenance']['sha256'] == hashlib.sha256(v1_bytes).hexdigest()
+        assert analysis['data']['input_provenance']['size_bytes'] == len(v1_bytes)
+        assert analysis['data']['stale_reason'] == 'Bound upstream material changed: ' + source_path
+        assert any(item['source_id'] == source_path for item in analysis['data']['stale_dependencies'])
+        retained = h.client.get(f"/api/projects/{project['id']}/download",
+                                params={'path': analysis['data']['path']})
+        assert retained.status_code == 200 and retained.content == v1_bytes
+        current = h.client.get(f"/api/projects/{project['id']}/download",
+                               params={'path': source_path})
+        assert current.status_code == 200 and current.content == v2_bytes
+    finally:
+        h.cleanup()
