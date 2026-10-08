@@ -361,7 +361,12 @@ def imported_run_timestamp(value, fallback=None):
 
 @contextmanager
 def cleanup_project_import_on_failure():
-    """Remove the new workspace if its import transaction does not commit."""
+    """Remove a new workspace when the import body fails before commit.
+
+    This context must exit before the transaction manager attempts to commit:
+    a commit exception can have an ambiguous outcome, so deleting the workspace
+    then could leave a committed project row without its files.
+    """
     root = None
 
     def remember_root(path):
@@ -405,7 +410,7 @@ async def import_project(file:UploadFile=File(...)):
             'started_at':imported_run_timestamp(r.get('started_at')),
             'finished_at':imported_run_timestamp(r.get('finished_at'))
         }
-    with cleanup_project_import_on_failure() as remember_import_root, Session.begin() as s:
+    with Session.begin() as s, cleanup_project_import_on_failure() as remember_import_root:
         orig=manifest['project']; config=dict(orig.get('config',{})); controller=config.get('controller')
         if isinstance(controller,dict):
             # Runtime references belong to the source project; imported runs are
