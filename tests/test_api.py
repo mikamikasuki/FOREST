@@ -461,6 +461,45 @@ def case_project_copy_preserves_run_mode(client, app):
     assert imported_legacy["mode"] == "assisted"
 
 
+def case_duplicate_copy_failure_removes_partial_workspace(client, app):
+    from unittest.mock import patch
+    import services.api.main as api_main
+
+    source = create(client)
+    source_path = "code/duplicate-probe.txt"
+    source_bytes = "copied payload from source"
+    uploaded = client.put(
+        f"/api/projects/{source['id']}/file",
+        json={"path": source_path, "content": source_bytes, "expected_revision": 0},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+
+    projects_root = Path(os.environ["FOREST_DATA_DIR"]) / "projects"
+    before_directories = {path.name for path in projects_root.iterdir() if path.is_dir()}
+    real_copy2 = api_main.shutil.copy2
+    copied_destinations = []
+
+    def copy_then_fail(src, dst, *args, **kwargs):
+        result = real_copy2(src, dst, *args, **kwargs)
+        copied_destinations.append(str(dst))
+        assert Path(dst).read_text() == source_bytes
+        raise OSError("injected copy failure after a real file copy")
+
+    with patch.object(api_main.shutil, "copy2", side_effect=copy_then_fail):
+        with pytest.raises(OSError, match="injected copy failure after a real file copy"):
+            client.post(f"/api/projects/{source['id']}/duplicate")
+
+    assert len(copied_destinations) == 1
+    assert {path.name for path in projects_root.iterdir() if path.is_dir()} == before_directories
+    assert len(ok(client.get("/api/projects"))) == 1
+    assert ok(client.get(f"/api/projects/{source['id']}/file", params={"path": source_path}))["content"] == source_bytes
+
+    duplicate = ok(client.post(f"/api/projects/{source['id']}/duplicate"))
+    copied = ok(client.get(f"/api/projects/{duplicate['id']}/file", params={"path": source_path}))
+    assert copied["content"] == source_bytes
+    assert len(ok(client.get("/api/projects"))) == 2
+
+
 def case_invalid_import_modes_rejected_before_project_creation(client, app):
     source = create(client)
     exported = client.post(f"/api/projects/{source['id']}/export", json={})
