@@ -367,6 +367,25 @@ def test_paper_picker_and_api_require_numeric_metrics_from_real_runs(actual_work
         "numeric_measurements": 1,
     }
 
+    oversized = add_command(
+        "Completed command with an oversized integer metric",
+        "from pathlib import Path; Path('metrics.json').write_text('{\"measurement\":' + '9' * 400 + '}')",
+    )
+    assert oversized["status"] == "completed"
+    runs = h.request("GET", f"/api/projects/{project['id']}/runs?include_manuscript_evidence=true")
+    oversized_entry = next(run for run in runs if run["id"] == oversized["id"])
+    assert oversized_entry["manuscript_evidence"]["ready"] is False
+    assert "supported numeric range" in oversized_entry["manuscript_evidence"]["reason"]
+
+    oversized_rejected = h.client.post(f"/api/papers/{project['id']}/generate", json={
+        "request_id": str(uuid.uuid4()),
+        "run_ids": [oversized["id"]],
+        "figure_ids": [],
+        "manuscript_type": "full_paper",
+    })
+    assert oversized_rejected.status_code == 422, oversized_rejected.text
+    assert oversized_rejected.json()["detail"]["code"] == "INVALID_EVIDENCE"
+
 
 def test_pause_resume_stops_and_restarts_actual_process_group(actual_worker):
     h = actual_worker

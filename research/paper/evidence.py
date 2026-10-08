@@ -21,7 +21,11 @@ def _numbers(value, pointer=''):
         for index, item in enumerate(value):
             yield from _numbers(item, pointer + '/' + str(index))
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
-        if not math.isfinite(value):
+        try:
+            finite = math.isfinite(value)
+        except OverflowError as exc:
+            raise ValueError(f'Metric at {pointer} exceeds the supported numeric range') from exc
+        if not finite:
             raise ValueError(f'Nonfinite metric at {pointer}; repair or explicitly explain the missing measurement')
         yield pointer, value
 

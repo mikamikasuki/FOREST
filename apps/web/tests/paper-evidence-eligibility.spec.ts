@@ -61,6 +61,10 @@ test("Paper only offers completed runs with actual numeric metrics", async ({
       "Completed command without metrics",
       "print('completed without metrics')",
     );
+    const oversizedMetrics = await runCommand(
+      "Completed command with an oversized integer metric",
+      "from pathlib import Path; Path('metrics.json').write_text('{\"measurement\":' + '9' * 400 + '}')",
+    );
     const withMetrics = await runCommand(
       "Completed arithmetic command with metrics",
       "import json; from pathlib import Path; total=sum(range(100)); Path('metrics.json').write_text(json.dumps({'sum': total})); print(total)",
@@ -81,6 +85,11 @@ test("Paper only offers completed runs with actual numeric metrics", async ({
 
     await expect(
       page.getByText(`command · ${withoutMetrics.slice(0, 8)}`, {
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText(`command · ${oversizedMetrics.slice(0, 8)}`, {
         exact: true,
       }),
     ).toHaveCount(0);
