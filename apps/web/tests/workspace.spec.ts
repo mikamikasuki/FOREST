@@ -552,120 +552,6 @@ test("search reveals an offscreen node in a large graph and reopens its inspecto
   expect(after.nodes).toEqual(before.nodes);
 });
 
-test("Paper full-manuscript picker lists completed runs from this project", async ({
-  page,
-  request,
-}) => {
-  const graph = await (
-    await request.get(`/api/projects/${projectId}/graph`)
-  ).json();
-  const nodeId = crypto.randomUUID();
-  const command = await request.post(
-    `/api/projects/${projectId}/graph/commands`,
-    {
-      data: {
-        request_id: crypto.randomUUID(),
-        expected_revision: graph.revision,
-        operation: "add_node",
-        targets: [],
-        params: {
-          id: nodeId,
-          branch_id: graph.branches[0].id,
-          type: "experiment",
-          title: "Paper run picker command",
-          config: {
-            kind: "command",
-            command: ["/bin/echo", "paper-run-picker-evidence"],
-            timeout: 10,
-          },
-        },
-        run: false,
-      },
-    },
-  );
-  expect(command.ok()).toBeTruthy();
-
-  await page.goto(`/projects/${projectId}/workspace`);
-  await page.locator(`.react-flow__node[data-id="${nodeId}"]`).click();
-  await page.getByRole("button", { name: "Run node", exact: true }).click();
-
-  let runId = "";
-  await expect
-    .poll(
-      async () => {
-        const runs = await (
-          await request.get(`/api/projects/${projectId}/runs`)
-        ).json();
-        runId = runs[0]?.id ?? "";
-        return runs[0]?.status;
-      },
-      { timeout: 20000 },
-    )
-    .toBe("completed");
-
-  const persistedRuns = await (
-    await request.get(`/api/projects/${projectId}/runs`)
-  ).json();
-  expect(persistedRuns[0].id).toBe(runId);
-  expect(persistedRuns[0].kind).toBe("command");
-
-  const projectRunResponses: number[] = [];
-  page.on("response", (response) => {
-    const url = new URL(response.url());
-    if (url.pathname === `/api/projects/${projectId}/runs`)
-      projectRunResponses.push(response.status());
-  });
-  await page.goto(`/projects/${projectId}/paper`);
-  const picker = page
-    .locator("details.paper-layout")
-    .filter({ hasText: "Generate a full manuscript from actual experiments" });
-  await picker
-    .getByText("Generate a full manuscript from actual experiments", {
-      exact: true,
-    })
-    .click();
-
-  const runLabel = `command · ${runId.slice(0, 8)}`;
-  const runCheckbox = picker.getByRole("checkbox", { name: runLabel });
-  await expect(runCheckbox).toBeVisible();
-  await expect(
-    picker.getByText("Complete actual experiments first.", { exact: true }),
-  ).toHaveCount(0);
-  const generate = picker.getByRole("button", {
-    name: "Generate full manuscript",
-    exact: true,
-  });
-  await expect(generate).toBeDisabled();
-  await runCheckbox.check();
-  await expect(generate).toBeEnabled();
-  expect(projectRunResponses.length).toBeGreaterThan(0);
-  expect(projectRunResponses.every((status) => status === 200)).toBe(true);
-});
-
-test("Paper full-manuscript picker keeps the empty-project control", async ({
-  page,
-}) => {
-  await page.goto(`/projects/${projectId}/paper`);
-  const picker = page
-    .locator("details.paper-layout")
-    .filter({ hasText: "Generate a full manuscript from actual experiments" });
-  await picker
-    .getByText("Generate a full manuscript from actual experiments", {
-      exact: true,
-    })
-    .click();
-
-  await expect(
-    picker.getByText("Complete actual experiments first.", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    picker.getByRole("button", {
-      name: "Generate full manuscript",
-      exact: true,
-    }),
-  ).toBeDisabled();
-});
-
 test("search reveals nodes hidden by the current branch or a collapsed ancestor", async ({
   page,
   request,
@@ -845,4 +731,192 @@ test("narrow workspace opens a dismissible inspector and keeps the searched node
   ).json();
   expect(after.revision).toBe(before.revision);
   expect(after.nodes).toEqual(before.nodes);
+});
+
+test("Paper full-manuscript picker lists completed runs from this project", async ({
+  page,
+  request,
+}) => {
+  const budget = await request.patch(`/api/projects/${projectId}`, {
+    data: { budget: { max_runs: 5, seconds: 120, allow_paid: false } },
+  });
+  expect(budget.ok()).toBeTruthy();
+
+  const graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const command = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "experiment",
+          title: "Paper run picker numeric metrics",
+          config: {
+            kind: "command",
+            command: [
+              "/usr/bin/python3",
+              "-c",
+              "import json; from pathlib import Path; Path('metrics.json').write_text(json.dumps({'score': 7, 'observations': 3}))",
+            ],
+            timeout: 20,
+          },
+        },
+      },
+    },
+  );
+  expect(command.ok()).toBeTruthy();
+
+  const started = await request.post(`/api/nodes/${nodeId}/run`, {
+    data: { request_id: crypto.randomUUID(), scope: "single" },
+  });
+  expect(started.ok()).toBeTruthy();
+  const queued = await started.json();
+  let completedRun: any;
+  await expect
+    .poll(
+      async () => {
+        const current = await request.get(`/api/runs/${queued.id}`);
+        completedRun = await current.json();
+        return completedRun.status;
+      },
+      { timeout: 30000 },
+    )
+    .toBe("completed");
+  expect(completedRun.exit_code).toBe(0);
+
+  const runsPath = `/api/projects/${projectId}/runs`;
+  const evidenceResponse = await request.get(runsPath, {
+    params: { include_manuscript_evidence: "true" },
+  });
+  expect(evidenceResponse.status()).toBe(200);
+  const runs = await evidenceResponse.json();
+  const eligibleRun = runs.find((run: { id: string }) => run.id === queued.id);
+  expect(eligibleRun).toMatchObject({
+    id: queued.id,
+    project_id: projectId,
+    status: "completed",
+    kind: "command",
+    manuscript_evidence: {
+      ready: true,
+      numeric_measurements: 2,
+    },
+  });
+  expect(eligibleRun.manuscript_evidence.metrics_file).toBeTruthy();
+
+  const metricsPath = `${eligibleRun.output_path}/${eligibleRun.manuscript_evidence.metrics_file}`;
+  const metricsResponse = await request.get(`/api/projects/${projectId}/file`, {
+    params: { path: metricsPath },
+  });
+  expect(metricsResponse.status()).toBe(200);
+  const metricsArtifact = await metricsResponse.json();
+  expect(JSON.parse(metricsArtifact.content)).toEqual({
+    score: 7,
+    observations: 3,
+  });
+
+  const waitForProjectRuns = () =>
+    page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === runsPath &&
+        url.searchParams.get("include_manuscript_evidence") === "true"
+      );
+    });
+  const initialRunsResponse = waitForProjectRuns();
+  await page.goto(`/projects/${projectId}/paper`);
+  const initialResponse = await initialRunsResponse;
+  expect(initialResponse.status()).toBe(200);
+  expect(
+    (await initialResponse.json()).every(
+      (run: { project_id: string }) => run.project_id === projectId,
+    ),
+  ).toBe(true);
+
+  const picker = page
+    .locator("details.paper-layout")
+    .filter({ hasText: "Generate a full manuscript from actual experiments" });
+  await picker
+    .getByText("Generate a full manuscript from actual experiments", {
+      exact: true,
+    })
+    .click();
+  const runLabel = `command · ${queued.id.slice(0, 8)}`;
+  const runCheckbox = picker.getByRole("checkbox", { name: runLabel });
+  const generate = picker.getByRole("button", {
+    name: "Generate full manuscript",
+    exact: true,
+  });
+  await expect(runCheckbox).toBeVisible();
+  await expect(generate).toBeDisabled();
+  await runCheckbox.check();
+  await expect(generate).toBeEnabled();
+
+  const reloadedRunsResponse = waitForProjectRuns();
+  await page.reload();
+  const reloadedResponse = await reloadedRunsResponse;
+  expect(reloadedResponse.status()).toBe(200);
+  const reloadedRuns = await reloadedResponse.json();
+  expect(
+    reloadedRuns.find((run: { id: string }) => run.id === queued.id),
+  ).toMatchObject({
+    project_id: projectId,
+    manuscript_evidence: { ready: true },
+  });
+  await picker
+    .getByText("Generate a full manuscript from actual experiments", {
+      exact: true,
+    })
+    .click();
+  await expect(
+    picker.getByRole("checkbox", { name: runLabel }),
+  ).toBeVisible();
+  await expect(generate).toBeDisabled();
+});
+
+test("Paper full-manuscript picker keeps the empty-project control", async ({
+  page,
+}) => {
+  const runsPath = `/api/projects/${projectId}/runs`;
+  const evidenceResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === runsPath &&
+      url.searchParams.get("include_manuscript_evidence") === "true"
+    );
+  });
+  await page.goto(`/projects/${projectId}/paper`);
+  const evidenceResponse = await evidenceResponsePromise;
+  expect(evidenceResponse.status()).toBe(200);
+  expect(await evidenceResponse.json()).toEqual([]);
+
+  const picker = page
+    .locator("details.paper-layout")
+    .filter({ hasText: "Generate a full manuscript from actual experiments" });
+  await picker
+    .getByText("Generate a full manuscript from actual experiments", {
+      exact: true,
+    })
+    .click();
+
+  await expect(
+    picker.getByText(
+      "Complete an experiment that produces readable numeric metrics.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(picker.getByRole("checkbox")).toHaveCount(0);
+  await expect(
+    picker.getByRole("button", {
+      name: "Generate full manuscript",
+      exact: true,
+    }),
+  ).toBeDisabled();
 });

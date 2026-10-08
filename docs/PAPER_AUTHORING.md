@@ -28,6 +28,8 @@ After drafting, **Argument Reviewer**, **Layout Reviewer** and **Visual Editor**
 
 Studio figures are independent project assets. Paper generation can select their `figure_ids` alongside explicit completed `run_ids`, without requiring the image to live in an experiment's output folder. Selected scientific figures must use runs within that evidence scope. The standalone paper bundle copies each referenced image and its available editable source, data, style, report and selection artifacts, and records their bindings.
 
+The full-manuscript run picker lists only completed experiment, command or agent runs whose current metrics artifact is readable JSON with finite numeric measurements. It uses the selected project's `/projects/{id}/runs?include_manuscript_evidence=true` response and admits only runs marked `manuscript_evidence.ready`; a completed command without numeric metrics is not eligible evidence.
+
 For an existing manuscript, open **Paper → Insert a reviewed figure in the manuscript**. Select a rendered, reviewed Studio figure and paste a unique paragraph from the current source. The action saves pending edits, inserts the figure and numbered reference after that paragraph, and copies the image and available companions into the paper assets. Compile again to inspect the resulting PDF. The [manual insertion API](MANUSCRIPT_PIPELINE.md#insert-a-studio-figure-into-current-manuscript-prose) offers the same revision-checked operation.
 
 ## Image-provider configuration
