@@ -44,7 +44,7 @@ export interface components {
     "FileRead": { "content": string; "origin": string; "path": string; "revision": number; [key: string]: unknown; };
     "FileRenameRequest": { "new_path": string; "path": string; [key: string]: unknown; };
     "FileUpload": { "origin": string; "path": string; "size": number; [key: string]: unknown; };
-    "FileWrite": { "content": string; "expected_revision"?: (number) | (null); "path": string; [key: string]: unknown; };
+    "FileWrite": { "content": string; "create_only"?: boolean; "expected_revision"?: (number) | (null); "path": string; [key: string]: unknown; };
     "FileWritten": { "origin": string; "path": string; "revision": number; [key: string]: unknown; };
     "GraphBatchRequest": { "commands": Array<components["schemas"]["JsonObject"]>; "expected_revision": number; "request_id"?: string; [key: string]: unknown; };
     "GraphBatchResult": { "applied": number; "edge_count": number; "node_count": number; "revision": number; [key: string]: unknown; };

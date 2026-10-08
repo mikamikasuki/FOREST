@@ -2845,7 +2845,7 @@ export function FilesPage() {
                 await api(
                   `/projects/${id}/file?path=${encodeURIComponent(newPath)}`,
                   "PUT",
-                  { path: newPath, content: "" },
+                  { path: newPath, content: "", create_only: true },
                 );
                 await reload();
                 await open(newPath);

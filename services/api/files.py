@@ -67,13 +67,16 @@ def _restore_file_publication(path, backup, existed):
     if existed: backup.replace(path)
     else: path.unlink(missing_ok=True)
 
-def _publish_file(ident,relative,path,temporary,backup,origin,expected_revision=None,content=None,overwrite=True):
+def _publish_file(ident,relative,path,temporary,backup,origin,expected_revision=None,content=None,overwrite=True,create_only=False):
     from services.worker.scheduler import _lock_project
     existed=False; published=False; flush_completed=False
     with file_publication_lock(ident,relative):
         if not overwrite and path.exists():
             error('FILE_EXISTS','Destination already exists',409,
                   'Review the destination and explicitly choose whether to replace it.')
+        if create_only and path.exists():
+            error('FILE_EXISTS','Destination already exists',409,
+                  'Choose a new path or open the existing file to edit it.')
         existed=path.is_file()
         if existed: shutil.copy2(path,backup)
         if origin=='user_import' and existed:
@@ -266,7 +269,7 @@ def write_file(ident:str,body:FileWrite):
         temporary.write_text(body.content)
         return _publish_file(
             ident,relative,p,temporary,backup,'user_edited',
-            expected_revision=body.expected_revision,content=body.content
+            expected_revision=body.expected_revision,content=body.content,create_only=body.create_only
         )
     finally:
         temporary.unlink(missing_ok=True)
