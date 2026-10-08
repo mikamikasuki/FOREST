@@ -350,7 +350,27 @@ def execute(run_id):
                 run_ids=list(dict.fromkeys([*run_ids,paired_input['source_run_id']]))
                 provenance={'source_run_id':paired_input['source_run_id'],
                     'source_path':paired_input['source_path'],'checked_path':paired_input['checked_path']}
-            item=Analysis(project_id=pid,title=config.get('title','Paired statistical analysis'),data={**result,'run_ids':run_ids,'analysis_run_id':run_id,'path':input_artifact_path,'source_path':source_path,'metrics_path':str((output/'metrics.json').relative_to(root)),**({'verification_input':provenance} if provenance else {})},status='ready_for_review');s.add(item)
+            dependency_bindings=[{
+                'source_kind':'file',
+                'source_id':source_path,
+                'target_path':'/input_provenance/source_path',
+                'artifact_path':input_artifact_path,
+                'target_artifact_path':input_artifact_path,
+            }]
+            analysis_data={
+                **result,
+                'run_ids':run_ids,
+                'analysis_run_id':run_id,
+                'path':input_artifact_path,
+                'source_path':source_path,
+                'metrics_path':str((output/'metrics.json').relative_to(root)),
+                'dependency_bindings':dependency_bindings,
+                **({'verification_input':provenance} if provenance else {}),
+            }
+            item=Analysis(project_id=pid,
+                title=config.get('title','Paired statistical analysis'),
+                data=analysis_data,status='ready_for_review')
+            s.add(item)
         return result
     if kind=='review' and config.get('review_scope')=='statistics':
         from research.validation.review import statistical_review_prompt,validate_statistical_review
