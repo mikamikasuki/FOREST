@@ -544,7 +544,9 @@ function Projects() {
     .filter(
       (p) =>
         (showArchived || !p.archived) &&
-        `${p.name} ${p.goal}`.toLowerCase().includes(query.toLowerCase()),
+        `${p.name} ${p.goal} ${p.description}`
+          .toLowerCase()
+          .includes(query.toLowerCase()),
     )
     .sort((a, b) =>
       sort === "name"
