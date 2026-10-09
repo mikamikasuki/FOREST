@@ -1297,6 +1297,8 @@ export function DataPage() {
     `/analyses?project_id=${id}`,
     [],
   );
+  const [recomputing, setRecomputing] = useState(false);
+  const recomputingRef = useRef(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [metric, setMetric] = useState("accuracy");
   const [baseline, setBaseline] = useState("");
@@ -1385,25 +1387,34 @@ export function DataPage() {
         </Field>
         <Button
           className="primary"
-          disabled={!runs.length}
-          onClick={() =>
-            action(
+          busy={recomputing}
+          disabled={!runs.length || recomputing}
+          onClick={() => {
+            if (recomputingRef.current) return;
+            recomputingRef.current = true;
+            setRecomputing(true);
+            void action(
               async () => {
-                await api("/analysis/run", "POST", {
-                  project_id: id,
-                  run_ids: selected.length
-                    ? selected
-                    : runs
-                        .filter((r) => Object.keys(r.metrics || {}).length)
-                        .map((r) => r.id),
-                  baseline,
-                  metric,
-                });
-                await reloadAnalyses();
+                try {
+                  await api("/analysis/run", "POST", {
+                    project_id: id,
+                    run_ids: selected.length
+                      ? selected
+                      : runs
+                          .filter((r) => Object.keys(r.metrics || {}).length)
+                          .map((r) => r.id),
+                    baseline,
+                    metric,
+                  });
+                  await reloadAnalyses();
+                } finally {
+                  recomputingRef.current = false;
+                  setRecomputing(false);
+                }
               },
               t("统计分析已排队", "Analysis queued"),
-            )
-          }
+            );
+          }}
         >
           <Play size={14} />
           {t("重新计算统计", "Recompute statistics")}
