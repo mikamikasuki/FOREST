@@ -110,10 +110,15 @@ export function InterventionPanel({ projectId }: { projectId: string }) {
             <strong>
               {item.status === "pending"
                 ? t("等待人工决定", "Waiting for human decision")
-                : t(
-                    "决定已保存，等待继续",
-                    "Decision saved; awaiting continuation",
-                  )}
+                : item.can_resume
+                  ? t(
+                      "决定已保存，等待继续",
+                      "Decision saved; awaiting continuation",
+                    )
+                  : t(
+                      `决定已保存；运行状态：${item.run_status || "未知"}`,
+                      `Decision saved; run status: ${item.run_status || "unknown"}`,
+                    )}
             </strong>
             <NavLink to={`/projects/${projectId}/runs?run=${item.run_id}`}>
               {item.run_id.slice(0, 8)}
@@ -133,7 +138,7 @@ export function InterventionPanel({ projectId }: { projectId: string }) {
               >
                 {t("审阅动作", "Review action")}
               </Button>
-            ) : (
+            ) : item.can_resume ? (
               <Button
                 onClick={() =>
                   action(async () => {
@@ -145,7 +150,7 @@ export function InterventionPanel({ projectId }: { projectId: string }) {
               >
                 {t("继续已保存的决定", "Continue saved decision")}
               </Button>
-            )}
+            ) : null}
           </div>
         ))}
       {!visibleReceipts.length && (
