@@ -229,8 +229,9 @@ class BranchWorkspace:
             value.update(path=relative, branch_id=source_branch_id,
                          destination=value.get("destination") or relative)
             normalized.append(value)
-        refs = list({(ref["branch_id"], ref["path"], ref["destination"]): ref
-                     for ref in normalized}.values())
+        # A file materialized locally on this branch shadows an inherited
+        # reference with the same destination.
+        refs = list({ref["destination"]: ref for ref in normalized}.values())
         branch_id = branch_id or str(uuid4())
         dest = safe_path(self.project_dir, f"branches/{branch_id}")
         base = safe_path(self.project_dir, f".forest-bases/{branch_id}")

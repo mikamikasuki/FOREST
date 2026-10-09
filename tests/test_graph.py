@@ -147,6 +147,27 @@ def test_nested_fork_keeps_inherited_data_references(tmp_path):
     assert "inherited measurements" in ContextBuilder(second, tmp_path).build(second_node["id"])["text"]
 
 
+def test_nested_fork_reference_uses_local_file_override(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "train.csv").write_text("original measurements")
+    first = apply(graph(), tmp_path, "fork_branch", ["a"], name="First")["graph"]
+    first_branch = first["branches"][-1]
+    first_node = next(n for n in first["nodes"] if n.get("forked_from") == "a")
+    override = tmp_path / first_branch["workspace"] / "data" / "train.csv"
+    override.parent.mkdir(parents=True)
+    override.write_text("branch-local measurements")
+
+    second = apply(first, tmp_path, "fork_branch", [first_node["id"]], name="Second")["graph"]
+    second_branch = second["branches"][-1]
+    second_node = next(n for n in second["nodes"] if n.get("forked_from") == first_node["id"])
+    reference = second_branch["input_mapping"][0]
+
+    assert reference["branch_id"] == first_branch["id"]
+    context = ContextBuilder(second, tmp_path).build(second_node["id"])["text"]
+    assert "branch-local measurements" in context
+    assert "original measurements" not in context
+
+
 def test_clone_subtree_copies_edges_without_claiming_execution(tmp_path):
     g = graph()
     get(g, "a").update(execution_status="completed", outputs=[{"path": "metric.json"}])
