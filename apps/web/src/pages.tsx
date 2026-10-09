@@ -930,6 +930,11 @@ function ExperimentForm({
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
+          const parsedSeeds = seeds
+            .split(",")
+            .map((seed) => seed.trim())
+            .filter(Boolean)
+            .map(Number);
           const r = await action(() =>
             api(
               item ? `/experiments/${item.id}` : "/experiments",
@@ -943,7 +948,7 @@ function ExperimentForm({
                   command,
                   code,
                   dataset,
-                  seeds: seeds.split(",").map(Number),
+                  seeds: parsedSeeds,
                   parameters: parseJson(params),
                   budget: seconds.trim() ? { seconds: Number(seconds) } : {},
                   timeout: seconds.trim() ? Number(seconds) : null,
