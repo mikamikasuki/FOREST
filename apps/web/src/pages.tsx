@@ -2468,6 +2468,11 @@ export function FilesPage() {
     `/projects/${id}/files`,
     { files: [] },
   );
+  useEffect(() => {
+    const refreshFiles = () => void reload();
+    window.addEventListener("forest-refresh", refreshFiles);
+    return () => window.removeEventListener("forest-refresh", refreshFiles);
+  }, [reload]);
   const [path, setPath] = useState("");
   const [content, setContent] = useState("");
   const [original, setOriginal] = useState("");
