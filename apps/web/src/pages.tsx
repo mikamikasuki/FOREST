@@ -679,6 +679,26 @@ export function ResearchPage({ resource }: { resource: string }) {
                   <strong>{String(r.data.probability_range)}</strong>
                 </div>
               )}
+              {Array.isArray(r.data.supporting_source_titles) && (
+                <div className="idea-field">
+                  <span>{t("模型选出的相关来源（引用前请核实）", "Model-selected supporting or motivating sources (verify before citing)")}</span>
+                  {r.data.supporting_source_titles.length ? (
+                    <ul>{r.data.supporting_source_titles.map((title: string, index: number) => <li key={`${title}:${index}`}>{title}</li>)}</ul>
+                  ) : <p>{t("没有检索来源被选为此方向的直接依据。", "No retrieved source was selected as direct support for this direction.")}</p>}
+                </div>
+              )}
+              {Array.isArray(r.data.background_source_titles) && r.data.background_source_titles.length > 0 && (
+                <div className="idea-field">
+                  <span>{t("检索背景（不作为此方向的直接依据）", "Retrieved background (not direct support for this direction)")}</span>
+                  <ul>{r.data.background_source_titles.map((title: string, index: number) => <li key={`${title}:${index}`}>{title}</li>)}</ul>
+                </div>
+              )}
+              {!Array.isArray(r.data.supporting_source_titles) && Array.isArray(r.data.source_titles) && r.data.source_titles.length > 0 && (
+                <div className="idea-field">
+                  <span>{t("旧记录的检索来源池（未归属到此方向）", "Retrieved source pool in this older record (not attributed to this direction)")}</span>
+                  <ul>{r.data.source_titles.map((title: string, index: number) => <li key={`${title}:${index}`}>{title}</li>)}</ul>
+                </div>
+              )}
               {Array.isArray(r.data.commands) && (
                 <ProposalCommands record={r} onApplied={reload} />
               )}

@@ -125,6 +125,10 @@ def adopt(ident:str,body:dict=Body(default={})):
         title=body.get('title',idea.title)
         if not isinstance(title,str) or not title.strip() or len(title)>350: error('INVALID_TITLE','Use a title of 1–350 characters',422)
         source_text=json.dumps(idea.data,ensure_ascii=False,indent=2)
+        if isinstance(idea.data.get('supporting_source_ids'),list):
+            provenance_note='Source roles were selected by a model from retrieved metadata/abstracts; verify each source before citing. Background sources are not direct support.'
+        else:
+            provenance_note='This older idea has an unclassified retrieved-source pool. Do not treat its source list as evidence for this direction without checking each item.'
         custom=body.get('instructions','')
         if not isinstance(custom,str): error('INVALID_INSTRUCTIONS','Instructions must be text',422)
         source_input={'kind':'idea','id':idea.id,'project_id':p.id}
@@ -142,7 +146,7 @@ def adopt(ident:str,body:dict=Body(default={})):
             commands.append({'operation':'add_node','targets':[],'params':params})
         add(hypothesis_id,'hypothesis',title,
             'Develop this adopted idea into a testable protocol. '+duty+' Write hypothesis.md in the run workspace and finish with that actual artifact.\n'
-            +'Owner instructions: '+custom+'\nIdea source material (claims are untested unless supported):\n'+source_text,
+            +'Owner instructions: '+custom+'\n'+provenance_note+'\nIdea source material (claims are untested unless supported):\n'+source_text,
             {'kind':'agent','role':'Researcher'},common_inputs,0)
         protocol={'node_id':hypothesis_id,'path':'hypothesis.md','destination':'hypothesis.md','branch_id':branch_id}
         command=config.get('command')
