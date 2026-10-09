@@ -351,6 +351,38 @@ function WorkspaceInner() {
     }
     return out;
   }, [linkedEdges, collapsed]);
+  const visibleNodeIds = useMemo(
+    () =>
+      new Set(
+        graph.nodes
+          .filter(
+            (item) =>
+              (!item.archived || item.id === revealedNode) &&
+              !hidden.has(item.id) &&
+              (branch === "all" || item.branch_id === branch),
+          )
+          .map((item) => item.id),
+      ),
+    [branch, graph.nodes, hidden, revealedNode],
+  );
+  const visibleEdges = useMemo(
+    () =>
+      linkedEdges.filter(
+        (edge) =>
+          visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+      ),
+    [linkedEdges, visibleNodeIds],
+  );
+  const visibleEdgeIds = useMemo(
+    () => new Set(visibleEdges.map((edge) => edge.id)),
+    [visibleEdges],
+  );
+  useEffect(() => {
+    setSelectedEdgeIds((current) => {
+      const next = current.filter((edgeId) => visibleEdgeIds.has(edgeId));
+      return next.length === current.length ? current : next;
+    });
+  }, [visibleEdgeIds]);
   useEffect(() => {
     setFlowNodes(
       graph.nodes
@@ -419,42 +451,53 @@ function WorkspaceInner() {
   };
   const edges = useMemo(
     () =>
-      linkedEdges.map((e) => ({
-        ...e,
-        ariaLabel: `${nodesById.get(e.source)?.title || e.source} ${e.relation.replaceAll("_", " ")} ${nodesById.get(e.target)?.title || e.target}`,
-        selected: selectedEdgeIds.includes(e.id),
-        deletable: !e.implicit,
-        type: "smoothstep",
-        animated: runs.some(
-          (r) => r.node_id === e.target && r.status === "running",
-        ),
-        label: e.implicit
-          ? "input binding"
-          : ["depends_on", "consumes"].includes(e.relation)
-            ? undefined
-            : e.relation,
-        style: {
-          stroke: e.relation === "depends_on" ? "#9bad9e" : "#a7b2bd",
-          strokeWidth: 1.5,
-          strokeDasharray: [
-            "history",
-            "derived_from",
-            "references",
-            "evidence",
-            "cites",
-            "group",
-          ].includes(e.relation)
-            ? "5 5"
-            : undefined,
-        },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          width: 15,
-          height: 15,
-          color: "#9bad9e",
-        },
-      })),
-    [linkedEdges, nodesById, runs, selectedEdgeIds],
+      visibleEdges.map((e) => {
+        const sourceTitle = nodesById.get(e.source)?.title || e.source;
+        const targetTitle = nodesById.get(e.target)?.title || e.target;
+        const relationLabel = e.relation.replaceAll("_", " ");
+        const ariaLabel =
+          e.relation === "depends_on"
+            ? `${targetTitle} depends on ${sourceTitle}`
+            : e.relation === "consumes"
+              ? `${targetTitle} consumes ${sourceTitle}`
+              : `${sourceTitle} ${relationLabel} ${targetTitle}`;
+        return {
+          ...e,
+          ariaLabel,
+          selected: selectedEdgeIds.includes(e.id),
+          deletable: !e.implicit,
+          type: "smoothstep",
+          animated: runs.some(
+            (r) => r.node_id === e.target && r.status === "running",
+          ),
+          label: e.implicit
+            ? "input binding"
+            : ["depends_on", "consumes"].includes(e.relation)
+              ? undefined
+              : e.relation,
+          style: {
+            stroke: e.relation === "depends_on" ? "#9bad9e" : "#a7b2bd",
+            strokeWidth: 1.5,
+            strokeDasharray: [
+              "history",
+              "derived_from",
+              "references",
+              "evidence",
+              "cites",
+              "group",
+            ].includes(e.relation)
+              ? "5 5"
+              : undefined,
+          },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            width: 15,
+            height: 15,
+            color: "#9bad9e",
+          },
+        };
+      }),
+    [nodesById, runs, selectedEdgeIds, visibleEdges],
   );
   const onSelectionChange = useCallback(
     ({ nodes }: { nodes: FlowNode[] }) =>
@@ -483,56 +526,38 @@ function WorkspaceInner() {
       }
       const removedEdges = changes.flatMap((change) => {
         if (change.type !== "remove") return [];
-        const edge = linkedEdges.find((item) => item.id === change.id);
+        const edge = visibleEdges.find((item) => item.id === change.id);
         return edge && !edge.implicit ? [edge] : [];
       });
       if (!removedEdges.length) return;
       void action(async () => {
         const projectId = id!;
         const removedIds = new Set(removedEdges.map((edge) => edge.id));
-        let result: { revision: number };
         try {
-          result = await api<{ revision: number }>(
-            `/projects/${projectId}/graph/batch`,
-            "POST",
-            {
-              request_id: uid(),
-              expected_revision: graph.revision,
-              commands: removedEdges.map((edge) => ({
-                operation: "remove_dependency",
-                targets: [],
-                params: {
-                  source: edge.source,
-                  target: edge.target,
-                  relation: edge.relation,
-                },
-              })),
-            },
-          );
+          await api(`/projects/${projectId}/graph/batch`, "POST", {
+            request_id: uid(),
+            expected_revision: graph.revision,
+            commands: removedEdges.map((edge) => ({
+              operation: "remove_dependency",
+              targets: [],
+              params: {
+                source: edge.source,
+                target: edge.target,
+                relation: edge.relation,
+              },
+            })),
+          });
         } catch (error) {
-          try {
-            setGraph(await api<Graph>(`/projects/${projectId}/graph`));
-          } catch {
-            // Keep the original mutation error visible.
-          }
+          await reload();
           throw error;
         }
-        setGraph((current) => ({
-          ...current,
-          revision: result.revision,
-          edges: current.edges.filter((edge) => !removedIds.has(edge.id)),
-        }));
         setSelectedEdgeIds((current) =>
           current.filter((edgeId) => !removedIds.has(edgeId)),
         );
-        try {
-          setGraph(await api<Graph>(`/projects/${projectId}/graph`));
-        } catch {
-          // Keep the committed removal visible until refresh succeeds.
-        }
+        await reload();
       });
     },
-    [action, api, graph.revision, id, linkedEdges, setGraph],
+    [action, api, graph.revision, id, reload, visibleEdges],
   );
   const run = async (runScope = "single") => {
     if (!node) return;

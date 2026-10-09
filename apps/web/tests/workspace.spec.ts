@@ -139,13 +139,21 @@ test("Workspace edges expose their relationship and support keyboard deletion", 
   const edge = page.getByTestId(`rf__edge-${edgeId}`);
   await expect(edge).toHaveAttribute(
     "aria-label",
-    "Source node depends on Target node",
+    "Target node depends on Source node",
   );
   await edge.focus();
   await page.keyboard.press("Enter");
   await expect(edge).toHaveClass(/selected/);
   await page.keyboard.press("Space");
   await expect(edge).toHaveClass(/selected/);
+
+  await page.route(`**/api/projects/${projectId}/graph`, async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Refresh unavailable" }),
+    });
+  });
   await page.keyboard.press("Delete");
 
   await expect
@@ -156,7 +164,108 @@ test("Workspace edges expose their relationship and support keyboard deletion", 
       return current.edges.some((item: { id: string }) => item.id === edgeId);
     })
     .toBe(false);
+  await expect(page.getByText("Refresh unavailable")).toBeVisible();
+  await expect(edge).toBeVisible();
+
+  await page.unroute(`**/api/projects/${projectId}/graph`);
+  await page.reload();
   await expect(edge).toHaveCount(0);
+});
+
+test("filtering an edge off the canvas prevents its keyboard deletion", async ({
+  page,
+  request,
+}) => {
+  let graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const addNode = async (title: string, x: number) => {
+    const result = await request.post(
+      `/api/projects/${projectId}/graph/commands`,
+      {
+        data: {
+          request_id: crypto.randomUUID(),
+          expected_revision: graph.revision,
+          operation: "add_node",
+          targets: [],
+          params: {
+            id: crypto.randomUUID(),
+            branch_id: graph.branches[0].id,
+            type: "goal",
+            title,
+            position: { x, y: 160 },
+          },
+          run: false,
+        },
+      },
+    );
+    expect(result.ok()).toBeTruthy();
+    graph = (await result.json()).graph;
+    return graph.nodes.find((node: { title: string }) => node.title === title);
+  };
+  const source = await addNode("Visible source", 180);
+  const target = await addNode("Hidden target", 520);
+  const connected = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_dependency",
+        targets: [],
+        params: {
+          source: source.id,
+          target: target.id,
+          relation: "depends_on",
+        },
+        run: false,
+      },
+    },
+  );
+  expect(connected.ok()).toBeTruthy();
+  graph = (await connected.json()).graph;
+  const edgeId = graph.edges.find(
+    (edge: { source: string; target: string }) =>
+      edge.source === source.id && edge.target === target.id,
+  ).id as string;
+  const forked = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "fork_branch",
+        targets: [target.id],
+        params: {
+          name: "Filtered edge branch",
+          copy_policy: { code: true, data: "reference", results: false },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(forked.ok()).toBeTruthy();
+  graph = (await forked.json()).graph;
+  const alternate = graph.branches.find(
+    (branch: { id: string }) => branch.id !== source.branch_id,
+  );
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const edge = page.getByTestId(`rf__edge-${edgeId}`);
+  await expect(edge).toBeVisible();
+  await edge.focus();
+  await page.keyboard.press("Enter");
+  await expect(edge).toHaveClass(/selected/);
+  await page.getByLabel("Current branch").selectOption(alternate.id);
+  await expect(edge).toHaveCount(0);
+  await page.locator(".react-flow").press("Delete");
+
+  const current = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  expect(current.edges.some((item: { id: string }) => item.id === edgeId)).toBe(
+    true,
+  );
 });
 
 test("a stale editor cannot overwrite a file recreated after deletion", async ({
@@ -1054,9 +1163,7 @@ test("Paper full-manuscript picker lists completed runs from this project", asyn
       exact: true,
     })
     .click();
-  await expect(
-    picker.getByRole("checkbox", { name: runLabel }),
-  ).toBeVisible();
+  await expect(picker.getByRole("checkbox", { name: runLabel })).toBeVisible();
   await expect(generate).toBeDisabled();
 });
 
