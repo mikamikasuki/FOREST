@@ -2424,7 +2424,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `GET /api/runs/{ident}/session`
 
-Return {run_id,status,session}. Missing agent_session.json means session:null. summary=true returns selected session status/totals/active_seconds/wait_for/updated_at/budget_reason plus transcript_count; selected fields can be null. Full session structure is extensible.
+Return {run_id,status,session}. Missing agent_session.json means session:null. For a cancelled run, the session status is reported as cancelled even if its last checkpoint predates cancellation. summary=true returns selected session status/totals/active_seconds/wait_for/updated_at/budget_reason plus transcript_count; selected fields can be null. Full session structure is extensible.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
