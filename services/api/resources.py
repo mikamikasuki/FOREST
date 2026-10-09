@@ -496,8 +496,12 @@ def install_resource_routes(name,model):
             if 'title' in body: r.title=body['title']
             if 'data' in body:
                 from services.interventions.dependencies import validate_bindings
-                validate_bindings(s,r.project_id,{**r.data,**body['data']})
-                updated={**r.data,**body['data']}
+                if body.get('replace_data') is True:
+                    validate_bindings(s,r.project_id,body['data'])
+                    updated=body['data']
+                else:
+                    validate_bindings(s,r.project_id,{**r.data,**body['data']})
+                    updated={**r.data,**body['data']}
                 render_inputs=('kind','style','code','code_origin','run_ids','metric','data','caption','purpose','image_prompt','narrative_mode','image_variants','candidates')
                 if name=='figures' and any(updated.get(key)!=r.data.get(key) for key in render_inputs):
                     for key in ('outputs','svg_path','png_path','pdf_path','jpg_path','jpeg_path','visual_selection'):

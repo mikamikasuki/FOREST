@@ -1785,7 +1785,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/analyses/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1847,7 +1847,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/claims/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1909,7 +1909,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/datasets/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1971,7 +1971,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/experiments/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2033,7 +2033,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/figures/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale. For figures, changes to render inputs (kind/style/code/code_origin/run_ids/metric/data/caption/purpose/image_prompt/narrative_mode/image_variants/candidates) clear old render outputs and review selection and set needs_review; render and review the new revision before insertion.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale. For figures, changes to render inputs (kind/style/code/code_origin/run_ids/metric/data/caption/purpose/image_prompt/narrative_mode/image_variants/candidates) clear old render outputs and review selection and set needs_review; render and review the new revision before insertion.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2095,7 +2095,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/ideas/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2157,7 +2157,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/library/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2209,7 +2209,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/reviews/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2271,7 +2271,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/theories/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -4248,7 +4248,8 @@ Additional properties: extensible JSON.
 | `title` | string | no |  |
 | `status` | string | no |  |
 | `data` | JsonObject | no |  |
-| `expected_revision` | integer | no | Optional resource revision; data is merged one level into the existing record. |
+| `replace_data` | boolean | no | When true, replace the complete resource data object instead of merging it. |
+| `expected_revision` | integer | no | Optional resource revision; omission uses the current resource revision. |
 
 Additional properties: extensible JSON.
 
