@@ -622,7 +622,7 @@ Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT.
 
 #### `POST /api/projects/import`
 
-multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped graph/resource identifiers; preserve its selected provider when that ID exists in the current workspace. If the saved provider is unavailable, mark provider_selection_required and prevent Agent runs from silently falling back until the owner edits project settings. Active imported work is interrupted and execution is not replayed.
+multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped graph/resource identifiers; preserve its selected provider when that ID exists in the current workspace. If the saved provider is unavailable, mark provider_selection_required and prevent provider-backed runs from silently falling back until the owner edits project settings. Active imported work is interrupted and execution is not replayed.
 
 Body: `multipart/form-data`: `Body_import_project_api_projects_import_post`; required.
 
@@ -2247,7 +2247,7 @@ Known domain failures: `400` EMPTY_BRANCH or scheduling/input errors; `404` NOT_
 
 #### `POST /api/nodes/{ident}/run`
 
-Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id. Imported projects with an unavailable archived provider require an explicit provider or workspace-default selection before scheduling.
+Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id. Provider-backed runs in imported projects with an unavailable archived provider require an explicit provider or workspace-default selection before scheduling.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |

@@ -14453,7 +14453,7 @@
     },
     "/api/nodes/{ident}/run": {
       "post": {
-        "description": "Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id. Imported projects with an unavailable archived provider require an explicit provider or workspace-default selection before scheduling.",
+        "description": "Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id. Provider-backed runs in imported projects with an unavailable archived provider require an explicit provider or workspace-default selection before scheduling.",
         "operationId": "run_node_api_nodes__ident__run_post",
         "parameters": [
           {
@@ -15912,7 +15912,7 @@
     },
     "/api/projects/import": {
       "post": {
-        "description": "multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped graph/resource identifiers; preserve its selected provider when that ID exists in the current workspace. If the saved provider is unavailable, mark provider_selection_required and prevent Agent runs from silently falling back until the owner edits project settings. Active imported work is interrupted and execution is not replayed.",
+        "description": "multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped graph/resource identifiers; preserve its selected provider when that ID exists in the current workspace. If the saved provider is unavailable, mark provider_selection_required and prevent provider-backed runs from silently falling back until the owner edits project settings. Active imported work is interrupted and execution is not replayed.",
         "operationId": "import_project_api_projects_import_post",
         "requestBody": {
           "content": {

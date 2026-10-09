@@ -510,9 +510,6 @@ async def import_project(file:UploadFile=File(...)):
                 controller.update(status='paused',phase='PLAN')
             config['controller']=controller
         p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),mode=mode,budget=orig.get('budget',{}),config=config)
-        if config.get('provider_selection_required'):
-            # Do not let make_project's workspace default silently replace an unavailable archived selection.
-            p.config=config
         root=project_dir(p.id); remember_import_root(root)
         graph=manifest['graph']; old_id=graph['project_id']; mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(manifest.get('resources',{}).values())+[manifest.get('papers',[]),manifest.get('runs',[])]:

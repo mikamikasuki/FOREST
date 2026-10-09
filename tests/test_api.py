@@ -479,6 +479,25 @@ def case_project_provider_roundtrip_requires_explicit_resolution_when_missing(cl
     response = client.post(f"/api/nodes/{node['id']}/run", json={'request_id': str(uuid4())})
     assert response.status_code == 422
     assert response.json()['detail']['code'] == 'PROVIDER_SELECTION_REQUIRED'
+
+    local_node = ok(command(
+        client, unresolved, 'add_node', title='Local experiment', type='experiment',
+        config={'command': ['true']},
+    ))['graph']['nodes'][-1]
+    local_run = client.post(f"/api/nodes/{local_node['id']}/run", json={'request_id': str(uuid4())})
+    assert local_run.status_code == 200, local_run.text
+
+    duplicate = ok(client.post(f"/api/projects/{unresolved['id']}/duplicate"))
+    assert duplicate['config'].get('provider_id') is None
+    assert duplicate['config']['provider_selection_required'] is True
+    duplicate_agent = next(
+        item for item in graph(client, duplicate)['nodes']
+        if item['title'] == 'Research agent'
+    )
+    duplicate_run = client.post(f"/api/nodes/{duplicate_agent['id']}/run", json={'request_id': str(uuid4())})
+    assert duplicate_run.status_code == 422
+    assert duplicate_run.json()['detail']['code'] == 'PROVIDER_SELECTION_REQUIRED'
+
     resolved = ok(client.patch(f"/api/projects/{unresolved['id']}", json={
         'config': {**unresolved['config'], 'provider_id': provider['id']},
     }))
