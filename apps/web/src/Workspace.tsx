@@ -14,7 +14,12 @@ import {
   ReactFlowProvider,
   useReactFlow,
 } from "@xyflow/react";
-import type { NodeProps, Node as FlowNode, NodeChange } from "@xyflow/react";
+import type {
+  EdgeChange,
+  NodeProps,
+  Node as FlowNode,
+  NodeChange,
+} from "@xyflow/react";
 import {
   Plus,
   Play,
@@ -270,6 +275,7 @@ function WorkspaceInner() {
     [collapsed, id],
   );
   const [flowNodes, setFlowNodes] = useState<FlowNode[]>([]);
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
   const [suggest, setSuggest] = useState("");
   const [scope, setScope] = useState("node");
   const [busy, setBusy] = useState(false);
@@ -645,6 +651,10 @@ function WorkspaceInner() {
     () => executionLinks(graph),
     [graph.nodes, graph.edges],
   );
+  const nodesById = useMemo(
+    () => new Map(graph.nodes.map((item) => [item.id, item])),
+    [graph.nodes],
+  );
   const hidden = useMemo(() => {
     const out = new Set<string>();
     for (const root of collapsed) {
@@ -662,6 +672,38 @@ function WorkspaceInner() {
     }
     return out;
   }, [linkedEdges, collapsed]);
+  const visibleNodeIds = useMemo(
+    () =>
+      new Set(
+        graph.nodes
+          .filter(
+            (item) =>
+              (!item.archived || item.id === revealedNode) &&
+              !hidden.has(item.id) &&
+              (branch === "all" || item.branch_id === branch),
+          )
+          .map((item) => item.id),
+      ),
+    [branch, graph.nodes, hidden, revealedNode],
+  );
+  const visibleEdges = useMemo(
+    () =>
+      linkedEdges.filter(
+        (edge) =>
+          visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+      ),
+    [linkedEdges, visibleNodeIds],
+  );
+  const visibleEdgeIds = useMemo(
+    () => new Set(visibleEdges.map((edge) => edge.id)),
+    [visibleEdges],
+  );
+  useEffect(() => {
+    setSelectedEdgeIds((current) => {
+      const next = current.filter((edgeId) => visibleEdgeIds.has(edgeId));
+      return next.length === current.length ? current : next;
+    });
+  }, [visibleEdgeIds]);
   useEffect(() => {
     setFlowNodes(
       graph.nodes
@@ -679,6 +721,7 @@ function WorkspaceInner() {
               x: 300 + (index % 3) * 290,
               y: 100 + Math.floor(index / 3) * 220,
             },
+          deletable: false,
           data: { node: n },
           selected: n.id === selected,
         })),
@@ -730,39 +773,57 @@ function WorkspaceInner() {
   };
   const edges = useMemo(
     () =>
-      linkedEdges.map((e) => ({
-        ...e,
-        type: "smoothstep",
-        animated: runs.some(
-          (r) => r.node_id === e.target && r.status === "running",
-        ),
-        label: e.implicit
-          ? "input binding"
-          : ["depends_on", "consumes"].includes(e.relation)
-            ? undefined
-            : e.relation,
-        style: {
-          stroke: e.relation === "depends_on" ? "#9bad9e" : "#a7b2bd",
-          strokeWidth: 1.5,
-          strokeDasharray: [
-            "history",
-            "derived_from",
-            "references",
-            "evidence",
-            "cites",
-            "group",
-          ].includes(e.relation)
-            ? "5 5"
-            : undefined,
-        },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          width: 15,
-          height: 15,
-          color: "#9bad9e",
-        },
-      })),
-    [linkedEdges, runs],
+      visibleEdges.map((e) => {
+        const sourceTitle = nodesById.get(e.source)?.title || e.source;
+        const targetTitle = nodesById.get(e.target)?.title || e.target;
+        const relationLabel = e.relation.replaceAll("_", " ");
+        const ariaLabel =
+          e.relation === "depends_on"
+            ? `${targetTitle} depends on ${sourceTitle}`
+            : e.relation === "consumes"
+              ? `${targetTitle} consumes ${sourceTitle}`
+              : e.relation === "derived_from"
+                ? `${targetTitle} is derived from ${sourceTitle}`
+                : `${sourceTitle} ${relationLabel} ${targetTitle}`;
+        return {
+          ...e,
+          ariaLabel,
+          // Branch and collapse filters can change before the pruning effect
+          // below runs. Never expose a hidden edge as selected for that render.
+          selected: visibleEdgeIds.has(e.id) && selectedEdgeIds.includes(e.id),
+          deletable: !e.implicit,
+          type: "smoothstep",
+          animated: runs.some(
+            (r) => r.node_id === e.target && r.status === "running",
+          ),
+          label: e.implicit
+            ? "input binding"
+            : ["depends_on", "consumes"].includes(e.relation)
+              ? undefined
+              : e.relation,
+          style: {
+            stroke: e.relation === "depends_on" ? "#9bad9e" : "#a7b2bd",
+            strokeWidth: 1.5,
+            strokeDasharray: [
+              "history",
+              "derived_from",
+              "references",
+              "evidence",
+              "cites",
+              "group",
+            ].includes(e.relation)
+              ? "5 5"
+              : undefined,
+          },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            width: 15,
+            height: 15,
+            color: "#9bad9e",
+          },
+        };
+      }),
+    [nodesById, runs, selectedEdgeIds, visibleEdgeIds, visibleEdges],
   );
   const onSelectionChange = useCallback(
     ({ nodes }: { nodes: FlowNode[] }) =>
@@ -774,6 +835,69 @@ function WorkspaceInner() {
           : next;
       }),
     [],
+  );
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      const selections = changes.filter((change) => change.type === "select");
+      if (selections.length) {
+        setSelectedEdgeIds((current) => {
+          const next = new Set(current);
+          for (const change of selections) {
+            if (change.type !== "select") continue;
+            if (change.selected) next.add(change.id);
+            else next.delete(change.id);
+          }
+          return [...next];
+        });
+      }
+      const removedEdges = changes.flatMap((change) => {
+        if (change.type !== "remove") return [];
+        const edge = visibleEdges.find((item) => item.id === change.id);
+        return edge && !edge.implicit ? [edge] : [];
+      });
+      if (!removedEdges.length) return;
+      void action(async () => {
+        const projectId = id!;
+        const removedIds = new Set(removedEdges.map((edge) => edge.id));
+        try {
+          const result = await api<{ graph: Graph }>(
+            `/projects/${projectId}/graph/batch`,
+            "POST",
+            {
+              request_id: uid(),
+              expected_revision: graph.revision,
+              commands: removedEdges.map((edge) => ({
+                operation: "remove_dependency",
+                targets: [],
+                params: {
+                  source: edge.source,
+                  target: edge.target,
+                  relation: edge.relation,
+                },
+              })),
+            },
+          );
+          setGraph(result.graph);
+        } catch (error) {
+          await reload();
+          throw error;
+        }
+        setSelectedEdgeIds((current) =>
+          current.filter((edgeId) => !removedIds.has(edgeId)),
+        );
+        void reloadRuns();
+      });
+    },
+    [
+      action,
+      api,
+      graph.revision,
+      id,
+      reload,
+      reloadRuns,
+      setGraph,
+      visibleEdges,
+    ],
   );
   const run = async (runScope = "single") => {
     if (!node) return;
@@ -961,6 +1085,7 @@ function WorkspaceInner() {
                     minZoom={0.15}
                     maxZoom={2}
                     onNodesChange={onNodesChange}
+                    onEdgesChange={onEdgesChange}
                     onNodeClick={(_, n) => setSelected(n.id)}
                     onNodeDoubleClick={(_, n) => {
                       setSelected(n.id);
@@ -995,7 +1120,7 @@ function WorkspaceInner() {
                         );
                       }
                     }}
-                    deleteKeyCode={null}
+                    deleteKeyCode={["Backspace", "Delete"]}
                   >
                     <Background color="#cbd4cb" gap={24} size={1} />
                     <Controls showInteractive={false} />
