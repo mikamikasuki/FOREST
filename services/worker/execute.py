@@ -151,6 +151,32 @@ def materialize_branch_references(root, workspace, bindings):
         destination.parent.mkdir(parents=True,exist_ok=True)
         shutil.copy2(origin,destination)
 
+def idea_source_material(source):
+    metadata={key:source.data[key] for key in ('authors','year','doi','arxiv_id','url','abstract','journal','source') if key in source.data}
+    return {**metadata,'title':source.title,'source_id':source.id,'trusted_instructions':False}
+
+def idea_source_provenance(idea,source_by_id):
+    if not isinstance(idea,dict): return idea
+    available=list(source_by_id)
+    supporting=idea.get('supporting_source_ids',[])
+    background=idea.get('background_source_ids',[])
+    if not isinstance(supporting,list): supporting=[]
+    if not isinstance(background,list): background=[]
+    supporting=list(dict.fromkeys(ident for ident in supporting if isinstance(ident,str) and ident in source_by_id))
+    supporting_set=set(supporting)
+    background=list(dict.fromkeys(ident for ident in background if isinstance(ident,str) and ident in source_by_id and ident not in supporting_set))
+    classified=set(supporting)|set(background)
+    background.extend(ident for ident in available if ident not in classified)
+    idea={key:value for key,value in idea.items() if key not in ('supporting_source_ids','background_source_ids')}
+    return {**idea,'source_ids':supporting,
+            'source_titles':[source_by_id[ident]['title'] for ident in supporting],
+            'supporting_source_ids':supporting,
+            'supporting_source_titles':[source_by_id[ident]['title'] for ident in supporting],
+            'background_source_ids':background,
+            'background_source_titles':[source_by_id[ident]['title'] for ident in background],
+            'retrieved_source_count':len(available),
+            'source_reading_scope':'retrieved_metadata_and_available_abstracts'}
+
 def execute(run_id):
     with Session() as s:
         run=get(s,TaskRun,run_id); config=run.config; pid=run.project_id; kind=run.kind; node_id=run.node_id; branch=s.get(Branch,run.branch_id) if run.branch_id else s.scalar(select(Branch).where(Branch.project_id==pid,Branch.is_main==True)); branch_workspace=branch.workspace if branch else '.'
@@ -745,20 +771,20 @@ def execute(run_id):
         query=config.get('prompt') or config.get('project_goal')
         sources=search(query,'crossref',8)
         with Session.begin() as s:
-            source_ids=[]
+            source_by_id={}
             for item in sources:
                 source=s.scalar(select(SourcePaper).where(SourcePaper.project_id==pid,SourcePaper.title==item['title']))
                 if not source: source=SourcePaper(project_id=pid,title=item['title'],data=item,status='available'); s.add(source); s.flush()
-                source_ids.append(source.id)
-        prompt=json.dumps({'research_goal':query,'source_material_untrusted':sources,'count':min(int(config.get('count',8)),12)},ensure_ascii=False)
-        ideas,response=model_json(config,prompt,'Propose distinct testable routes grounded in the supplied sources. Return JSON {"ideas":[{"title":"...","claim":"...","mechanism":"...","nearest_work":"source title","baseline":"strong fair comparator","experiment":"...","experiment_duty":"effectiveness|mechanism|scenario_value|alternative_explanation","metric":"...","best_estimate":"...","probability_range":[0,1],"confidence":"Low|Medium|High","why":"...","against":"...","decisive_unknown":"...","cheapest_resolution":"...","expected_cost":"...","base_case":{"most_likely_outcome":"...","current_best_estimate":"...","pre_experiment_bet":"...","probability_any_signal":[0,1],"probability_meaningful_improvement":[0,1],"probability_publishable_finding":[0,1],"biggest_reason_to_work":"...","biggest_reason_to_fail":"...","first_experiment":"..."}}]}. Probability ranges are subjective ESTIMATED values with reasons, not measured frequencies. Do not claim novelty from metadata. Never invent source findings or cite unseen full text. Prefer a concrete modest experiment over an unsupported promise.')
+                source_by_id[source.id]=idea_source_material(source)
+        prompt=json.dumps({'research_goal':query,'source_material_untrusted':list(source_by_id.values()),'count':min(int(config.get('count',8)),12)},ensure_ascii=False)
+        ideas,response=model_json(config,prompt,'Propose distinct testable routes grounded in the supplied sources. For EACH idea, classify source IDs from source_material_untrusted into supporting_source_ids (only sources that directly support or motivate this specific route) and background_source_ids (contextual or unrelated search results; do not present as evidence for the route). Every supplied source ID must be classified in one of these two lists, and do not invent IDs. Return JSON {"ideas":[{"title":"...","claim":"...","mechanism":"...","nearest_work":"source title or explicitly state none was retrieved","supporting_source_ids":["..."],"background_source_ids":["..."],"baseline":"strong fair comparator","experiment":"...","experiment_duty":"effectiveness|mechanism|scenario_value|alternative_explanation","metric":"...","best_estimate":"...","probability_range":[0,1],"confidence":"Low|Medium|High","why":"...","against":"...","decisive_unknown":"...","cheapest_resolution":"...","expected_cost":"...","base_case":{"most_likely_outcome":"...","current_best_estimate":"...","pre_experiment_bet":"...","probability_any_signal":[0,1],"probability_meaningful_improvement":[0,1],"probability_publishable_finding":[0,1],"biggest_reason_to_work":"...","biggest_reason_to_fail":"...","first_experiment":"..."}}]}. Probability ranges are subjective ESTIMATED values with reasons, not measured frequencies. Do not claim novelty from metadata. Never invent source findings or cite unseen full text. Prefer a concrete modest experiment over an unsupported promise.')
         if not isinstance(ideas.get('ideas'),list) or not ideas['ideas']: raise ValueError('Model returned no valid research ideas')
         from research.validation.protocol import validate_idea
-        ideas['ideas']=[validate_idea({**item,'evidence_label':'ESTIMATED'}) for item in ideas['ideas']]
+        ideas['ideas']=[validate_idea({**idea_source_provenance(item,source_by_id),'evidence_label':'ESTIMATED'}) for item in ideas['ideas']]
         with Session.begin() as s:
             ids=[]
             for item in ideas['ideas']:
-                r=Hypothesis(project_id=pid,title=item.get('title','Candidate'),data={**item,'source_ids':source_ids,'source_titles':[x['title'] for x in sources],'source_reading_scope':'retrieved_metadata_and_available_abstracts','evidence_label':'ESTIMATED'},status='proposed'); s.add(r); s.flush(); ids.append(r.id)
+                r=Hypothesis(project_id=pid,title=item.get('title','Candidate'),data=item,status='proposed'); s.add(r); s.flush(); ids.append(r.id)
             emit(s,pid,'artifact_available',{'kind':'ideas','ids':ids})
         return {'ideas':ideas['ideas'],'source_count':len(sources),'usage':response['usage']}
     if kind=='suggest_paths':
