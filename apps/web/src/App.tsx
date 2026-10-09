@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Routes,
   Route,
@@ -539,7 +539,26 @@ function Projects() {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("recent");
   const [showArchived, setShowArchived] = useState(false);
+  const [duplicating, setDuplicating] = useState<Set<string>>(() => new Set());
+  const duplicateLocks = useRef(new Set<string>());
   const navigate = useNavigate();
+  const duplicateProject = (projectId: string) =>
+    action(async () => {
+      if (duplicateLocks.current.has(projectId)) return;
+      duplicateLocks.current.add(projectId);
+      setDuplicating((current) => new Set(current).add(projectId));
+      try {
+        await api(`/projects/${projectId}/duplicate`, "POST", {});
+        await reload();
+      } finally {
+        duplicateLocks.current.delete(projectId);
+        setDuplicating((current) => {
+          const next = new Set(current);
+          next.delete(projectId);
+          return next;
+        });
+      }
+    });
   const list = projects
     .filter(
       (p) =>
@@ -660,12 +679,8 @@ function Projects() {
                     </IconButton>
                     <IconButton
                       label={t("复制", "Duplicate")}
-                      onClick={() =>
-                        action(async () => {
-                          await api(`/projects/${p.id}/duplicate`, "POST", {});
-                          await reload();
-                        })
-                      }
+                      disabled={duplicating.has(p.id)}
+                      onClick={() => duplicateProject(p.id)}
                     >
                       <Copy size={14} />
                     </IconButton>
