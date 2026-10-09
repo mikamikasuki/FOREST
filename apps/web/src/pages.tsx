@@ -214,18 +214,25 @@ export function LibraryPage() {
   const [passages, setPassages] = useState<Json | null>(null);
   const [tab, setTab] = useState("abstract");
   const [filter, setFilter] = useState("");
+  const searchRequest = useRef(0);
   const performSearch = async () => {
+    const request = ++searchRequest.current;
+    const query = search;
     setSearching(true);
-    await action(async () => {
-      const r = await api("/library/search", "POST", {
-        query: search,
-        source,
-        limit: 8,
+    setResults([]);
+    setSearched(true);
+    try {
+      await action(async () => {
+        const r = await api("/library/search", "POST", {
+          query,
+          source,
+          limit: 8,
+        });
+        if (request === searchRequest.current) setResults(r.results || []);
       });
-      setResults(r.results || []);
-      setSearched(true);
-    });
-    setSearching(false);
+    } finally {
+      if (request === searchRequest.current) setSearching(false);
+    }
   };
   return (
     <div className="page">
