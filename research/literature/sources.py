@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import socket
 import time
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse, urlsplit
 from uuid import uuid4
 import xml.etree.ElementTree as ET
 
@@ -38,11 +38,36 @@ def _bib_escape(value):
     return str(value or "").replace("\\", "\\textbackslash{}").replace("&", r"\&").replace("%", r"\%").replace("_", r"\_").replace("#", r"\#").replace("{", "").replace("}", "")
 
 
+def _author_names(value):
+    if isinstance(value, (str, dict)):
+        value = [value]
+    elif not isinstance(value, (list, tuple)):
+        value = []
+    names = []
+    for author in value or []:
+        if isinstance(author, str):
+            name = author.strip()
+        elif isinstance(author, dict):
+            name = author.get("name") or " ".join(
+                str(part).strip()
+                for part in (author.get("given"), author.get("family"))
+                if part
+            )
+        else:
+            name = ""
+        if name:
+            names.append(name)
+    return names
+
+
 def bibtex(records: list[dict]) -> str:
     entries = []
     for i, record in enumerate(records):
-        key = record.get("citation_key") or re.sub(r"[^a-zA-Z0-9]", "", (record.get("authors") or ["source"])[0].split()[-1]) + str(record.get("year") or "nd") + str(i)
-        fields = {"title": record.get("title"), "author": " and ".join(record.get("authors", [])), "year": record.get("year"), "doi": record.get("doi"), "url": record.get("url"), "journal": record.get("journal")}
+        authors = _author_names(record.get("authors"))
+        first_author = authors[0] if authors else "source"
+        surname = first_author.split(",", 1)[0].split()[-1]
+        key = record.get("citation_key") or re.sub(r"[^a-zA-Z0-9]", "", surname) + str(record.get("year") or "nd") + str(i)
+        fields = {"title": record.get("title"), "author": " and ".join(authors), "year": record.get("year"), "doi": record.get("doi"), "url": record.get("url"), "journal": record.get("journal")}
         entries.append("@article{" + key + ",\n" + ",\n".join(f"  {k} = {{{_bib_escape(v)}}}" for k, v in fields.items() if v) + "\n}")
     return "\n\n".join(entries)
 
@@ -171,6 +196,7 @@ def download_pdf(url, target):
 
 def import_identifier(identifier: str, output_dir: str | Path | None = None) -> dict:
     value = identifier.strip()
+    doi_input = urlsplit(value).path if value.startswith(("https://", "http://")) else value
     local = Path(value)
     if local.is_file() and local.suffix.lower() == ".pdf":
         record = {"title": local.stem, "authors": [], "year": None, "source": "local_pdf", "url": None, "pdf_path": str(local), "passages": extract_pdf(local), "read_scope": "full_text", "trusted_instructions": False}
@@ -180,8 +206,8 @@ def import_identifier(identifier: str, output_dir: str | Path | None = None) -> 
         if not records:
             raise ValueError("arXiv identifier was not found")
         record = records[0]
-    elif re.search(r"10\.\d{4,9}/\S+", value):
-        doi = re.search(r"10\.\d{4,9}/\S+", value).group(0)
+    elif re.search(r"10\.\d{4,9}/\S+", doi_input):
+        doi = re.search(r"10\.\d{4,9}/\S+", doi_input).group(0)
         record = _crossref(_get("https://api.crossref.org/works/" + quote(doi, safe="")).json()["message"])
     elif value.startswith(("https://", "http://")) and urlparse(value).path.lower().endswith(".pdf"):
         if not output_dir:
