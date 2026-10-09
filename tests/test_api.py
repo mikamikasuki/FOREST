@@ -1421,7 +1421,6 @@ def case_regenerated_run_output_does_not_inherit_file_tombstone_origin(client, a
 
 def case_zero_padded_csv_identifiers_survive_data_rows(client, app):
     from services.api.db import Session, TaskRun
-
     project = create(client)
     node = add_node(client, project, config={
         'kind': 'command', 'command': [sys.executable, '-c', 'pass'],
@@ -1459,6 +1458,71 @@ def case_zero_padded_csv_identifiers_survive_data_rows(client, app):
     assert [row['score'] for row in sorted_rows['rows']] == [10.5, 9.5], sorted_rows
 
 
+def case_run_output_keeps_utf8_character_split_at_page_boundary(client, app):
+    project = create(client)
+    node = add_node(client, project, config={
+        'kind': 'command', 'command': [sys.executable, '-c', 'pass'],
+    })
+    run = ok(client.post(f"/api/nodes/{node['id']}/run", json={
+        'request_id': 'run-for-utf8-chunk-boundary',
+    }))
+    path = Path(os.environ['FOREST_DATA_DIR']) / 'projects' / project['id'] / (run['output_path'] + '/stdout.txt')
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def read_pages():
+        # The Run Panel follows the returned byte cursor; page 1 uses the default 100000-byte limit.
+        first = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': 0, 'limit': 100000}))
+        second = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': first['offset'], 'limit': 100000}))
+        return first['text'] + second['text']
+
+    # 2-, 3- and 4-byte characters cut by the 100000-byte page limit must survive reassembly.
+    for filler, character in ((99999, 'é'), (99999, '中'), (99998, '😀')):
+        expected = 'a' * filler + character + 'b'
+        path.write_bytes(expected.encode())
+        text = read_pages()
+        assert text == expected, f"{character!r} split across the page boundary: {text[-6:]!r}"
+        assert '\ufffd' not in text
+
+    # Invalid bytes are not a partial character: they must decode with replacement and the
+    # cursor must advance past them so a polling reader is never stuck on the same page.
+    path.write_bytes(b'a\xff\xfeb')
+    page = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': 0, 'limit': 100000}))
+    assert page['text'] == 'a\ufffd\ufffdb' and page['offset'] == 4
+
+    # A still-growing file may end inside a character; the cursor stays on the character
+    # start and the next poll returns it whole once the writer has finished the sequence.
+    path.write_bytes(b'a\xe4\xb8')
+    partial = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': 0, 'limit': 100000}))
+    assert partial['text'] == 'a' and partial['offset'] == 1
+    path.write_bytes(b'a\xe4\xb8\xadb')
+    grown = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': partial['offset'], 'limit': 100000}))
+    assert grown['text'] == '中b' and grown['offset'] == 5
+
+    # A held-back prefix that turns out to be invalid is released once more bytes arrive,
+    # so a polling reader is never stuck behind undecodable data.
+    path.write_bytes(b'a\xe4')
+    held = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': 0, 'limit': 100000}))
+    assert held['text'] == 'a' and held['offset'] == 1
+    path.write_bytes(b'a\xe4b')
+    released = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': held['offset'], 'limit': 100000}))
+    assert released['text'] == '\ufffdb' and released['offset'] == 3
+
+    # A page limit smaller than the next character must still make progress, or a client
+    # following the cursor would repeat the same request forever.
+    for limit, content in ((1, 'é中b'), (2, '中😀b'), (3, '😀b'), (1, 'ab')):
+        path.write_bytes(content.encode())
+        pages, offset, text = [], 0, ''
+        while True:
+            page = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': offset, 'limit': limit}))
+            pages.append((page['offset'], page['text']))
+            text += page['text']
+            assert page['offset'] > offset or not page['text'], f"cursor stalled at {offset} with limit={limit}: {pages}"
+            if page['offset'] == offset:
+                break
+            offset = page['offset']
+            if offset >= len(content.encode()):
+                break
+        assert text == content, f"limit={limit} reassembled {text!r}"
 def case_figure_render_is_invalidated_after_data_or_style_edit(client, app):
     p = create(client)
     image_path = 'figures/current.png'
