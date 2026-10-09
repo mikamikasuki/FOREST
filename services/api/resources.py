@@ -229,7 +229,8 @@ def theory_check(body:dict=Body(...)):
         elif kind=='solve': result=sp.solve(expr,x)
         elif kind=='numeric': result=expr.evalf(subs={sp.Symbol(k):float(v) for k,v in body.get('values',{}).items()})
         else: result=sp.simplify(expr)
-        data={'expression':expression,'kind':kind,'result':str(result),'latex':sp.latex(result),'evidence_label':'MEASURED','check_type':'symbolic_computation','scope':'This computation checks the supplied expression; it is not a proof of unprovided assumptions.'}
+        # A symbolic derivation from the supplied expression, not an empirical observation.
+        data={'expression':expression,'kind':kind,'result':str(result),'latex':sp.latex(result),'evidence_label':'INFERRED','check_type':'symbolic_computation','scope':'This computation checks the supplied expression; it is not a proof of unprovided assumptions.'}
     except Exception as exc: error('EXPRESSION_FAILED',str(exc),422)
     with Session.begin() as s:
         get(s,Project,body['project_id']); r=Derivation(project_id=body['project_id'],title=body.get('title',expression),data=data,status='checked'); s.add(r); s.flush(); emit(s,r.project_id,'tool_finished',{'kind':'theory','id':r.id}); return asdict(r)
