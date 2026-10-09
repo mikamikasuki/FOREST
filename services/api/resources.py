@@ -481,12 +481,21 @@ def install_resource_routes(name,model):
             # Project -> resource -> dependent records -> event cursor.
             r=lock_record(s,ident)
             if body.get('expected_revision',r.revision)!=r.revision: error('REVISION_CONFLICT','This research object changed',409)
+            invalidated_figure=False
             if 'title' in body: r.title=body['title']
             if 'data' in body:
                 from services.interventions.dependencies import validate_bindings
                 validate_bindings(s,r.project_id,{**r.data,**body['data']})
-                r.data={**r.data,**body['data']}
+                updated={**r.data,**body['data']}
+                render_inputs=('kind','style','code','code_origin','run_ids','metric','data','caption','purpose','image_prompt','narrative_mode','image_variants','candidates')
+                if name=='figures' and any(updated.get(key)!=r.data.get(key) for key in render_inputs):
+                    for key in ('outputs','svg_path','png_path','pdf_path','jpg_path','jpeg_path','visual_selection'):
+                        updated.pop(key,None)
+                    updated['visual_review_status']='stale'
+                    invalidated_figure=True
+                r.data=updated
             if 'status' in body: r.status=body['status']
+            if invalidated_figure: r.status='needs_review'
             r.revision+=1; touch_dependents(s,r.project_id,r.id); return asdict(r)
     def remove(ident:str):
         with Session.begin() as s:
