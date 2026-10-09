@@ -10,6 +10,7 @@ import re
 import socket
 import time
 from urllib.parse import quote, urlencode, urlparse
+from uuid import uuid4
 import xml.etree.ElementTree as ET
 
 import httpx
@@ -185,7 +186,9 @@ def import_identifier(identifier: str, output_dir: str | Path | None = None) -> 
     elif value.startswith(("https://", "http://")) and urlparse(value).path.lower().endswith(".pdf"):
         if not output_dir:
             raise ValueError("An output directory is needed for PDF import")
-        path = download_pdf(value, Path(output_dir) / "source.pdf")
+        # Allocate per import, not per URL/basename: even a refreshed URL must
+        # never replace the bytes referenced by an existing Library record.
+        path = download_pdf(value, Path(output_dir) / f"source-{uuid4().hex}.pdf")
         record = {"title": Path(urlparse(value).path).stem, "authors": [], "year": None, "source": "public_pdf", "url": value, "pdf_path": path, "passages": extract_pdf(path), "read_scope": "full_text", "trusted_instructions": False}
     else:
         raise ValueError("Use a DOI, arXiv identifier/URL, public PDF URL, or local PDF path")
