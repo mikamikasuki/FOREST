@@ -70,7 +70,7 @@ scheduling, not a synchronous experiment.
 | Graph operation | Target / main `params` fields | Resulting editable operation |
 | --- | --- | --- |
 | `add_node` | Node fields directly or `node:{...}`, optional branch_id/parent_id | Add a node and optional execution parent |
-| `edit_node` | targets: node IDs; fields directly or `patch:{...}`; optional stop_current_run | Deep-merge editable fields, analyze impact, optionally cancel the current run |
+| `edit_node` | targets: node IDs; fields directly or `patch:{...}`; optional stop_current_run; optional `positions:{node_id:{x,y}}` | Deep-merge editable fields, apply per-node layout positions atomically, analyze impact, optionally cancel the current run |
 | `apply_instruction_patch` | targets: node IDs; instructions or old_text/new_text | Replace instructions or one exact matching passage |
 | `delete_node` | targets; strategy subtree/reconnect/visual_only when descendants exist | Remove a subtree, reconnect execution reachability, or remove visual grouping |
 | `add_dependency`, `remove_dependency` | source/target or two targets; relation; add supports input_mapping | Add/remove the specified typed edge |
@@ -428,6 +428,44 @@ Success `200`: `application/json`: `JsonValue`.
 
 Known domain failures: `404` NOT_FOUND.
 
+#### `GET /api/providers/{ident}/references`
+
+List project, node, Agent, reporting and global-default references, plus the count of preserved historical model requests.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `object`.
+
+Known domain failures: `404` NOT_FOUND.
+
+#### `POST /api/providers/{ident}/restore`
+
+Mark a retired provider untested so it can be edited and used again. Credentials removed during retirement must be configured again.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `Provider`.
+
+Known domain failures: `404` NOT_FOUND.
+
+#### `POST /api/providers/{ident}/retire`
+
+Replace or clear every active reference, remove the stored credential, and mark the provider retired while preserving historical model request records. replacement_provider_id may be null to clear references.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Body: `application/json`: `JsonObject`; optional.
+
+Success `200`: `application/json`: `JsonValue`.
+
+Known domain failures: `404` NOT_FOUND; `422` INVALID_REPLACEMENT.
+
 #### `POST /api/providers/{ident}/test`
 
 Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; success contains status plus extensible ModelClient result fields.
@@ -622,7 +660,7 @@ Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT.
 
 #### `POST /api/projects/import`
 
-multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped identifiers; active imported work is interrupted and execution is not replayed.
+multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped graph/resource identifiers; preserve its selected provider when that ID exists in the current workspace. If the saved provider is unavailable, mark provider_selection_required and prevent provider-backed runs from silently falling back until the owner edits project settings. Active imported work is interrupted and execution is not replayed.
 
 Body: `multipart/form-data`: `Body_import_project_api_projects_import_post`; required.
 
@@ -645,7 +683,7 @@ Known domain failures: `400` NOT_FILE; `403` PATH_ESCAPE; `404` NOT_FOUND or MIS
 
 #### `POST /api/projects/{ident}/export`
 
-ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and selected credential/machine fields; large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.
+ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and machine fields while preserving the nonsecret project provider ID; credentials remain excluded. Large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -728,15 +766,31 @@ Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND or MISSING_ARTIFACT; `
 
 #### `GET /api/projects/{ident}/files`
 
-List at most 10000 entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.
+Return a bounded page of eligible workspace entries in depth-first filesystem traversal order. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Cursors are process-local and expire after 10 minutes; on expiration, restart from the first page. Skip symlinks and hidden path components except .forest-bases. Paths are relative to the project root and modified is a filesystem epoch time.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+| `limit` | query | integer | no | Default `500`.  minimum=1, maximum=1000. |
+| `cursor` | query | string or null | no |  |
+
+Success `200`: `application/json`: `FileList`.
+
+Known domain failures: `404` NOT_FOUND; `409` FILE_CURSOR_EXPIRED; `422` INVALID_FILE_CURSOR.
+
+#### `POST /api/projects/{ident}/files/existing`
+
+Return existing files and directories for supplied relative paths in the project workspace. Accepts at most 1,000 paths per request so multi-file uploads can confirm replacements before publishing any selected file; directories cannot be replaced by file uploads.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
 | `ident` | path | string | yes |  |
 
-Success `200`: `application/json`: `FileList`.
+Body: `application/json`: `FileExistenceRequest`; required.
 
-Known domain failures: `404` NOT_FOUND.
+Success `200`: `application/json`: `FileExistenceResult`.
+
+Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `422` INVALID_FILE_PATHS.
 
 #### `POST /api/projects/{ident}/upload`
 
@@ -835,7 +889,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/projects/{ident}/graph/batch`
 
-Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.
+Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; one edit_node may update selected node positions atomically with params.positions keyed by target ID. Workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1403,7 +1457,7 @@ Success `200`: `application/json`: `Project[]`.
 
 #### `POST /api/projects`
 
-Create a project and its main workspace/graph. ProjectCreate supplies the existing Pydantic field limits and defaults. Return the persisted project; successful creation uses HTTP 200.
+Create a project and its main workspace/graph. When mode is omitted, use the saved default_mode preference, falling back to assisted if unset or invalid; an explicit mode takes precedence. Return the persisted project; successful creation uses HTTP 200.
 
 Body: `application/json`: `ProjectCreate`; required.
 
@@ -1651,7 +1705,7 @@ Known domain failures: `400` EMPTY_SELECTION or graph command errors; `404` NOT_
 
 #### `POST /api/research/suggest-paths`
 
-Enqueue path proposals; optional node_id supplies the scheduler node context. Return Run, not the final scientific output.
+Enqueue path proposals. scope=node sends the selected node and its execution ancestors; scope=branch sends only the selected node's branch; scope=project sends the full graph. Node and branch scopes require node_id. Return Run, not the final scientific output.
 
 Body: `application/json`: `QueuedTaskRequest`; required.
 
@@ -1979,7 +2033,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/figures/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale. For figures, changes to render inputs (kind/style/code/code_origin/run_ids/metric/data/caption/purpose/image_prompt/narrative_mode/image_variants/candidates) clear old render outputs and review selection and set needs_review; render and review the new revision before insertion.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2247,7 +2301,7 @@ Known domain failures: `400` EMPTY_BRANCH or scheduling/input errors; `404` NOT_
 
 #### `POST /api/nodes/{ident}/run`
 
-Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id.
+Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id. Provider-backed runs in imported projects with an unavailable archived provider require an explicit provider or workspace-default selection before scheduling.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2257,7 +2311,7 @@ Body: `application/json`: `RunRequest`; required.
 
 Success `200`: `application/json`: `Run or SelectedRunCollection`.
 
-Known domain failures: `400` Scheduling/input errors; `404` NOT_FOUND; `409` Submission/revision conflicts.
+Known domain failures: `400` Scheduling/input errors; `404` NOT_FOUND; `409` Submission/revision conflicts; `422` PROVIDER_SELECTION_REQUIRED.
 
 #### `GET /api/projects/{ident}/runs`
 
@@ -2778,6 +2832,8 @@ Additional properties: rejected by the existing typed/schema-specific validator.
 | `created_at` | string | yes |  |
 | `updated_at` | string | yes |  |
 | `resume_error` | string or null | no |  |
+| `run_status` | string or null | no |  |
+| `can_resume` | boolean or null | no |  |
 
 Additional properties: extensible JSON.
 
@@ -2959,11 +3015,30 @@ Additional properties: extensible JSON.
 
 Additional properties: extensible JSON.
 
+### `FileExistenceRequest`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `paths` | string[] | yes |  |
+
+Additional properties: extensible JSON.
+
+### `FileExistenceResult`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `existing` | string[] | yes |  |
+| `directories` | string[] | yes |  |
+
+Additional properties: extensible JSON.
+
 ### `FileList`
 
 | Field | Type | Required | Details |
 | --- | --- | --- | --- |
 | `files` | FileEntry[] | yes |  |
+| `has_more` | boolean | yes |  |
+| `next_cursor` | string or null | yes |  |
 
 Additional properties: extensible JSON.
 
@@ -3666,7 +3741,7 @@ Additional properties: extensible JSON.
 | `name` | string | yes |  minLength=1, maxLength=240. |
 | `description` | string | no |  Default: ``. |
 | `goal` | string | no |  Default: ``. |
-| `mode` | string | no |  Default: `assisted`. Values: `auto`, `assisted`, `manual`. |
+| `mode` | string or null | no |  |
 | `budget` | object | no |  |
 | `config` | object | no |  |
 

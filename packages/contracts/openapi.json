@@ -858,6 +858,17 @@
             ],
             "title": "Attempt Id"
           },
+          "can_resume": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Can Resume"
+          },
           "consumed_at": {
             "anyOf": [
               {
@@ -904,6 +915,17 @@
           "run_id": {
             "title": "Run Id",
             "type": "string"
+          },
+          "run_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Status"
           },
           "status": {
             "title": "Status",
@@ -1415,6 +1437,43 @@
         ],
         "type": "object"
       },
+      "FileExistenceRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "type": "object"
+      },
+      "FileExistenceResult": {
+        "additionalProperties": true,
+        "properties": {
+          "directories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "existing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "existing",
+          "directories"
+        ],
+        "type": "object"
+      },
       "FileList": {
         "additionalProperties": true,
         "properties": {
@@ -1423,10 +1482,21 @@
               "$ref": "#/components/schemas/FileEntry"
             },
             "type": "array"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "files"
+          "files",
+          "has_more",
+          "next_cursor"
         ],
         "type": "object"
       },
@@ -3372,14 +3442,20 @@
             "type": "string"
           },
           "mode": {
-            "default": "assisted",
-            "enum": [
-              "auto",
-              "assisted",
-              "manual"
+            "anyOf": [
+              {
+                "enum": [
+                  "auto",
+                  "assisted",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Mode",
-            "type": "string"
+            "title": "Mode"
           },
           "name": {
             "maxLength": 240,
@@ -10955,7 +11031,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale. For figures, changes to render inputs (kind/style/code/code_origin/run_ids/metric/data/caption/purpose/image_prompt/narrative_mode/image_variants/candidates) clear old render outputs and review selection and set needs_review; render and review the new revision before insertion.",
         "operationId": "figures_edit_api_figures__ident__patch",
         "parameters": [
           {
@@ -14429,7 +14505,7 @@
     },
     "/api/nodes/{ident}/run": {
       "post": {
-        "description": "Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id.",
+        "description": "Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id. Provider-backed runs in imported projects with an unavailable archived provider require an explicit provider or workspace-default selection before scheduling.",
         "operationId": "run_node_api_nodes__ident__run_post",
         "parameters": [
           {
@@ -14528,7 +14604,7 @@
                 }
               }
             },
-            "description": "Request validation or documented domain field validation failed."
+            "description": "PROVIDER_SELECTION_REQUIRED"
           },
           "500": {
             "content": {
@@ -15793,7 +15869,7 @@
         }
       },
       "post": {
-        "description": "Create a project and its main workspace/graph. ProjectCreate supplies the existing Pydantic field limits and defaults. Return the persisted project; successful creation uses HTTP 200.",
+        "description": "Create a project and its main workspace/graph. When mode is omitted, use the saved default_mode preference, falling back to assisted if unset or invalid; an explicit mode takes precedence. Return the persisted project; successful creation uses HTTP 200.",
         "operationId": "create_project_api_projects_post",
         "requestBody": {
           "content": {
@@ -15888,7 +15964,7 @@
     },
     "/api/projects/import": {
       "post": {
-        "description": "multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped identifiers; active imported work is interrupted and execution is not replayed.",
+        "description": "multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped graph/resource identifiers; preserve its selected provider when that ID exists in the current workspace. If the saved provider is unavailable, mark provider_selection_required and prevent provider-backed runs from silently falling back until the owner edits project settings. Active imported work is interrupted and execution is not replayed.",
         "operationId": "import_project_api_projects_import_post",
         "requestBody": {
           "content": {
@@ -16855,7 +16931,7 @@
     },
     "/api/projects/{ident}/export": {
       "post": {
-        "description": "ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and selected credential/machine fields; large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.",
+        "description": "ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and machine fields while preserving the nonsecret project provider ID; credentials remain excluded. Large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.",
         "operationId": "export_project_api_projects__ident__export_post",
         "parameters": [
           {
@@ -17678,7 +17754,7 @@
     },
     "/api/projects/{ident}/files": {
       "get": {
-        "description": "List at most 10000 entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.",
+        "description": "Return a bounded page of eligible workspace entries in depth-first filesystem traversal order. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Cursors are process-local and expire after 10 minutes; on expiration, restart from the first page. Skip symlinks and hidden path components except .forest-bases. Paths are relative to the project root and modified is a filesystem epoch time.",
         "operationId": "files_api_projects__ident__files_get",
         "parameters": [
           {
@@ -17688,6 +17764,34 @@
             "schema": {
               "title": "Ident",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           }
         ],
@@ -17732,6 +17836,16 @@
             },
             "description": "NOT_FOUND"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "FILE_CURSOR_EXPIRED"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -17740,7 +17854,7 @@
                 }
               }
             },
-            "description": "Request validation or documented domain field validation failed."
+            "description": "INVALID_FILE_CURSOR"
           },
           "500": {
             "content": {
@@ -17763,6 +17877,122 @@
           {}
         ],
         "summary": "List project workspace files",
+        "tags": [
+          "Files"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/projects/{ident}/files/existing": {
+      "post": {
+        "description": "Return existing files and directories for supplied relative paths in the project workspace. Accepts at most 1,000 paths per request so multi-file uploads can confirm replacements before publishing any selected file; directories cannot be replaced by file uploads.",
+        "operationId": "existing_files_api_projects__ident__files_existing_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileExistenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileExistenceResult"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "PATH_ESCAPE"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "NOT_FOUND"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INVALID_FILE_PATHS"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Preflight upload destinations",
         "tags": [
           "Files"
         ],
@@ -17890,7 +18120,7 @@
     },
     "/api/projects/{ident}/graph/batch": {
       "post": {
-        "description": "Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.",
+        "description": "Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; one edit_node may update selected node positions atomically with params.positions keyed by target ID. Workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.",
         "operationId": "graph_batch_api_projects__ident__graph_batch_post",
         "parameters": [
           {
@@ -22502,6 +22732,349 @@
         }
       }
     },
+    "/api/providers/{ident}/references": {
+      "get": {
+        "description": "List project, node, Agent, reporting and global-default references, plus the count of preserved historical model requests.",
+        "operationId": "get_provider_references_api_providers__ident__references_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "historical_request_count": {
+                      "type": "integer"
+                    },
+                    "references": {
+                      "items": {
+                        "$ref": "#/components/schemas/JsonValue"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "references",
+                    "historical_request_count"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "NOT_FOUND"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Inspect active provider references",
+        "tags": [
+          "Configuration"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/providers/{ident}/restore": {
+      "post": {
+        "description": "Mark a retired provider untested so it can be edited and used again. Credentials removed during retirement must be configured again.",
+        "operationId": "provider_restore_api_providers__ident__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "NOT_FOUND"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Restore a retired model provider",
+        "tags": [
+          "Configuration"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/providers/{ident}/retire": {
+      "post": {
+        "description": "Replace or clear every active reference, remove the stored credential, and mark the provider retired while preserving historical model request records. replacement_provider_id may be null to clear references.",
+        "operationId": "provider_retire_api_providers__ident__retire_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonObject"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "NOT_FOUND"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INVALID_REPLACEMENT"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Retire a model provider safely",
+        "tags": [
+          "Configuration"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
     "/api/providers/{ident}/test": {
       "post": {
         "description": "Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; success contains status plus extensible ModelClient result fields.",
@@ -23207,7 +23780,7 @@
     },
     "/api/research/suggest-paths": {
       "post": {
-        "description": "Enqueue path proposals; optional node_id supplies the scheduler node context. Return Run, not the final scientific output.",
+        "description": "Enqueue path proposals. scope=node sends the selected node and its execution ancestors; scope=branch sends only the selected node's branch; scope=project sends the full graph. Node and branch scopes require node_id. Return Run, not the final scientific output.",
         "operationId": "suggest_paths_api_research_suggest_paths_post",
         "requestBody": {
           "content": {
