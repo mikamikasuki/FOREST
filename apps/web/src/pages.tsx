@@ -2185,13 +2185,33 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
   );
   const [layoutDirty, setLayoutDirty] = useState(false);
   const [layoutRun, setLayoutRun] = useState<string | null>(null);
+  const draftKey = `forest-paper-draft:${id}`;
   useEffect(() => {
-    if (paper && !dirty) {
-      setSource(paper.data.source || "");
-      setBibtex(paper.data.bibtex || "");
-      setEditingRevision(paper.revision);
+    if (!paper) return;
+    try {
+      const stored = sessionStorage.getItem(draftKey);
+      if (stored) {
+        const draft = JSON.parse(stored);
+        if (
+          typeof draft.source === "string" &&
+          typeof draft.bibtex === "string" &&
+          typeof draft.revision === "number"
+        ) {
+          setSource(draft.source);
+          setBibtex(draft.bibtex);
+          setEditingRevision(draft.revision);
+          setDirty(true);
+          return;
+        }
+      }
+    } catch {
+      // Ignore an unreadable browser draft and load the saved paper instead.
     }
-  }, [paper, dirty]);
+    setSource(paper.data.source || "");
+    setBibtex(paper.data.bibtex || "");
+    setEditingRevision(paper.revision);
+    setDirty(false);
+  }, [paper, draftKey]);
   useEffect(() => {
     if (!paper) return;
     const currentLayout = paperLayoutDefaults(paper.data);
@@ -2217,6 +2237,11 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
       expected_revision: editingRevision,
       data: { source, bibtex },
     });
+    try {
+      sessionStorage.removeItem(draftKey);
+    } catch {
+      // Saving the paper must still succeed if browser storage is unavailable.
+    }
     setEditingRevision(saved.revision);
     setDirty(false);
     await reload();
@@ -2381,6 +2406,14 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
               onChange={(v) => {
                 setSource(v);
                 setDirty(true);
+                try {
+                  sessionStorage.setItem(
+                    draftKey,
+                    JSON.stringify({ source: v, bibtex, revision: editingRevision }),
+                  );
+                } catch {
+                  // Keep editing even when the browser cannot persist a draft.
+                }
               }}
             />
           ) : tab === "bibtex" ? (
@@ -2390,6 +2423,14 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
               onChange={(v) => {
                 setBibtex(v);
                 setDirty(true);
+                try {
+                  sessionStorage.setItem(
+                    draftKey,
+                    JSON.stringify({ source, bibtex: v, revision: editingRevision }),
+                  );
+                } catch {
+                  // Keep editing even when the browser cannot persist a draft.
+                }
               }}
             />
           ) : (
