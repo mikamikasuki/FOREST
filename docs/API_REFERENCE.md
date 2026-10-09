@@ -430,7 +430,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/providers/{ident}/test`
 
-Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; success contains status plus extensible ModelClient result fields.
+Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; status is the connection outcome, while request_status preserves the ModelClient request state when available. Other ModelClient result fields are extensible.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |

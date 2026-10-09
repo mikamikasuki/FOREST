@@ -22500,7 +22500,7 @@
     },
     "/api/providers/{ident}/test": {
       "post": {
-        "description": "Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; success contains status plus extensible ModelClient result fields.",
+        "description": "Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; status is the connection outcome, while request_status preserves the ModelClient request state when available. Other ModelClient result fields are extensible.",
         "operationId": "provider_test_api_providers__ident__test_post",
         "parameters": [
           {
@@ -22520,6 +22520,12 @@
                 "schema": {
                   "additionalProperties": true,
                   "properties": {
+                    "request_status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "status": {
                       "type": "string"
                     }
