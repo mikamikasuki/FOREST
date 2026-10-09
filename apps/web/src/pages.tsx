@@ -1059,6 +1059,10 @@ export function ExperimentsPage() {
   const [editing, setEditing] = useState<RecordItem | null | false>(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [comparison, setComparison] = useState<Json | null>(null);
+  const [launchingExperimentIds, setLaunchingExperimentIds] = useState(
+    () => new Set<string>(),
+  );
+  const launchingExperimentIdsRef = useRef(new Set<string>());
   useEffect(() => {
     const f = () => void reloadRuns();
     window.addEventListener("forest-refresh", f);
@@ -1114,20 +1118,37 @@ export function ExperimentsPage() {
                 />
                 <Button
                   className="primary"
-                  onClick={() =>
-                    action(
+                  busy={launchingExperimentIds.has(e.id)}
+                  disabled={launchingExperimentIds.has(e.id)}
+                  onClick={() => {
+                    if (launchingExperimentIdsRef.current.has(e.id)) return;
+                    launchingExperimentIdsRef.current.add(e.id);
+                    setLaunchingExperimentIds((current) =>
+                      new Set(current).add(e.id),
+                    );
+                    void action(
                       async () => {
-                        await api(`/experiments/${e.id}/launch`, "POST", {
-                          request_id: uid(),
-                        });
-                        await reloadRuns();
+                        try {
+                          await api(`/experiments/${e.id}/launch`, "POST", {
+                            request_id: uid(),
+                          });
+                          await reloadRuns();
+                        } finally {
+                          launchingExperimentIdsRef.current.delete(e.id);
+                          setLaunchingExperimentIds((current) => {
+                            if (!current.has(e.id)) return current;
+                            const next = new Set(current);
+                            next.delete(e.id);
+                            return next;
+                          });
+                        }
                       },
                       t(
                         "实验已加入真实执行队列",
                         "Experiment queued for execution",
                       ),
-                    )
-                  }
+                    );
+                  }}
                 >
                   <Play size={13} />
                   {t("启动实验", "Launch")}
