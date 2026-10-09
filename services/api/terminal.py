@@ -1,5 +1,6 @@
 """Reconnectable owner-only PTYs, separate from experiment worker jobs."""
 import asyncio
+import codecs
 import json
 import os
 import pty
@@ -12,20 +13,23 @@ from fastapi import WebSocket,WebSocketDisconnect
 class TerminalSession:
     def __init__(self,cwd):
         self.master,slave=pty.openpty(); self.proc=subprocess.Popen(['/bin/zsh' if Path('/bin/zsh').exists() else '/bin/bash','-i'],cwd=cwd,stdin=slave,stdout=slave,stderr=slave,start_new_session=True,env={**os.environ,'TERM':'xterm-256color'})
-        os.close(slave); os.set_blocking(self.master,False); self.buffer=''; self.clients=set(); self.last_seen=time.monotonic(); self.reader=asyncio.create_task(self.pump())
+        os.close(slave); os.set_blocking(self.master,False); self.decoder=codecs.getincrementaldecoder('utf-8')(errors='replace'); self.buffer=''; self.clients=set(); self.last_seen=time.monotonic(); self.reader=asyncio.create_task(self.pump())
+    async def publish(self,value):
+        if not value: return
+        self.buffer=(self.buffer+value)[-131072:]
+        for ws in tuple(self.clients):
+            try: await ws.send_text(value)
+            except Exception: self.clients.discard(ws)
     async def pump(self):
-        while self.proc.poll() is None:
-            if not self.clients and time.monotonic()-self.last_seen>1800: self.close(); return
-            try:
-                value=os.read(self.master,65536).decode(errors='replace')
-                if value:
-                    self.buffer=(self.buffer+value)[-131072:]
-                    for ws in tuple(self.clients):
-                        try: await ws.send_text(value)
-                        except Exception: self.clients.discard(ws)
-            except BlockingIOError: pass
-            except OSError: break
-            await asyncio.sleep(.03)
+        try:
+            while self.proc.poll() is None:
+                if not self.clients and time.monotonic()-self.last_seen>1800: self.close(); return
+                try: await self.publish(self.decoder.decode(os.read(self.master,65536)))
+                except BlockingIOError: pass
+                except OSError: break
+                await asyncio.sleep(.03)
+        finally:
+            await self.publish(self.decoder.decode(b'',final=True))
     def close(self):
         try: os.killpg(self.proc.pid,signal.SIGHUP)
         except ProcessLookupError: pass

@@ -444,6 +444,67 @@ def case_export_import_reference_roundtrip(client, app):
     assert ok(client.get(f"/api/runs/{new_runs[0]['id']}/output"))["text"] == "actual saved output\n"
 
 
+def case_project_provider_roundtrip_requires_explicit_resolution_when_missing(client, app):
+    provider = ok(client.post('/api/providers', json={
+        'name': 'Project archive provider', 'kind': 'openai',
+        'base_url': 'http://127.0.0.1:1/v1', 'model': 'test-model',
+    }))
+    source = ok(client.post('/api/projects', json={
+        'name': 'Provider-bound project', 'config': {'provider_id': provider['id']},
+    }))
+    exported = client.post(f"/api/projects/{source['id']}/export", json={})
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        entries = {item.filename: archive.read(item.filename) for item in archive.infolist()}
+    manifest = json.loads(entries['forest-project.json'])
+    assert manifest['project']['config']['provider_id'] == provider['id']
+    restored = ok(client.post('/api/projects/import', files={
+        'file': ('provider-bound.zip', exported.content, 'application/zip'),
+    }))
+    assert restored['config']['provider_id'] == provider['id']
+
+    manifest['project']['config']['provider_id'] = 'unavailable-provider-id'
+    entries['forest-project.json'] = json.dumps(manifest).encode()
+    unavailable_archive = io.BytesIO()
+    with zipfile.ZipFile(unavailable_archive, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, contents in entries.items():
+            archive.writestr(name, contents)
+    ok(client.patch('/api/settings', json={'default_provider_id': provider['id']}))
+    unresolved = ok(client.post('/api/projects/import', files={
+        'file': ('unavailable-provider.zip', unavailable_archive.getvalue(), 'application/zip'),
+    }))
+    assert unresolved['config'].get('provider_id') is None
+    assert unresolved['config']['provider_selection_required'] is True
+    node = ok(command(client, unresolved, 'add_node', title='Research agent', type='agent'))['graph']['nodes'][-1]
+    response = client.post(f"/api/nodes/{node['id']}/run", json={'request_id': str(uuid4())})
+    assert response.status_code == 422
+    assert response.json()['detail']['code'] == 'PROVIDER_SELECTION_REQUIRED'
+
+    local_node = ok(command(
+        client, unresolved, 'add_node', title='Local experiment', type='experiment',
+        config={'command': ['true']},
+    ))['graph']['nodes'][-1]
+    local_run = client.post(f"/api/nodes/{local_node['id']}/run", json={'request_id': str(uuid4())})
+    assert local_run.status_code == 200, local_run.text
+
+    duplicate = ok(client.post(f"/api/projects/{unresolved['id']}/duplicate"))
+    assert duplicate['config'].get('provider_id') is None
+    assert duplicate['config']['provider_selection_required'] is True
+    duplicate_agent = next(
+        item for item in graph(client, duplicate)['nodes']
+        if item['title'] == 'Research agent'
+    )
+    duplicate_run = client.post(f"/api/nodes/{duplicate_agent['id']}/run", json={'request_id': str(uuid4())})
+    assert duplicate_run.status_code == 422
+    assert duplicate_run.json()['detail']['code'] == 'PROVIDER_SELECTION_REQUIRED'
+
+    resolved = ok(client.patch(f"/api/projects/{unresolved['id']}", json={
+        'config': {**unresolved['config'], 'provider_id': provider['id']},
+    }))
+    assert resolved['config']['provider_id'] == provider['id']
+    assert 'provider_selection_required' not in resolved['config']
+
+
 def case_import_running_controller_requires_explicit_start(client, app, mode="assisted"):
     p = create(client)
     ok(client.patch(f"/api/projects/{p['id']}", json={"mode": mode}))
@@ -1356,6 +1417,154 @@ def case_regenerated_run_output_does_not_inherit_file_tombstone_origin(client, a
     path.write_text('measurement\n8\n')
     rows = ok(client.get(f"/api/data/{run['id']}/rows"))
     assert rows['origin'] == 'measured', rows
+
+
+def case_zero_padded_csv_identifiers_survive_data_rows(client, app):
+    from services.api.db import Session, TaskRun
+    project = create(client)
+    node = add_node(client, project, config={
+        'kind': 'command', 'command': [sys.executable, '-c', 'pass'],
+    })
+    run = ok(client.post(f"/api/nodes/{node['id']}/run", json={
+        'request_id': 'run-for-zero-padded-identifiers',
+    }))
+    relative = run['output_path'] + '/identifiers.csv'
+    root = Path(os.environ['FOREST_DATA_DIR']) / 'projects' / project['id']
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        'postal_code,subject_id,serial,score,passed\n'
+        '02108,000123,0000,9.5,True\n'
+        '10001,000124,0007,10.5,False\n'
+    )
+    with Session.begin() as session:
+        session.get(TaskRun, run['id']).status = 'completed'
+
+    # The CSV bytes on disk keep the zeros; the readback must not corrupt them.
+    assert '02108' in path.read_text()
+    rows = ok(client.get(f"/api/data/{run['id']}/rows", params={'path': relative}))
+    assert rows['columns'] == ['postal_code', 'subject_id', 'serial', 'score', 'passed']
+    assert rows['rows'][0]['postal_code'] == '02108', rows
+    assert rows['rows'][0]['subject_id'] == '000123', rows
+    assert rows['rows'][0]['serial'] == '0000', rows
+    assert rows['rows'][1]['postal_code'] == '10001', rows
+    # Genuinely numeric and boolean columns keep their JSON types.
+    assert rows['rows'][0]['score'] == 9.5 and rows['rows'][0]['passed'] is True, rows
+    assert rows['rows'][1]['passed'] is False, rows
+    # Numeric sort keeps numeric (not lexicographic) ordering: 10.5 > 9.5.
+    sorted_rows = ok(client.get(f"/api/data/{run['id']}/rows", params={
+        'path': relative, 'sort': 'score', 'descending': 'true',
+    }))
+    assert [row['score'] for row in sorted_rows['rows']] == [10.5, 9.5], sorted_rows
+
+
+def case_run_output_keeps_utf8_character_split_at_page_boundary(client, app):
+    project = create(client)
+    node = add_node(client, project, config={
+        'kind': 'command', 'command': [sys.executable, '-c', 'pass'],
+    })
+    run = ok(client.post(f"/api/nodes/{node['id']}/run", json={
+        'request_id': 'run-for-utf8-chunk-boundary',
+    }))
+    path = Path(os.environ['FOREST_DATA_DIR']) / 'projects' / project['id'] / (run['output_path'] + '/stdout.txt')
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def read_pages():
+        # The Run Panel follows the returned byte cursor; page 1 uses the default 100000-byte limit.
+        first = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': 0, 'limit': 100000}))
+        second = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': first['offset'], 'limit': 100000}))
+        return first['text'] + second['text']
+
+    # 2-, 3- and 4-byte characters cut by the 100000-byte page limit must survive reassembly.
+    for filler, character in ((99999, 'é'), (99999, '中'), (99998, '😀')):
+        expected = 'a' * filler + character + 'b'
+        path.write_bytes(expected.encode())
+        text = read_pages()
+        assert text == expected, f"{character!r} split across the page boundary: {text[-6:]!r}"
+        assert '\ufffd' not in text
+
+    # Invalid bytes are not a partial character: they must decode with replacement and the
+    # cursor must advance past them so a polling reader is never stuck on the same page.
+    path.write_bytes(b'a\xff\xfeb')
+    page = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': 0, 'limit': 100000}))
+    assert page['text'] == 'a\ufffd\ufffdb' and page['offset'] == 4
+
+    # A still-growing file may end inside a character; the cursor stays on the character
+    # start and the next poll returns it whole once the writer has finished the sequence.
+    path.write_bytes(b'a\xe4\xb8')
+    partial = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': 0, 'limit': 100000}))
+    assert partial['text'] == 'a' and partial['offset'] == 1
+    path.write_bytes(b'a\xe4\xb8\xadb')
+    grown = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': partial['offset'], 'limit': 100000}))
+    assert grown['text'] == '中b' and grown['offset'] == 5
+
+    # A held-back prefix that turns out to be invalid is released once more bytes arrive,
+    # so a polling reader is never stuck behind undecodable data.
+    path.write_bytes(b'a\xe4')
+    held = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': 0, 'limit': 100000}))
+    assert held['text'] == 'a' and held['offset'] == 1
+    path.write_bytes(b'a\xe4b')
+    released = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': held['offset'], 'limit': 100000}))
+    assert released['text'] == '\ufffdb' and released['offset'] == 3
+
+    # A page limit smaller than the next character must still make progress, or a client
+    # following the cursor would repeat the same request forever.
+    for limit, content in ((1, 'é中b'), (2, '中😀b'), (3, '😀b'), (1, 'ab')):
+        path.write_bytes(content.encode())
+        pages, offset, text = [], 0, ''
+        while True:
+            page = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': offset, 'limit': limit}))
+            pages.append((page['offset'], page['text']))
+            text += page['text']
+            assert page['offset'] > offset or not page['text'], f"cursor stalled at {offset} with limit={limit}: {pages}"
+            if page['offset'] == offset:
+                break
+            offset = page['offset']
+            if offset >= len(content.encode()):
+                break
+        assert text == content, f"limit={limit} reassembled {text!r}"
+def case_figure_render_is_invalidated_after_data_or_style_edit(client, app):
+    p = create(client)
+    image_path = 'figures/current.png'
+    ok(client.put(f"/api/projects/{p['id']}/file", json={"path": image_path, "content": "old rendered bytes"}))
+    figure = ok(client.post('/api/figures', json={
+        'project_id': p['id'], 'title': 'Current figure', 'status': 'ready_for_review',
+        'data': {'kind': 'bar', 'metric': 'score', 'style': {'title': 'Old'},
+                 'data': {'values': [1]}, 'visual_review_status': 'selected',
+                 'outputs': {'png': image_path}},
+    }))
+    paper = ok(client.get(f"/api/papers/{p['id']}"))
+    anchor = 'The measured result appears here.'
+    source = paper['data']['source'].replace('Write the evidence-supported question here.', anchor)
+    paper = ok(client.patch(f"/api/papers/{p['id']}", json={
+        'expected_revision': paper['revision'], 'data': {'source': source},
+    }))
+
+    edited = ok(client.patch(f"/api/figures/{figure['id']}", json={
+        'expected_revision': figure['revision'],
+        'data': {**figure['data'], 'style': {'title': 'New'}, 'data': {'values': [2]},
+                 'caption': 'New measured result.'},
+    }))
+    assert edited['status'] == 'needs_review'
+    assert 'outputs' not in edited['data']
+    assert 'visual_selection' not in edited['data']
+    assert edited['data']['visual_review_status'] == 'stale'
+    response = client.post(f"/api/papers/{p['id']}/figures", json={
+        'expected_revision': paper['revision'], 'figure_id': figure['id'], 'anchor_text': anchor,
+    })
+    assert response.status_code == 409, response.text
+
+
+def case_new_projects_inherit_default_run_mode(client, app):
+    ok(client.patch('/api/settings', json={'default_mode': 'manual'}))
+    inherited = ok(client.post('/api/projects', json={'name': 'Inherit configured mode'}))
+    explicit = ok(client.post('/api/projects', json={
+        'name': 'Keep explicit mode', 'mode': 'assisted',
+    }))
+
+    assert inherited['mode'] == 'manual'
+    assert ok(client.get(f"/api/projects/{inherited['id']}"))['mode'] == 'manual'
+    assert explicit['mode'] == 'assisted'
 
 
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]

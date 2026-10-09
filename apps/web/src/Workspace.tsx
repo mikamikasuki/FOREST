@@ -1,6 +1,6 @@
 import { RunEvidence } from "./RunEvidence";
 import { ExecutionSettings } from "./ExecutionSettings";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
   ReactFlow,
@@ -14,7 +14,12 @@ import {
   ReactFlowProvider,
   useReactFlow,
 } from "@xyflow/react";
-import type { NodeProps, Node as FlowNode, NodeChange } from "@xyflow/react";
+import type {
+  EdgeChange,
+  NodeProps,
+  Node as FlowNode,
+  NodeChange,
+} from "@xyflow/react";
 import {
   Plus,
   Play,
@@ -59,6 +64,7 @@ import {
 } from "lucide-react";
 import {
   api,
+  ApiError,
   uid,
   hasCycle,
   parseJson,
@@ -216,7 +222,11 @@ export function Workspace() {
 }
 function WorkspaceInner() {
   const { id } = useParams();
+  const activeProjectId = useRef<string | null>(id ?? null);
+  activeProjectId.current = id ?? null;
   const { t, action } = useUI();
+  const actionRef = useRef(action);
+  actionRef.current = action;
   const {
     data: graph,
     setData: setGraph,
@@ -265,6 +275,7 @@ function WorkspaceInner() {
     [collapsed, id],
   );
   const [flowNodes, setFlowNodes] = useState<FlowNode[]>([]);
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
   const [suggest, setSuggest] = useState("");
   const [scope, setScope] = useState("node");
   const [busy, setBusy] = useState(false);
@@ -280,35 +291,351 @@ function WorkspaceInner() {
     [],
   );
   const node = graph.nodes.find((n) => n.id === selected);
+  const positionRevisions = useRef(new Map<string, number>());
+  const positionOnlyRevisions = useRef(new Map<string, Set<number>>());
+  const positionConflictRetries = useRef(new Map<string, number>());
+  const positionSubmissions = useRef(
+    new Map<
+      string,
+      {
+        requestId: string;
+        expectedRevision: number;
+        positions: Record<string, { x: number; y: number }>;
+      }
+    >(),
+  );
+  const positionFlushPromises = useRef(new Map<string, Promise<void>>());
+  const graphMutationQueues = useRef(new Map<string, Promise<void>>());
+  const pendingPositionChanges = useRef(
+    new Map<string, Map<string, { x: number; y: number }>>(),
+  );
+  const positionSaveTimers = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
+  const enqueueGraphMutation = useCallback(
+    <T,>(projectId: string, mutation: () => Promise<T>) => {
+      const previous =
+        graphMutationQueues.current.get(projectId) ?? Promise.resolve();
+      const pending = previous.catch(() => undefined).then(mutation);
+      graphMutationQueues.current.set(
+        projectId,
+        pending.then(
+          () => undefined,
+          () => undefined,
+        ),
+      );
+      return pending;
+    },
+    [],
+  );
+  const refreshGraph = useCallback(
+    async (projectId: string) => {
+      const latest = await api<Graph>(`/projects/${projectId}/graph`);
+      positionRevisions.current.set(
+        projectId,
+        Math.max(
+          positionRevisions.current.get(projectId) ?? 0,
+          latest.revision,
+        ),
+      );
+      if (activeProjectId.current === projectId)
+        setGraph((current) =>
+          activeProjectId.current !== projectId ||
+          current.revision > latest.revision
+            ? current
+            : latest,
+        );
+      return latest;
+    },
+    [api, setGraph],
+  );
+  const flushPendingPositions = useCallback(
+    (projectId: string): Promise<void> => {
+      const timer = positionSaveTimers.current.get(projectId);
+      if (timer) {
+        clearTimeout(timer);
+        positionSaveTimers.current.delete(projectId);
+      }
+      const inFlight = positionFlushPromises.current.get(projectId);
+      if (inFlight)
+        return pendingPositionChanges.current.get(projectId)?.size
+          ? inFlight.then(() => flushPendingPositions(projectId))
+          : inFlight;
+      if (!pendingPositionChanges.current.get(projectId)?.size)
+        return Promise.resolve();
+      const save = enqueueGraphMutation(projectId, async () => {
+        const pending = pendingPositionChanges.current.get(projectId);
+        const positions = Object.fromEntries(pending ?? []);
+        pending?.clear();
+        const targets = Object.keys(positions);
+        if (!targets.length) return;
+        const previousSubmission = positionSubmissions.current.get(projectId);
+        const samePositions = Boolean(
+          previousSubmission &&
+          Object.keys(previousSubmission.positions).length === targets.length &&
+          targets.every((nodeId) => {
+            const previous = previousSubmission.positions[nodeId];
+            const current = positions[nodeId];
+            return previous?.x === current.x && previous?.y === current.y;
+          }),
+        );
+        const submission = samePositions && previousSubmission
+          ? previousSubmission
+          : {
+              requestId: uid(),
+              expectedRevision:
+                positionRevisions.current.get(projectId) ?? 0,
+              positions,
+            };
+        positionSubmissions.current.set(projectId, submission);
+        const expectedRevision = submission.expectedRevision;
+        let result: { revision: number };
+        try {
+          result = await api<{ revision: number }>(
+            `/projects/${projectId}/graph/batch`,
+            "POST",
+            {
+              request_id: submission.requestId,
+              expected_revision: expectedRevision,
+              commands: [
+                {
+                  operation: "edit_node",
+                  targets,
+                  params: { positions },
+                },
+              ],
+            },
+          );
+        } catch (error) {
+          const stillPending =
+            pendingPositionChanges.current.get(projectId) ?? new Map();
+          for (const [nodeId, position] of Object.entries(positions))
+            if (!stillPending.has(nodeId)) stillPending.set(nodeId, position);
+          pendingPositionChanges.current.set(projectId, stillPending);
+          let latest: Graph | undefined;
+          try {
+            latest = await refreshGraph(projectId);
+            const existingNodeIds = new Set(latest.nodes.map((item) => item.id));
+            for (const nodeId of stillPending.keys())
+              if (!existingNodeIds.has(nodeId)) stillPending.delete(nodeId);
+            if (stillPending.size)
+              pendingPositionChanges.current.set(projectId, stillPending);
+            else pendingPositionChanges.current.delete(projectId);
+          } catch {
+            // Keep the original mutation error visible.
+          }
+          const retryPositions = Object.fromEntries(
+            pendingPositionChanges.current.get(projectId) ?? [],
+          );
+          const retryMatchesSubmission =
+            Object.keys(retryPositions).length ===
+              Object.keys(submission.positions).length &&
+            Object.entries(submission.positions).every(([nodeId, position]) => {
+              const next = retryPositions[nodeId];
+              return next?.x === position.x && next?.y === position.y;
+            });
+          const uncertainSubmission =
+            !(error instanceof ApiError) || error.status >= 500;
+          if (!uncertainSubmission || !retryMatchesSubmission)
+            positionSubmissions.current.delete(projectId);
+          const retries = positionConflictRetries.current.get(projectId) ?? 0;
+          const recoveredConflict =
+            error instanceof ApiError &&
+            error.status === 409 &&
+            latest !== undefined &&
+            latest.revision > expectedRevision;
+          const failedAfterUnmount = activeProjectId.current !== projectId;
+          const retryableFailure = uncertainSubmission;
+          if (
+            retries < 1 &&
+            Object.keys(retryPositions).length > 0 &&
+            (recoveredConflict || failedAfterUnmount || retryableFailure)
+          ) {
+            positionConflictRetries.current.set(projectId, retries + 1);
+            positionSaveTimers.current.set(
+              projectId,
+              setTimeout(() => {
+                positionSaveTimers.current.delete(projectId);
+                void actionRef.current(() => flushPendingPositions(projectId));
+              }, 120),
+            );
+          }
+          throw error;
+        }
+        positionRevisions.current.set(
+          projectId,
+          Math.max(
+            positionRevisions.current.get(projectId) ?? 0,
+            result.revision,
+          ),
+        );
+        positionConflictRetries.current.delete(projectId);
+        if (positionSubmissions.current.get(projectId) === submission)
+          positionSubmissions.current.delete(projectId);
+        const layoutRevisions =
+          positionOnlyRevisions.current.get(projectId) ?? new Set<number>();
+        layoutRevisions.add(result.revision);
+        if (layoutRevisions.size > 1000)
+          layoutRevisions.delete(Math.min(...layoutRevisions));
+        positionOnlyRevisions.current.set(projectId, layoutRevisions);
+        setGraph((current) => {
+          if (activeProjectId.current !== projectId) return current;
+          const newerPositions = pendingPositionChanges.current.get(projectId);
+          return {
+            ...current,
+            revision: Math.max(current.revision, result.revision),
+            nodes: current.nodes.map((item) => {
+              const position =
+                newerPositions?.get(item.id) ?? positions[item.id];
+              return position ? { ...item, position } : item;
+            }),
+          };
+        });
+        try {
+          await refreshGraph(projectId);
+        } catch {
+          // Keep the committed move visible until refresh succeeds.
+        }
+      });
+      positionFlushPromises.current.set(projectId, save);
+      void save.then(
+        () => {
+          if (positionFlushPromises.current.get(projectId) === save)
+            positionFlushPromises.current.delete(projectId);
+        },
+        () => {
+          if (positionFlushPromises.current.get(projectId) === save)
+            positionFlushPromises.current.delete(projectId);
+        },
+      );
+      return save;
+    },
+    [api, enqueueGraphMutation, refreshGraph, setGraph],
+  );
   const request = useCallback(
     async (
       op: string,
       targets: string[] = [],
       params: Json = {},
       preview = false,
-      expectedRevision = graph.revision,
+      expectedRevision?: number,
     ) => {
-      const result = await api(
-        `/projects/${id}/graph/${preview ? "preview" : "commands"}`,
-        "POST",
-        {
-          request_id: uid(),
-          expected_revision: expectedRevision,
-          operation: op,
-          targets,
-          params,
-          run: false,
-        },
-      );
-      if (!preview) {
-        if (result.graph) setGraph(result.graph);
-        else await reload();
-        void reloadRuns();
-      }
-      return result;
+      const projectId = id!;
+      await flushPendingPositions(projectId);
+      return enqueueGraphMutation(projectId, async () => {
+        const currentRevision =
+          positionRevisions.current.get(projectId) ?? graph.revision;
+        const layoutRevisions = positionOnlyRevisions.current.get(projectId);
+        let layoutOnlyChanges =
+          expectedRevision !== undefined && expectedRevision <= currentRevision;
+        for (
+          let revision = (expectedRevision ?? currentRevision) + 1;
+          revision <= currentRevision;
+          revision++
+        ) {
+          if (!layoutRevisions?.has(revision)) {
+            layoutOnlyChanges = false;
+            break;
+          }
+        }
+        const commandRevision =
+          expectedRevision === undefined || layoutOnlyChanges
+            ? currentRevision
+            : expectedRevision;
+        const result = await api(
+          `/projects/${projectId}/graph/${preview ? "preview" : "commands"}`,
+          "POST",
+          {
+            request_id: uid(),
+            expected_revision: commandRevision,
+            operation: op,
+            targets,
+            params,
+            run: false,
+          },
+        );
+        if (!preview) {
+          if (result.graph) {
+            positionRevisions.current.set(
+              projectId,
+              Math.max(
+                positionRevisions.current.get(projectId) ?? 0,
+                result.graph.revision,
+              ),
+            );
+            if (activeProjectId.current === projectId)
+              setGraph((current) =>
+                activeProjectId.current !== projectId ||
+                current.revision > result.graph.revision
+                  ? current
+                  : result.graph,
+              );
+          } else await reload();
+          void reloadRuns();
+        }
+        return result;
+      });
     },
-    [id, graph.revision, setGraph, reload, reloadRuns],
+    [
+      enqueueGraphMutation,
+      flushPendingPositions,
+      id,
+      graph.revision,
+      api,
+      setGraph,
+      reload,
+      reloadRuns,
+    ],
   );
+  useEffect(() => {
+    positionRevisions.current.set(
+      id!,
+      Math.max(positionRevisions.current.get(id!) ?? 0, graph.revision),
+    );
+  }, [graph.revision, id]);
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      setFlowNodes((nodes) => applyNodeChanges(changes, nodes));
+      const positions = changes.flatMap((change) =>
+        change.type === "position" &&
+        change.dragging !== true &&
+        change.position
+          ? [{ id: change.id, position: change.position }]
+          : [],
+      );
+      if (!positions.length) return;
+      const projectId = id!;
+      const pending =
+        pendingPositionChanges.current.get(projectId) ?? new Map();
+      for (const position of positions)
+        pending.set(position.id, position.position);
+      pendingPositionChanges.current.set(projectId, pending);
+      positionConflictRetries.current.delete(projectId);
+      const timer = positionSaveTimers.current.get(projectId);
+      if (timer) clearTimeout(timer);
+      positionSaveTimers.current.set(
+        projectId,
+        setTimeout(() => {
+          positionSaveTimers.current.delete(projectId);
+          void action(() => flushPendingPositions(projectId));
+        }, 120),
+      );
+    },
+    [action, flushPendingPositions, id],
+  );
+  useEffect(() => {
+    const projectId = id!;
+    return () => {
+      const timer = positionSaveTimers.current.get(projectId);
+      if (timer) {
+        clearTimeout(timer);
+        positionSaveTimers.current.delete(projectId);
+      }
+      if (activeProjectId.current === projectId) activeProjectId.current = null;
+      if (pendingPositionChanges.current.get(projectId)?.size)
+        void actionRef.current(() => flushPendingPositions(projectId));
+    };
+  }, [flushPendingPositions, id]);
   useEffect(() => {
     const refresh = () => {
       void reload();
@@ -323,6 +650,10 @@ function WorkspaceInner() {
   const linkedEdges = useMemo(
     () => executionLinks(graph),
     [graph.nodes, graph.edges],
+  );
+  const nodesById = useMemo(
+    () => new Map(graph.nodes.map((item) => [item.id, item])),
+    [graph.nodes],
   );
   const hidden = useMemo(() => {
     const out = new Set<string>();
@@ -341,6 +672,38 @@ function WorkspaceInner() {
     }
     return out;
   }, [linkedEdges, collapsed]);
+  const visibleNodeIds = useMemo(
+    () =>
+      new Set(
+        graph.nodes
+          .filter(
+            (item) =>
+              (!item.archived || item.id === revealedNode) &&
+              !hidden.has(item.id) &&
+              (branch === "all" || item.branch_id === branch),
+          )
+          .map((item) => item.id),
+      ),
+    [branch, graph.nodes, hidden, revealedNode],
+  );
+  const visibleEdges = useMemo(
+    () =>
+      linkedEdges.filter(
+        (edge) =>
+          visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+      ),
+    [linkedEdges, visibleNodeIds],
+  );
+  const visibleEdgeIds = useMemo(
+    () => new Set(visibleEdges.map((edge) => edge.id)),
+    [visibleEdges],
+  );
+  useEffect(() => {
+    setSelectedEdgeIds((current) => {
+      const next = current.filter((edgeId) => visibleEdgeIds.has(edgeId));
+      return next.length === current.length ? current : next;
+    });
+  }, [visibleEdgeIds]);
   useEffect(() => {
     setFlowNodes(
       graph.nodes
@@ -353,15 +716,17 @@ function WorkspaceInner() {
         .map((n, index) => ({
           id: n.id,
           type: "research",
-          position: n.position || {
-            x: 300 + (index % 3) * 290,
-            y: 100 + Math.floor(index / 3) * 220,
-          },
+          position: pendingPositionChanges.current.get(id!)?.get(n.id) ||
+            n.position || {
+              x: 300 + (index % 3) * 290,
+              y: 100 + Math.floor(index / 3) * 220,
+            },
+          deletable: false,
           data: { node: n },
           selected: n.id === selected,
         })),
     );
-  }, [graph.nodes, selected, hidden, branch, revealedNode]);
+  }, [graph.nodes, selected, hidden, branch, revealedNode, id]);
   useEffect(() => {
     if (!focusTarget || !flow.viewportInitialized) return;
     const target = flowNodes.find((n) => n.id === focusTarget);
@@ -408,39 +773,57 @@ function WorkspaceInner() {
   };
   const edges = useMemo(
     () =>
-      linkedEdges.map((e) => ({
-        ...e,
-        type: "smoothstep",
-        animated: runs.some(
-          (r) => r.node_id === e.target && r.status === "running",
-        ),
-        label: e.implicit
-          ? "input binding"
-          : ["depends_on", "consumes"].includes(e.relation)
-            ? undefined
-            : e.relation,
-        style: {
-          stroke: e.relation === "depends_on" ? "#9bad9e" : "#a7b2bd",
-          strokeWidth: 1.5,
-          strokeDasharray: [
-            "history",
-            "derived_from",
-            "references",
-            "evidence",
-            "cites",
-            "group",
-          ].includes(e.relation)
-            ? "5 5"
-            : undefined,
-        },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          width: 15,
-          height: 15,
-          color: "#9bad9e",
-        },
-      })),
-    [linkedEdges, runs],
+      visibleEdges.map((e) => {
+        const sourceTitle = nodesById.get(e.source)?.title || e.source;
+        const targetTitle = nodesById.get(e.target)?.title || e.target;
+        const relationLabel = e.relation.replaceAll("_", " ");
+        const ariaLabel =
+          e.relation === "depends_on"
+            ? `${targetTitle} depends on ${sourceTitle}`
+            : e.relation === "consumes"
+              ? `${targetTitle} consumes ${sourceTitle}`
+              : e.relation === "derived_from"
+                ? `${targetTitle} is derived from ${sourceTitle}`
+                : `${sourceTitle} ${relationLabel} ${targetTitle}`;
+        return {
+          ...e,
+          ariaLabel,
+          // Branch and collapse filters can change before the pruning effect
+          // below runs. Never expose a hidden edge as selected for that render.
+          selected: visibleEdgeIds.has(e.id) && selectedEdgeIds.includes(e.id),
+          deletable: !e.implicit,
+          type: "smoothstep",
+          animated: runs.some(
+            (r) => r.node_id === e.target && r.status === "running",
+          ),
+          label: e.implicit
+            ? "input binding"
+            : ["depends_on", "consumes"].includes(e.relation)
+              ? undefined
+              : e.relation,
+          style: {
+            stroke: e.relation === "depends_on" ? "#9bad9e" : "#a7b2bd",
+            strokeWidth: 1.5,
+            strokeDasharray: [
+              "history",
+              "derived_from",
+              "references",
+              "evidence",
+              "cites",
+              "group",
+            ].includes(e.relation)
+              ? "5 5"
+              : undefined,
+          },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            width: 15,
+            height: 15,
+            color: "#9bad9e",
+          },
+        };
+      }),
+    [nodesById, runs, selectedEdgeIds, visibleEdgeIds, visibleEdges],
   );
   const onSelectionChange = useCallback(
     ({ nodes }: { nodes: FlowNode[] }) =>
@@ -452,6 +835,69 @@ function WorkspaceInner() {
           : next;
       }),
     [],
+  );
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      const selections = changes.filter((change) => change.type === "select");
+      if (selections.length) {
+        setSelectedEdgeIds((current) => {
+          const next = new Set(current);
+          for (const change of selections) {
+            if (change.type !== "select") continue;
+            if (change.selected) next.add(change.id);
+            else next.delete(change.id);
+          }
+          return [...next];
+        });
+      }
+      const removedEdges = changes.flatMap((change) => {
+        if (change.type !== "remove") return [];
+        const edge = visibleEdges.find((item) => item.id === change.id);
+        return edge && !edge.implicit ? [edge] : [];
+      });
+      if (!removedEdges.length) return;
+      void action(async () => {
+        const projectId = id!;
+        const removedIds = new Set(removedEdges.map((edge) => edge.id));
+        try {
+          const result = await api<{ graph: Graph }>(
+            `/projects/${projectId}/graph/batch`,
+            "POST",
+            {
+              request_id: uid(),
+              expected_revision: graph.revision,
+              commands: removedEdges.map((edge) => ({
+                operation: "remove_dependency",
+                targets: [],
+                params: {
+                  source: edge.source,
+                  target: edge.target,
+                  relation: edge.relation,
+                },
+              })),
+            },
+          );
+          setGraph(result.graph);
+        } catch (error) {
+          await reload();
+          throw error;
+        }
+        setSelectedEdgeIds((current) =>
+          current.filter((edgeId) => !removedIds.has(edgeId)),
+        );
+        void reloadRuns();
+      });
+    },
+    [
+      action,
+      api,
+      graph.revision,
+      id,
+      reload,
+      reloadRuns,
+      setGraph,
+      visibleEdges,
+    ],
   );
   const run = async (runScope = "single") => {
     if (!node) return;
@@ -472,7 +918,7 @@ function WorkspaceInner() {
   };
   const layout = () =>
     action(async () => {
-      let current = graph;
+      const current = graph;
       const depth = new Map<string, number>();
       const visit = (id: string, trail = new Set<string>()): number => {
         if (trail.has(id)) return 0;
@@ -489,21 +935,14 @@ function WorkspaceInner() {
         return level;
       };
       const rows: Record<number, number> = {};
+      const positions: Record<string, { x: number; y: number }> = {};
       for (const n of current.nodes) {
         const y = visit(n.id);
         const x = rows[y] || 0;
         rows[y] = x + 1;
-        const result = await api(`/projects/${id}/graph/commands`, "POST", {
-          request_id: uid(),
-          expected_revision: current.revision,
-          operation: "edit_node",
-          targets: [n.id],
-          params: { position: { x: 80 + x * 300, y: 60 + y * 230 } },
-          run: false,
-        });
-        current = result.graph || (await api(`/projects/${id}/graph`));
+        positions[n.id] = { x: 80 + x * 300, y: 60 + y * 230 };
       }
-      setGraph(current);
+      await request("edit_node", Object.keys(positions), { positions });
       setTimeout(() => flow.fitView({ padding: 0.25 }), 150);
     });
   useEffect(() => {
@@ -645,9 +1084,8 @@ function WorkspaceInner() {
                     fitViewOptions={initialFitViewOptions}
                     minZoom={0.15}
                     maxZoom={2}
-                    onNodesChange={(changes: NodeChange[]) =>
-                      setFlowNodes((n) => applyNodeChanges(changes, n))
-                    }
+                    onNodesChange={onNodesChange}
+                    onEdgesChange={onEdgesChange}
                     onNodeClick={(_, n) => setSelected(n.id)}
                     onNodeDoubleClick={(_, n) => {
                       setSelected(n.id);
@@ -660,11 +1098,6 @@ function WorkspaceInner() {
                       setCommand(true);
                     }}
                     onSelectionChange={onSelectionChange}
-                    onNodeDragStop={(_, n) =>
-                      action(() =>
-                        request("edit_node", [n.id], { position: n.position }),
-                      )
-                    }
                     onConnect={(c) => {
                       if (c.source && c.target) {
                         if (hasCycle(graph, c.source, c.target)) {
@@ -687,7 +1120,7 @@ function WorkspaceInner() {
                         );
                       }
                     }}
-                    deleteKeyCode={null}
+                    deleteKeyCode={["Backspace", "Delete"]}
                   >
                     <Background color="#cbd4cb" gap={24} size={1} />
                     <Controls showInteractive={false} />
@@ -1247,9 +1680,12 @@ function NodeInspector({
   request: (op: string, targets?: string[], params?: Json) => Promise<any>;
 }) {
   const { t, action } = useUI();
+  const instructionDraftKey = `forest-node-instructions:${projectId}:${node.id}`;
   const [tab, setTab] = useState("instructions");
   const [title, setTitle] = useState(node.title);
-  const [instructions, setInstructions] = useState(node.instructions || "");
+  const [instructions, setInstructions] = useState(
+    () => sessionStorage.getItem(instructionDraftKey) ?? node.instructions ?? "",
+  );
   const [config, setConfig] = useState(
     JSON.stringify(node.config || {}, null, 2),
   );
@@ -1279,6 +1715,10 @@ function NodeInspector({
   const [conflict, setConflict] = useState(false);
   const [context, setContext] = useState<Json | null>(null);
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (sessionStorage.getItem(instructionDraftKey) === node.instructions)
+      sessionStorage.removeItem(instructionDraftKey);
+  }, [instructionDraftKey, node.instructions]);
   const related = runs.filter((r) => r.node_id === node.id);
   const save = async () => {
     if (JSON.stringify(editableNode(node)) !== JSON.stringify(base.content)) {
@@ -1304,7 +1744,8 @@ function NodeInspector({
         "Node saved; existing runs retain their starting configuration.",
       ),
     );
-    if (saved)
+    if (saved) {
+      sessionStorage.removeItem(instructionDraftKey);
       setBase({
         revision: saved.revision,
         content: editableNode(
@@ -1315,6 +1756,7 @@ function NodeInspector({
           saved.graph?.nodes?.find((n: ResearchNode) => n.id === node.id)
             ?.revision ?? node.revision,
       });
+    }
     setBusy(false);
   };
   return (
@@ -1344,8 +1786,9 @@ function NodeInspector({
           <div className="modal-actions">
             <Button
               onClick={() => {
-                setTitle(node.title);
-                setInstructions(node.instructions);
+              setTitle(node.title);
+              setInstructions(node.instructions);
+              sessionStorage.removeItem(instructionDraftKey);
                 setConfig(JSON.stringify(node.config, null, 2));
                 setInputs(JSON.stringify(node.inputs, null, 2));
                 setOverrides(JSON.stringify(node.context_overrides, null, 2));
@@ -1390,6 +1833,7 @@ function NodeInspector({
         </div>
       </div>
       <Tabs
+        panelId="workspace-node-tabs"
         value={tab}
         onChange={setTab}
         items={[
@@ -1402,20 +1846,40 @@ function NodeInspector({
           ["comments", "意见", "Notes"],
         ].map(([id, zh, en]) => ({ id, label: t(zh, en) }))}
       />
-      <div className="inspector-body">
+      <div
+        className="inspector-body"
+        id="workspace-node-tabs-panel"
+        role="tabpanel"
+        aria-labelledby={`workspace-node-tabs-tab-${tab}`}
+        tabIndex={0}
+      >
         {tab === "instructions" && (
           <>
             <Field label={t("执行指令", "Instructions")}>
               <textarea
                 rows={9}
                 value={instructions}
-                onChange={(e) => setInstructions(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setInstructions(value);
+                  if (value === node.instructions)
+                    sessionStorage.removeItem(instructionDraftKey);
+                  else sessionStorage.setItem(instructionDraftKey, value);
+                }}
                 placeholder={t(
                   "清晰描述目标、方法和预期产物。",
                   "Describe the objective, method, and expected outputs.",
                 )}
               />
             </Field>
+            {instructions !== node.instructions && (
+              <small className="muted" role="status">
+                {t(
+                  "未保存的指令草稿会保留在此浏览器标签页中。",
+                  "Unsaved instruction drafts are kept in this browser tab.",
+                )}
+              </small>
+            )}
             <div className="inspector-meta">
               <span>{t("所属路线", "Branch")}</span>
               <strong>
@@ -1497,15 +1961,21 @@ function NodeInspector({
               </Button>
               <Button
                 onClick={() =>
-                  action(async () =>
-                    setContext(
-                      await api(
-                        `/nodes/${node.id}/context/rebuild`,
-                        "POST",
-                        {},
-                      ),
-                    ),
-                  )
+                  action(async () => {
+                    const rebuilt = await api(
+                      `/nodes/${node.id}/context/rebuild`,
+                      "POST",
+                      {
+                        ...parseJson(overrides),
+                        expected_revision: base.revision,
+                      },
+                    );
+                    setContext(rebuilt);
+                    setBase((current) => ({
+                      ...current,
+                      revision: rebuilt.graph_revision,
+                    }));
+                  })
                 }
               >
                 <RefreshCw size={13} />
@@ -1781,6 +2251,15 @@ export function RunPanel({
             ))}
         </div>
         {run && <RunEvidence runId={run.id} />}
+        {run?.kind === "agent" &&
+          terminal &&
+          typeof run.metrics?.summary === "string" &&
+          run.metrics.summary.trim() && (
+            <section className="run-final-summary" aria-label={t("最终摘要", "Final summary")}>
+              <strong>{t("最终摘要", "Final summary")}</strong>
+              <p>{run.metrics.summary}</p>
+            </section>
+          )}
         <pre>
           {output ||
             run?.error ||

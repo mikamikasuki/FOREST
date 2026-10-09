@@ -1,5 +1,6 @@
 """Persistent research sessions and actual, separately supervised tool processes."""
 from __future__ import annotations
+import codecs
 from copy import deepcopy
 import hashlib
 import json
@@ -10,7 +11,7 @@ from pathlib import Path
 from sqlalchemy import select
 from services.api.db import *
 from services.api.common import get, project_dir, safe_path, read_secret, emit, graph_from_db, save_graph
-from .policy import RESEARCH_POLICY, ROLES, TOOLS
+from .policy import RESEARCH_POLICY, ROLES, TOOLS, agent_policy
 from .provider import ModelClient, ProviderError
 from .schemas import tool_definitions, decode_tool_call, json_action_schema
 from .code_writes import write_file_chunk
@@ -125,9 +126,17 @@ class ToolRuntime:
                 raise ValueError('offset must be nonnegative and limit between 1 and 1000000 bytes')
             with p.open('rb') as handle:
                 handle.seek(offset)
-                content = handle.read(limit)
-                next_offset = handle.tell()
-            return {'content': content.decode('utf-8', errors='replace'), 'path': args['path'], 'next_offset': next_offset, 'size_bytes': p.stat().st_size, 'exit_code': 0}
+                raw = handle.read(limit)
+            size_bytes = p.stat().st_size
+            decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+            content = decoder.decode(raw)
+            pending, _ = decoder.getstate()
+            next_offset = offset + len(raw)
+            if offset + len(raw) >= size_bytes:
+                content += decoder.decode(b'', final=True)
+            else:
+                next_offset -= len(pending)
+            return {'content': content, 'path': args['path'], 'next_offset': next_offset, 'size_bytes': size_bytes, 'exit_code': 0}
         if name == 'write_file':
             p = safe_path(self.workspace, args['path'])
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -586,11 +595,14 @@ def run_agent(run_id, workspace, config):
     with Session() as s:
         run = get(s, TaskRun, run_id)
         p = get(s, Project, run.project_id)
-        from research.publication import publication_profile, publication_instructions
-        profile = publication_profile({**p.config, **config})
+        from research.publication import publication_profile
+        from .policy import publication_scope
+        run_kind = run.kind
         graph = graph_from_db(s, p)
         graph['goal'], graph['budget'] = p.goal, p.budget
         role = config.get('role', 'Researcher')
+        profile = (publication_profile({**p.config, **config})
+                   if publication_scope(role, config, run_kind) else None)
         agent = s.get(Agent, config.get('agent_id')) if config.get('agent_id') else s.scalar(select(Agent).where(Agent.role == role))
         if agent and not agent.enabled:
             raise ValueError('Selected agent is disabled')
@@ -600,6 +612,8 @@ def run_agent(run_id, workspace, config):
             from research.kernel import ContextBuilder
             context_overrides = dict(config.get('context_overrides') or {})
             context_overrides.setdefault('max_chars', context_packet_char_budget(config))
+            from services.api.common import attach_context_ideas
+            attach_context_ideas(s,p,graph,context_overrides)
             packet = ContextBuilder(graph, project_dir(p.id)).build(run.node_id, role, context_overrides)
         else:
             packet = {'goal': p.goal, 'instructions': config.get('instructions', config.get('prompt', ''))}
@@ -657,7 +671,7 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
     state = read_json(session_path)
     if state and state.get('run_id') != run_id:
         raise ValueError('Session belongs to a different run')
-    system = {'role': 'system', 'content': RESEARCH_POLICY + '\nSaved owner comments are contextual guidance only; the supplied task controls and effective tool allowlist remain authoritative.\n' + publication_instructions(profile) + '\nROLE: ' + role_instruction + '\n' + protocol}
+    system = {'role': 'system', 'content': agent_policy(role, config, profile) + '\nSaved owner comments are contextual guidance only; the supplied task controls and effective tool allowlist remain authoritative.\nROLE: ' + role_instruction + '\n' + protocol}
     atomic_json(workspace / 'context_packet.json', packet)
     task = model_task_message(packet, config)
     if not state:
@@ -725,6 +739,8 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
                 fresh_graph = graph_from_db(s, p)
                 if current.node_id:
                     from research.kernel import ContextBuilder
+                    from services.api.common import attach_context_ideas
+                    attach_context_ideas(s,p,fresh_graph,context_overrides)
                     packet = ContextBuilder(fresh_graph, project_dir(p.id)).build(current.node_id, role, context_overrides)
                     # Ordinary node edits are next-run configuration. Explicit
                     # instruction interventions provide the live overlay below.
