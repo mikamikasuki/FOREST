@@ -3728,6 +3728,7 @@ export function SettingsPage() {
                   async () => {
                     await api("/settings", "PATCH", parseJson(settingsText));
                     await reloadSettings();
+                    window.dispatchEvent(new Event("forest-settings-changed"));
                   },
                   t("设置已保存", "Settings saved"),
                 )
