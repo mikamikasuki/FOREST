@@ -531,7 +531,7 @@ for collection, name, response, create_body, patch_body in (
     operation("patch", f"/api/{collection}/{{ident}}", "Configuration", f"Edit an {name}", patch_description,
         ref(response), body=patch_body, errors={404: "NOT_FOUND"})
 operation("post", "/api/providers/{ident}/test", "Configuration", "Test a model with a real request",
-    "Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; success contains status plus extensible ModelClient result fields.", obj({"status": S}, ("status",)), errors={404: "NOT_FOUND", 502: "PROVIDER_CONNECTION_FAILED (retryable)"})
+    "Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; status is the connection outcome, while request_status preserves the ModelClient request state when available. Other ModelClient result fields are extensible.", obj({"status": S, "request_status": field("string", nullable=True)}, ("status",)), errors={404: "NOT_FOUND", 502: "PROVIDER_CONNECTION_FAILED (retryable)"})
 operation("get", "/api/providers/{ident}/usage", "Configuration", "Read account-wide provider spending",
     "Read configured-rate estimates and reservations across all projects using this provider. requests contains the 100 most recent records; request_count is the full count. Missing limit/remaining/individual estimate values are null, not zero.", ref("ProviderUsage"), errors={404: "NOT_FOUND"})
 operation("get", "/api/providers/{ident}/models", "Configuration", "Read the provider-native model list",
