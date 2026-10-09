@@ -342,10 +342,24 @@ class GraphCommandService:
             return mapping
 
         if operation == "add_node":
-            fields = params.get("node", params)
+            fields = deepcopy(params.get("node") or params)
+            explicit_parent = params.get("parent_id") or fields.pop("parent_id", None)
+            parent_ids = list(dict.fromkeys(
+                [explicit_parent] if explicit_parent else targets
+            ))
+            if parent_ids:
+                parents = [require(parent_id) for parent_id in parent_ids]
+                parent_branches = {parent["branch_id"] for parent in parents}
+                if len(parent_branches) > 1:
+                    raise GraphError("branch_mismatch", "A new node cannot depend on targets from different branches.")
+                parent_branch = parents[0]["branch_id"]
+                requested_branch = fields.get("branch_id", params.get("branch_id"))
+                if requested_branch and requested_branch != parent_branch:
+                    raise GraphError("branch_mismatch", "The new node and its target must be on the same branch.")
+                fields["branch_id"] = parent_branch
             node = add(fields)
-            if params.get("parent_id"):
-                edge(params["parent_id"], node["id"])
+            for parent_id in parent_ids:
+                edge(parent_id, node["id"])
         elif operation in {"edit_node", "apply_instruction_patch"}:
             patch = deepcopy(params.get("patch", params))
             positions = params.get("positions") if operation == "edit_node" else None
