@@ -1,5 +1,6 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
+import { createFileSelectionGuard } from "./fileSelection";
 import { useState, useEffect, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
@@ -2698,6 +2699,10 @@ export function FilesPage() {
   const [content, setContent] = useState("");
   const [original, setOriginal] = useState("");
   const [revision, setRevision] = useState<number | undefined>();
+  const [loadedPath, setLoadedPath] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const fileSelection = useRef(createFileSelectionGuard()).current;
+  const draftVersion = useRef(0);
   const [filter, setFilter] = useState("");
   const [newFile, setNewFile] = useState(false);
   const [newPath, setNewPath] = useState("");
@@ -2720,50 +2725,87 @@ export function FilesPage() {
   const open = async (p: string) => {
     if (dirty && !confirm(t("放弃未保存修改？", "Discard unsaved changes?")))
       return;
+    const selection = fileSelection.select(p);
     setPath(p);
     setDiff(false);
     setTablePreview(false);
     setDirty(false);
+    setLoadedPath("");
+    setLoadError("");
+    setContent("");
+    setOriginal("");
+    setRevision(undefined);
     if (/\.(csv|tsv)$/i.test(p)) {
       setTablePreview(true);
-      setContent("");
-      setOriginal("");
-      setRevision(undefined);
+      setLoadedPath(p);
       return;
     }
     if (!/\.(pdf|png|jpe?g|svg|webp|gif|parquet|zip|pkl|npy|npz)$/i.test(p)) {
-      const r = await api(`/projects/${id}/file?path=${encodeURIComponent(p)}`);
-      setContent(r.content);
-      setOriginal(r.content);
-      setRevision(r.revision);
+      try {
+        const r = await api(`/projects/${id}/file?path=${encodeURIComponent(p)}`);
+        if (!fileSelection.isCurrent(selection)) return;
+        setContent(r.content);
+        setOriginal(r.content);
+        setRevision(r.revision);
+        setLoadedPath(p);
+      } catch (error) {
+        if (!fileSelection.isCurrent(selection)) return;
+        setLoadError((error as Error).message);
+        throw error;
+      }
+    } else {
+      setLoadedPath(p);
     }
   };
   const save = async (force = false) => {
+    const selection = fileSelection.current();
+    const targetPath = path;
+    const savedContent = content;
+    const savedRevision = revision;
+    const savedDraftVersion = draftVersion.current;
+    if (
+      !targetPath ||
+      selection.path !== targetPath ||
+      loadedPath !== targetPath ||
+      savedRevision === undefined
+    ) {
+      throw new Error("Wait for the selected file to finish loading before saving.");
+    }
     try {
       const r = await api(
-        `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+        `/projects/${id}/file?path=${encodeURIComponent(targetPath)}`,
         "PUT",
-        { path, content, ...(force ? {} : { expected_revision: revision }) },
+        {
+          path: targetPath,
+          content: savedContent,
+          ...(force ? {} : { expected_revision: savedRevision }),
+        },
       );
+      if (!fileSelection.isCurrent(selection)) {
+        await reload();
+        return;
+      }
       setRevision(r.revision);
-      setOriginal(content);
-      setDirty(false);
+      setOriginal(savedContent);
+      setDirty(draftVersion.current !== savedDraftVersion);
       setConflict(null);
       await reload();
     } catch (e) {
       if ((e as any).status === 409) {
         try {
           const latest = await api(
-            `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+            `/projects/${id}/file?path=${encodeURIComponent(targetPath)}`,
           );
+          if (!fileSelection.isCurrent(selection)) return;
           setConflict({
             kind: "changed",
             content: latest.content,
             revision: latest.revision,
           });
         } catch (readError) {
+          if (!fileSelection.isCurrent(selection)) return;
           if ((readError as any).status !== 404) throw readError;
-          setConflict({ kind: "missing", path });
+          setConflict({ kind: "missing", path: targetPath });
         }
         return;
       }
@@ -2951,13 +2993,32 @@ export function FilesPage() {
                           setTablePreview(false);
                         } else {
                           void action(async () => {
-                            const result = await api(
-                              `/projects/${id}/file?path=${encodeURIComponent(path)}`,
-                            );
+                            const selection = fileSelection.current();
+                            const readGeneration = ++fileReadGeneration.current;
+                            setLoadedPath("");
+                            setLoadError("");
+                            try {
+                              const result = await api(
+                                `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+                              );
+                              if (
+                                !fileSelection.isCurrent(selection) ||
+                                fileReadGeneration.current !== readGeneration
+                              )
+                                return;
                             setContent(result.content);
                             setOriginal(result.content);
                             setRevision(result.revision);
+                            setLoadedPath(path);
                             setTablePreview(false);
+                            } catch (error) {
+                              if (
+                                fileSelection.isCurrent(selection) &&
+                                fileReadGeneration.current === readGeneration
+                              )
+                                setLoadError((error as Error).message);
+                              throw error;
+                            }
                           });
                         }
                       } else setTablePreview(true);
@@ -2974,7 +3035,10 @@ export function FilesPage() {
                     >
                       <GitCompare size={15} />
                     </IconButton>
-                    <Button onClick={() => action(() => save())}>
+                    <Button
+                      disabled={loadedPath !== path || revision === undefined}
+                      onClick={() => action(() => save())}
+                    >
                       <Save size={14} />
                       {t("保存", "Save")}
                     </Button>
@@ -2996,16 +3060,26 @@ export function FilesPage() {
                 </IconButton>
                 <IconButton
                   label={t("重命名", "Rename")}
+                  disabled={loadedPath !== path}
                   onClick={() => {
                     const next = prompt(t("新文件路径", "New file path"), path);
                     if (next && next !== path)
                       void action(async () => {
-                        const renamed = await api(`/projects/${id}/file/rename`, "POST", {
-                          path,
-                          new_path: next,
-                        });
+                        const selection = fileSelection.current();
+                        const targetPath = path;
+                        const renamed = await api(
+                          `/projects/${id}/file/rename`,
+                          "POST",
+                          { path: targetPath, new_path: next },
+                        );
+                        if (!fileSelection.isCurrent(selection)) {
+                          await reload();
+                          return;
+                        }
+                        fileSelection.select(next);
                         setPath(next);
                         setRevision(renamed.revision);
+                        setLoadedPath(next);
                         await reload();
                       });
                   }}
@@ -3017,11 +3091,23 @@ export function FilesPage() {
                   onClick={() => {
                     if (confirm(t(`删除 ${path}？`, `Delete ${path}?`)))
                       void action(async () => {
+                        const selection = fileSelection.current();
+                        const targetPath = path;
                         await api(
-                          `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+                          `/projects/${id}/file?path=${encodeURIComponent(targetPath)}`,
                           "DELETE",
                         );
+                        if (!fileSelection.isCurrent(selection)) {
+                          await reload();
+                          return;
+                        }
+                        fileSelection.select("");
                         setPath("");
+                        setContent("");
+                        setOriginal("");
+                        setRevision(undefined);
+                        setLoadedPath("");
+                        setDirty(false);
                         await reload();
                       });
                   }}
@@ -3029,7 +3115,16 @@ export function FilesPage() {
                   <Trash2 size={15} />
                 </IconButton>
               </div>
-              {extension === "pdf" ? (
+              {loadedPath !== path ? (
+                loadError ? (
+                  <ErrorBox
+                    error={loadError}
+                    retry={() => void action(() => open(path))}
+                  />
+                ) : (
+                  <p role="status">{t("正在加载文件…", "Loading file…")}</p>
+                )
+              ) : extension === "pdf" ? (
                 <PDFViewer url={url} />
               ) : image ? (
                 <div className="file-image">
@@ -3067,6 +3162,7 @@ export function FilesPage() {
                     <CodeEditor
                       value={content}
                       onChange={(v) => {
+                        draftVersion.current += 1;
                         setContent(v);
                         setDirty(true);
                       }}
@@ -3078,6 +3174,7 @@ export function FilesPage() {
                 <CodeEditor
                   value={content}
                   onChange={(v) => {
+                    draftVersion.current += 1;
                     setContent(v);
                     setDirty(true);
                   }}
@@ -3192,16 +3289,25 @@ export function FilesPage() {
                 );
                 if (next)
                   void action(async () => {
+                    const selection = fileSelection.current();
+                    const savedContent = content;
+                    const savedDraftVersion = draftVersion.current;
                     const saved = await api(
                       `/projects/${id}/file?path=${encodeURIComponent(next)}`,
                       "PUT",
-                      { path: next, content },
+                      { path: next, content: savedContent },
                     );
+                    if (!fileSelection.isCurrent(selection)) {
+                      await reload();
+                      return;
+                    }
+                    fileSelection.select(next);
                     setConflict(null);
                     setPath(next);
                     setRevision(saved.revision);
-                    setOriginal(content);
-                    setDirty(false);
+                    setOriginal(savedContent);
+                    setLoadedPath(next);
+                    setDirty(draftVersion.current !== savedDraftVersion);
                     await reload();
                   });
               }}
