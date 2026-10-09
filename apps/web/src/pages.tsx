@@ -2691,11 +2691,12 @@ export function FilesPage() {
                     const next = prompt(t("新文件路径", "New file path"), path);
                     if (next && next !== path)
                       void action(async () => {
-                        await api(`/projects/${id}/file/rename`, "POST", {
+                        const renamed = await api(`/projects/${id}/file/rename`, "POST", {
                           path,
                           new_path: next,
                         });
                         setPath(next);
+                        setRevision(renamed.revision);
                         await reload();
                       });
                   }}

@@ -368,10 +368,13 @@ def rename_file(ident:str,body:dict=Body(...)):
         # files have no FileRevision row yet, so they need a revision-1 tombstone
         # to invalidate an editor that opened them at revision 0.
         s.flush()
+        destination_revision=s.scalar(select(FileRevision.revision).where(
+            FileRevision.project_id==ident,FileRevision.path==new_relative
+        )) or 0
         dst.parent.mkdir(parents=True,exist_ok=True);src.rename(dst)
         touch_dependents(s,ident,relative)
         managed_change(s,ident,relative,'owner_editor');managed_change(s,ident,new_relative,'owner_editor')
-    return {'path':body['new_path']}
+    return {'path':body['new_path'],'revision':destination_revision}
 @router.get('/api/projects/{ident}/download')
 def download_file(ident:str,path:str):
     p=safe_path(validate_project(ident),path,True)
