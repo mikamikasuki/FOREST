@@ -67,6 +67,51 @@ test("queued approved actions do not offer an invalid continuation", async ({
   ).toBeVisible();
 });
 
+test("Files folders expand and collapse nested entries", async ({
+  page,
+  request,
+}) => {
+  const filePath = "records/2026/notes.md";
+  const saved = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path: filePath, content: "Nested file contents\n" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.goto(`/projects/${projectId}/files`);
+  const fileTree = page.locator(".file-tree");
+  const file = fileTree.getByRole("button", { name: filePath });
+  const records = fileTree.getByRole("button", {
+    name: "records",
+    exact: true,
+  });
+  const year = fileTree.getByRole("button", {
+    name: "records/2026",
+    exact: true,
+  });
+  await expect(file).toBeVisible();
+  await expect(records).toHaveAttribute("aria-expanded", "true");
+
+  await records.focus();
+  await page.keyboard.press("Enter");
+  await expect(records).toHaveAttribute("aria-expanded", "false");
+  await expect(file).toBeHidden();
+
+  await records.click();
+  await expect(file).toBeVisible();
+  await year.click();
+  await expect(year).toHaveAttribute("aria-expanded", "false");
+  await expect(file).toBeHidden();
+
+  await fileTree.getByPlaceholder("Find files…").fill("notes.md");
+  await expect(records).toBeVisible();
+  await year.click();
+  await expect(file).toBeVisible();
+  await file.click();
+  await expect(page.locator(".monaco-editor")).toContainText(
+    "Nested file contents",
+  );
+});
+
 test("a stale editor cannot overwrite a file recreated after deletion", async ({
   page,
   request,
@@ -962,9 +1007,7 @@ test("Paper full-manuscript picker lists completed runs from this project", asyn
       exact: true,
     })
     .click();
-  await expect(
-    picker.getByRole("checkbox", { name: runLabel }),
-  ).toBeVisible();
+  await expect(picker.getByRole("checkbox", { name: runLabel })).toBeVisible();
   await expect(generate).toBeDisabled();
 });
 

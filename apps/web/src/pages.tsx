@@ -2641,6 +2641,9 @@ export function FilesPage() {
   const [original, setOriginal] = useState("");
   const [revision, setRevision] = useState<number | undefined>();
   const [filter, setFilter] = useState("");
+  const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [newFile, setNewFile] = useState(false);
   const [newPath, setNewPath] = useState("");
   const [diff, setDiff] = useState(false);
@@ -2658,6 +2661,21 @@ export function FilesPage() {
   const binary = ["parquet", "zip", "pkl", "npy", "npz"].includes(
     extension || "",
   );
+  const matchingFiles = data.files.filter((file) =>
+    file.path.toLowerCase().includes(filter.toLowerCase()),
+  );
+  const visibleFiles = data.files.filter((file) => {
+    const matches = matchingFiles.some((match) => match.path === file.path);
+    const containsMatch =
+      file.is_dir &&
+      matchingFiles.some((match) => match.path.startsWith(`${file.path}/`));
+    if (!matches && !containsMatch) return false;
+    const parts = file.path.split("/");
+    for (let index = 1; index < parts.length; index++)
+      if (collapsedDirectories.has(parts.slice(0, index).join("/")))
+        return false;
+    return true;
+  });
   const url = `/api/projects/${id}/download?path=${encodeURIComponent(path)}`;
   const open = async (p: string) => {
     if (dirty && !confirm(t("放弃未保存修改？", "Discard unsaved changes?")))
@@ -2805,30 +2823,39 @@ export function FilesPage() {
             />
           </label>
           <div>
-            {data.files
-              .filter((f) =>
-                f.path.toLowerCase().includes(filter.toLowerCase()),
-              )
-              .map((f) => (
-                <button
-                  key={f.path}
-                  className={path === f.path ? "active" : ""}
-                  onClick={() => {
-                    if (!f.is_dir) void action(() => open(f.path));
-                  }}
-                  title={f.path}
-                >
-                  {f.is_dir ? <Folder size={15} /> : <File size={14} />}
-                  <span>{f.path}</span>
-                  <small>
-                    {f.is_dir
-                      ? ""
-                      : f.size < 1024
-                        ? `${f.size} B`
-                        : `${(f.size / 1024).toFixed(1)} K`}
-                  </small>
-                </button>
-              ))}
+            {visibleFiles.map((f) => (
+              <button
+                key={f.path}
+                className={`${path === f.path ? "active" : ""}${f.is_dir ? " directory" : ""}`}
+                aria-expanded={
+                  f.is_dir ? !collapsedDirectories.has(f.path) : undefined
+                }
+                style={{
+                  paddingLeft: `${15 + (f.path.split("/").length - 1) * 14}px`,
+                }}
+                onClick={() => {
+                  if (f.is_dir) {
+                    setCollapsedDirectories((current) => {
+                      const next = new Set(current);
+                      if (next.has(f.path)) next.delete(f.path);
+                      else next.add(f.path);
+                      return next;
+                    });
+                  } else void action(() => open(f.path));
+                }}
+                title={f.path}
+              >
+                {f.is_dir ? <Folder size={15} /> : <File size={14} />}
+                <span>{f.path}</span>
+                <small>
+                  {f.is_dir
+                    ? ""
+                    : f.size < 1024
+                      ? `${f.size} B`
+                      : `${(f.size / 1024).toFixed(1)} K`}
+                </small>
+              </button>
+            ))}
           </div>
           {!data.files.length && <Empty title={t("暂无文件", "No files")} />}
         </aside>
