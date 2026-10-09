@@ -1398,6 +1398,37 @@ def case_zero_padded_csv_identifiers_survive_data_rows(client, app):
     assert [row['score'] for row in sorted_rows['rows']] == [10.5, 9.5], sorted_rows
 
 
+def case_figure_render_is_invalidated_after_data_or_style_edit(client, app):
+    p = create(client)
+    image_path = 'figures/current.png'
+    ok(client.put(f"/api/projects/{p['id']}/file", json={"path": image_path, "content": "old rendered bytes"}))
+    figure = ok(client.post('/api/figures', json={
+        'project_id': p['id'], 'title': 'Current figure', 'status': 'ready_for_review',
+        'data': {'kind': 'bar', 'metric': 'score', 'style': {'title': 'Old'},
+                 'data': {'values': [1]}, 'visual_review_status': 'selected',
+                 'outputs': {'png': image_path}},
+    }))
+    paper = ok(client.get(f"/api/papers/{p['id']}"))
+    anchor = 'The measured result appears here.'
+    source = paper['data']['source'].replace('Write the evidence-supported question here.', anchor)
+    paper = ok(client.patch(f"/api/papers/{p['id']}", json={
+        'expected_revision': paper['revision'], 'data': {'source': source},
+    }))
+
+    edited = ok(client.patch(f"/api/figures/{figure['id']}", json={
+        'expected_revision': figure['revision'],
+        'data': {**figure['data'], 'style': {'title': 'New'}, 'data': {'values': [2]}},
+    }))
+    assert edited['status'] == 'needs_review'
+    assert 'outputs' not in edited['data']
+    assert 'visual_selection' not in edited['data']
+    assert edited['data']['visual_review_status'] == 'stale'
+    response = client.post(f"/api/papers/{p['id']}/figures", json={
+        'expected_revision': paper['revision'], 'figure_id': figure['id'], 'anchor_text': anchor,
+    })
+    assert response.status_code == 409, response.text
+
+
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]
 
 

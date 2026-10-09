@@ -632,7 +632,7 @@ for kind in RESOURCE_KINDS:
     operation("get", f"/api/{kind}/{{ident}}", "Resources", f"Read a {kind} record",
         "Return the persisted resource; data structure depends on the resource kind.", ref(record_type), errors={404: "NOT_FOUND"})
     operation("patch", f"/api/{kind}/{{ident}}", "Resources", f"Edit a {kind} record",
-        "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.", ref(record_type), body="ResourcePatch", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
+        "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale." + (" For figures, changes to render-driving kind/style/code/run_ids/metric/data/image_prompt fields clear old render outputs and review selection and set needs_review; render and review the new revision before insertion." if kind=="figures" else ""), ref(record_type), body="ResourcePatch", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
     operation("delete", f"/api/{kind}/{{ident}}", "Resources", f"Delete a {kind} record",
         "Delete the metadata record and mark consuming materials stale; this handler does not delete all associated workspace files. Return deleted identifier.", ref("Deleted"), errors={404: "NOT_FOUND"})
 

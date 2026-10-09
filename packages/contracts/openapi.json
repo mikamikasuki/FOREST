@@ -10951,7 +10951,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale. For figures, changes to render-driving kind/style/code/run_ids/metric/data/image_prompt fields clear old render outputs and review selection and set needs_review; render and review the new revision before insertion.",
         "operationId": "figures_edit_api_figures__ident__patch",
         "parameters": [
           {
