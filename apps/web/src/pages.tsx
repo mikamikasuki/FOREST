@@ -3679,7 +3679,7 @@ function ProposalCommands({
   }, [record.id, record.project_id]);
   return (
     <div className="proposal-commands">
-      <strong>{t("待采用的路线建议", "Unapplied suggestions")}</strong>
+      <strong>{t("路线建议", "Path suggestions")}</strong>
       {commands.map((text, index) => {
         let command: Json;
         try {
@@ -3687,13 +3687,20 @@ function ProposalCommands({
         } catch {
           command = { operation: "Invalid JSON" };
         }
+        const accepted = (record.data.accepted_indices || []).includes(index);
+        const appliedCommand = record.data.applied_commands?.[index];
+        const displayedCommand = accepted ? appliedCommand || command : command;
+        const originalCommand = record.data.commands[index];
+        const hasAppliedEdit =
+          appliedCommand &&
+          JSON.stringify(appliedCommand) !== JSON.stringify(originalCommand);
         return (
           <div className="proposal-command" key={index}>
             <input
               type="checkbox"
               aria-label={`Select command ${index + 1}`}
               checked={selected.includes(index)}
-              disabled={(record.data.accepted_indices || []).includes(index)}
+              disabled={accepted}
               onChange={(e) =>
                 setSelected((s) =>
                   e.target.checked
@@ -3703,12 +3710,19 @@ function ProposalCommands({
               }
             />
             <div>
-              <code>{command.operation}</code>
+              <code>{displayedCommand.operation}</code>
+              {accepted && <Badge status="adopted">{t("已采用", "Applied")}</Badge>}
               <p>
-                {command.params?.title ||
-                  command.params?.name ||
-                  command.targets?.join(", ")}
+                {displayedCommand.params?.title ||
+                  displayedCommand.params?.name ||
+                  displayedCommand.targets?.join(", ")}
               </p>
+              {hasAppliedEdit && (
+                <details>
+                  <summary>{t("原始建议", "Original suggestion")}</summary>
+                  <pre>{JSON.stringify(originalCommand, null, 2)}</pre>
+                </details>
+              )}
               {edit === index && (
                 <textarea
                   rows={8}
@@ -3724,6 +3738,7 @@ function ProposalCommands({
             </div>
             <IconButton
               label={t("修改建议", "Edit suggestion")}
+              disabled={accepted}
               onClick={() => setEdit(edit === index ? null : index)}
             >
               <Pencil size={13} />
