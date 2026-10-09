@@ -1255,6 +1255,11 @@ export function DataPage() {
     error,
     reload,
   } = useLoad<Run[]>(`/projects/${id}/runs`, []);
+  useEffect(() => {
+    const refresh = () => void reload();
+    window.addEventListener("forest-refresh", refresh);
+    return () => window.removeEventListener("forest-refresh", refresh);
+  }, [reload]);
   const { data: analyses, reload: reloadAnalyses } = useLoad<RecordItem[]>(
     `/analyses?project_id=${id}`,
     [],
@@ -1468,11 +1473,19 @@ export function DataPage() {
 }
 export function FiguresPage() {
   const { data: figures, id, error, reload } = useProjectRecords("figures");
-  const { data: runs } = useLoad<Run[]>(`/projects/${id}/runs`, []);
+  const { data: runs, reload: reloadRuns } = useLoad<Run[]>(
+    `/projects/${id}/runs`,
+    [],
+  );
   const { t, action } = useUI();
   const [selected, setSelected] = useState("");
   const [creating, setCreating] = useState(false);
   const figure = figures.find((f) => f.id === selected) || figures[0];
+  useEffect(() => {
+    const refresh = () => void reloadRuns();
+    window.addEventListener("forest-refresh", refresh);
+    return () => window.removeEventListener("forest-refresh", refresh);
+  }, [reloadRuns]);
   return (
     <div className="page studio-page">
       <PageHeading
