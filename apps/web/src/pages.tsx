@@ -1,6 +1,7 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
 import { createFileSelectionGuard } from "./fileSelection";
+import { updateDefaultProviderDraft } from "./settingsDraft";
 import { hostEditorConfig, hostPayload } from "./connectionPayload";
 import { useState, useEffect, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
@@ -3463,10 +3464,14 @@ export function SettingsPage() {
                     <Button
                       onClick={() =>
                         action(
-                          () =>
-                            api("/settings", "PATCH", {
+                          async () => {
+                            await api("/settings", "PATCH", {
                               default_provider_id: item.id,
-                            }),
+                            });
+                            setSettingsText((current) =>
+                              updateDefaultProviderDraft(current, item.id),
+                            );
+                          },
                           "Default model updated",
                         )
                       }
