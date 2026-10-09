@@ -2545,10 +2545,49 @@ export function FilesPage() {
     }
   };
   const upload = async (files: FileList | File[]) => {
-    for (const f of [...files]) {
+    const selected = [...files].map((file) => {
+      const relativePath = file.webkitRelativePath || file.name;
+      const parts = relativePath.split("/");
+      const safeParts = parts.every((part) => part && part !== "." && part !== "..");
+      const path = `uploads/${safeParts ? relativePath : file.name}`;
+      return {
+        file,
+        path,
+        directory: path.split("/").slice(0, -1).join("/"),
+      };
+    });
+    const existing = new Set(
+      data.files.filter((item) => !item.is_dir).map((item) => item.path),
+    );
+    const seen = new Set<string>();
+    const conflicts = new Set<string>();
+    for (const item of selected) {
+      if (existing.has(item.path) || seen.has(item.path)) conflicts.add(item.path);
+      seen.add(item.path);
+    }
+    if (conflicts.size) {
+      const paths = [...conflicts];
+      const listed = paths.slice(0, 5).join(", ");
+      const more = paths.length > 5 ? ` (+${paths.length - 5})` : "";
+      if (
+        !confirm(
+          t(
+            `这些目标路径已存在或在所选文件中重复：${listed}${more}。继续将覆盖目标内容；同一目标选了多个文件时保留最后一个。继续吗？`,
+            `These upload destinations already exist or repeat in this selection: ${listed}${more}. Continuing replaces their contents; if multiple selected files share a destination, the last one is kept. Continue?`,
+          ),
+        )
+      )
+        return;
+    }
+    for (const item of selected) {
       const body = new FormData();
-      body.append("file", f);
-      await api(`/projects/${id}/upload`, "POST", body);
+      body.append("file", item.file);
+      const overwrite = conflicts.has(item.path);
+      await api(
+        `/projects/${id}/upload?directory=${encodeURIComponent(item.directory)}&overwrite=${overwrite}`,
+        "POST",
+        body,
+      );
     }
     await reload();
   };
