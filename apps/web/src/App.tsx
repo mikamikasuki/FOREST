@@ -335,6 +335,7 @@ function ProjectShell() {
       "queued",
       "paused",
       "waiting",
+      "waiting_input",
       "pausing",
       "budget_exhausted",
     ].includes(r.status),
@@ -393,7 +394,15 @@ function ProjectShell() {
                   action(async () => {
                     await Promise.all(
                       active
-                        .filter((r) => r.status === "running")
+                        .filter((r) =>
+                          [
+                            "running",
+                            "queued",
+                            "waiting",
+                            "waiting_input",
+                            "budget_exhausted",
+                          ].includes(r.status),
+                        )
                         .map((r) => api(`/runs/${r.id}/pause`, "POST", {})),
                     );
                     await reloadRuns();
