@@ -126,6 +126,9 @@ def make_project(s,name,goal='',description='',**kwargs):
     try: validate_permissions(kwargs.get('config', {}))
     except ValueError as exc: error('INVALID_TOOL_POLICY', str(exc), 422)
     preference=s.get(Preference,'settings')
+    if kwargs.get('mode') is None:
+        configured_mode=preference.value.get('default_mode') if preference else None
+        kwargs['mode']=configured_mode if configured_mode in ('auto','assisted','manual') else 'assisted'
     default_provider=preference.value.get('default_provider_id') if preference else None
     if default_provider:
         config=dict(kwargs.get('config',{}))

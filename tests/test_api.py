@@ -1398,6 +1398,18 @@ def case_zero_padded_csv_identifiers_survive_data_rows(client, app):
     assert [row['score'] for row in sorted_rows['rows']] == [10.5, 9.5], sorted_rows
 
 
+def case_new_projects_inherit_default_run_mode(client, app):
+    ok(client.patch('/api/settings', json={'default_mode': 'manual'}))
+    inherited = ok(client.post('/api/projects', json={'name': 'Inherit configured mode'}))
+    explicit = ok(client.post('/api/projects', json={
+        'name': 'Keep explicit mode', 'mode': 'assisted',
+    }))
+
+    assert inherited['mode'] == 'manual'
+    assert ok(client.get(f"/api/projects/{inherited['id']}"))['mode'] == 'manual'
+    assert explicit['mode'] == 'assisted'
+
+
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]
 
 
