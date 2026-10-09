@@ -2479,6 +2479,11 @@ td.numeric {
 .figure-properties > .tabs {
   margin: -15px -15px 20px;
 }
+.figure-properties > .tab-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
 .figure-properties .field {
   margin-bottom: 12px;
 }
@@ -2647,6 +2652,14 @@ td.numeric {
 .paper-source > .tabs,
 .paper-preview > .tabs {
   min-height: 40px;
+}
+.paper-source > .tab-panel,
+.paper-preview > .tab-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
 }
 .paper-source > .tabs button,
 .paper-preview > .tabs button {
@@ -3374,6 +3387,10 @@ td.numeric {
   .figure-properties > .tabs {
     grid-column: 1/-1;
     margin: -13px -13px 8px;
+  }
+  .figure-properties > .tab-panel {
+    grid-column: 1/-1;
+    min-width: 0;
   }
   .figure-properties > .inline-actions {
     grid-column: 1/-1;
