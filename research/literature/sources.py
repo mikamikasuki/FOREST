@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import socket
 import time
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse, urlsplit
 from uuid import uuid4
 import xml.etree.ElementTree as ET
 
@@ -171,7 +171,7 @@ def download_pdf(url, target):
 
 def import_identifier(identifier: str, output_dir: str | Path | None = None) -> dict:
     value = identifier.strip()
-    doi_input = urlparse(value).path if value.startswith(("https://", "http://")) else value
+    doi_input = urlsplit(value).path if value.startswith(("https://", "http://")) else value
     local = Path(value)
     if local.is_file() and local.suffix.lower() == ".pdf":
         record = {"title": local.stem, "authors": [], "year": None, "source": "local_pdf", "url": None, "pdf_path": str(local), "passages": extract_pdf(local), "read_scope": "full_text", "trusted_instructions": False}
