@@ -2990,15 +2990,30 @@ export function FilesPage() {
       )
         return;
     }
+    const uploaded: string[] = [];
     for (const item of selected) {
       const body = new FormData();
       body.append("file", item.file);
       const overwrite = conflicts.has(item.path);
-      await api(
-        `/projects/${id}/upload?directory=${encodeURIComponent(item.directory)}&overwrite=${overwrite}`,
-        "POST",
-        body,
-      );
+      try {
+        await api(
+          `/projects/${id}/upload?directory=${encodeURIComponent(item.directory)}&overwrite=${overwrite}`,
+          "POST",
+          body,
+        );
+        uploaded.push(item.path);
+      } catch (error) {
+        await reload();
+        if (!uploaded.length) throw error;
+        const names = uploaded.slice(0, 5).join(", ");
+        const more = uploaded.length > 5 ? ` (+${uploaded.length - 5})` : "";
+        throw new Error(
+          t(
+            `已上传 ${uploaded.length} 个文件（${names}${more}）；${item.path} 上传失败。文件列表已刷新。`,
+            `Uploaded ${uploaded.length} file(s) (${names}${more}); ${item.path} failed. The file list has been refreshed.`,
+          ),
+        );
+      }
     }
     await reload();
   };
