@@ -2632,10 +2632,68 @@ function PaperFigureInsertion({
 export function FilesPage() {
   const { id } = useParams();
   const { t, action } = useUI();
-  const { data, error, reload } = useLoad<{ files: Json[] }>(
-    `/projects/${id}/files`,
-    { files: [] },
+  type FilePage = { files: Json[]; has_more: boolean; next_cursor: string | null };
+  const { data, error, reload: reloadFirstPage } = useLoad<FilePage>(
+    `/projects/${id}/files?limit=500`,
+    { files: [], has_more: false, next_cursor: null },
   );
+  const [pageData, setPageData] = useState<{
+    projectId: string;
+    page: FilePage;
+  } | null>(null);
+  const pageRequestGeneration = useRef(0);
+  const activeProjectId = useRef(id);
+  activeProjectId.current = id;
+  const [pageCursor, setPageCursor] = useState<string | null>(null);
+  const [cursorHistory, setCursorHistory] = useState<(string | null)[]>([]);
+  const [changingPage, setChangingPage] = useState(false);
+  const filePage = pageData && pageData.projectId === id ? pageData.page : data;
+  const reload = async () => {
+    setPageData(null);
+    setPageCursor(null);
+    setCursorHistory([]);
+    await reloadFirstPage();
+  };
+  useEffect(() => {
+    pageRequestGeneration.current += 1;
+    setPageData(null);
+    setPageCursor(null);
+    setCursorHistory([]);
+    setChangingPage(false);
+  }, [id]);
+  const changeFilePage = async (direction: "next" | "previous") => {
+    if (changingPage) return;
+    const nextCursor =
+      direction === "next" ? filePage.next_cursor : (cursorHistory.at(-1) ?? null);
+    if (direction === "next" && (!filePage.has_more || !nextCursor)) return;
+    if (direction === "previous" && !cursorHistory.length) return;
+    const requestProjectId = id;
+    const requestGeneration = pageRequestGeneration.current;
+    setChangingPage(true);
+    try {
+      if (direction === "previous" && nextCursor === null) {
+        setPageData(null);
+        setPageCursor(null);
+        setCursorHistory((history) => history.slice(0, -1));
+        return;
+      }
+      const query = `?limit=500${nextCursor ? `&cursor=${encodeURIComponent(nextCursor)}` : ""}`;
+      const nextPage = await api<FilePage>(`/projects/${requestProjectId}/files${query}`);
+      if (
+        pageRequestGeneration.current !== requestGeneration ||
+        activeProjectId.current !== requestProjectId
+      ) return;
+      if (direction === "next") setCursorHistory((history) => [...history, pageCursor]);
+      else setCursorHistory((history) => history.slice(0, -1));
+      setPageCursor(nextCursor);
+      setPageData({ projectId: requestProjectId!, page: nextPage });
+    } finally {
+      if (
+        pageRequestGeneration.current === requestGeneration &&
+        activeProjectId.current === requestProjectId
+      ) setChangingPage(false);
+    }
+  };
   const [path, setPath] = useState("");
   const [content, setContent] = useState("");
   const [original, setOriginal] = useState("");
@@ -2724,9 +2782,24 @@ export function FilesPage() {
         directory: path.split("/").slice(0, -1).join("/"),
       };
     });
-    const existing = new Set(
-      data.files.filter((item) => !item.is_dir).map((item) => item.path),
-    );
+    const existing = new Set<string>();
+    const destinations = [...new Set(selected.map((item) => item.path))];
+    for (let offset = 0; offset < destinations.length; offset += 1000) {
+      const result = await api<{ existing: string[]; directories: string[] }>(
+        `/projects/${id}/files/existing`,
+        "POST",
+        { paths: destinations.slice(offset, offset + 1000) },
+      );
+      if (result.directories.length) {
+        throw new Error(
+          t(
+            `这些上传目标是目录，不能用文件替换：${result.directories.slice(0, 5).join(", ")}`,
+            `These upload destinations are directories and cannot be replaced by files: ${result.directories.slice(0, 5).join(", ")}`,
+          ),
+        );
+      }
+      result.existing.forEach((item) => existing.add(item));
+    }
     const seen = new Set<string>();
     const conflicts = new Set<string>();
     for (const item of selected) {
@@ -2804,8 +2877,8 @@ export function FilesPage() {
               onChange={(e) => setFilter(e.target.value)}
             />
           </label>
-          <div>
-            {data.files
+          <div className="file-tree-list">
+            {filePage.files
               .filter((f) =>
                 f.path.toLowerCase().includes(filter.toLowerCase()),
               )
@@ -2830,7 +2903,31 @@ export function FilesPage() {
                 </button>
               ))}
           </div>
-          {!data.files.length && <Empty title={t("暂无文件", "No files")} />}
+          {!filePage.files.length && <Empty title={t("暂无文件", "No files")} />}
+          {(cursorHistory.length > 0 || filePage.has_more) && (
+            <div className="file-tree-pagination">
+              <small>
+                {t(
+                  `第 ${cursorHistory.length + 1} 页 · 搜索仅限本页`,
+                  `Page ${cursorHistory.length + 1} · Search covers this page only`,
+                )}
+              </small>
+              <div>
+                <Button
+                  disabled={!cursorHistory.length || changingPage}
+                  onClick={() => void action(() => changeFilePage("previous"))}
+                >
+                  {t("上一页", "Previous")}
+                </Button>
+                <Button
+                  disabled={!filePage.has_more || changingPage}
+                  onClick={() => void action(() => changeFilePage("next"))}
+                >
+                  {changingPage ? t("载入中…", "Loading…") : t("下一页", "Next")}
+                </Button>
+              </div>
+            </div>
+          )}
         </aside>
         <section className="file-editor">
           {path ? (

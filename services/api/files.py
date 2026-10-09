@@ -1,10 +1,15 @@
 import io
 import json
+import os
+import secrets
+import threading
+import time
 import lzma
 import shutil
 import sqlite3
 import zlib
 from contextlib import contextmanager
+from collections import OrderedDict
 import zipfile
 import math
 import warnings
@@ -25,6 +30,68 @@ except ImportError:  # pragma: no cover - exercised by native Windows runtimes.
     fcntl=None
     import msvcrt
 router=APIRouter()
+
+# File pages keep a depth-first scandir iterator alive so later pages continue
+# from the prior position instead of walking the project again. Cursors are
+# short-lived and process-local; the API currently runs as one Uvicorn worker.
+_FILE_CURSOR_TTL=600
+_FILE_CURSOR_LIMIT=256
+_FILE_CURSOR_LOCK=threading.RLock()
+_FILE_CURSORS=OrderedDict()
+
+class _FileCursorSession:
+    def __init__(self,project_id,root):
+        self.project_id=project_id
+        self.root=root
+        self.iterator=iter(_walk_workspace(root))
+        self.pending=None
+
+class _FileCursor:
+    def __init__(self,session):
+        self.session=session
+        self.expires=time.monotonic()+_FILE_CURSOR_TTL
+        self.response=None
+        self.lock=threading.Lock()
+
+def _walk_workspace(root):
+    def visit(directory):
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    relative=Path(entry.path).relative_to(root).as_posix()
+                    if any(part.startswith('.') and part!='.forest-bases' for part in relative.split('/')):
+                        continue
+                    try:
+                        if entry.is_symlink(): continue
+                        is_dir=entry.is_dir(follow_symlinks=False)
+                        stat=entry.stat(follow_symlinks=False)
+                    except OSError:
+                        # A worker may remove or replace an entry while the
+                        # listing is in progress. Skip it instead of failing
+                        # the entire page.
+                        continue
+                    yield {'path':relative,'size':stat.st_size,
+                           'modified':stat.st_mtime,'is_dir':is_dir}
+                    if is_dir:
+                        yield from visit(entry.path)
+        except OSError:
+            return
+    yield from visit(root)
+
+def _prune_file_cursors(now=None):
+    now=time.monotonic() if now is None else now
+    with _FILE_CURSOR_LOCK:
+        for token,entry in list(_FILE_CURSORS.items()):
+            if entry.expires<=now: _FILE_CURSORS.pop(token,None)
+        while len(_FILE_CURSORS)>_FILE_CURSOR_LIMIT:
+            _FILE_CURSORS.popitem(last=False)
+
+def _store_file_cursor(session):
+    token=secrets.token_urlsafe(24)
+    with _FILE_CURSOR_LOCK:
+        _FILE_CURSORS[token]=_FileCursor(session)
+        _prune_file_cursors()
+    return token
 
 def validate_project(ident):
     with Session() as s: get(s,Project,ident)
@@ -114,13 +181,59 @@ def _publish_file(ident,relative,path,temporary,backup,origin,expected_revision=
             raise
         return {'path':relative,'revision':revision.revision,'origin':origin}
 @router.get('/api/projects/{ident}/files')
-def files(ident:str):
-    root=validate_project(ident); items=[]
-    for p in root.rglob('*'):
-        if p.is_symlink() or any(v.startswith('.') and v!='.forest-bases' for v in p.relative_to(root).parts): continue
-        if len(items)>=10000: break
-        st=p.stat(); items.append({'path':str(p.relative_to(root)),'size':st.st_size,'modified':st.st_mtime,'is_dir':p.is_dir()})
-    return {'files':sorted(items,key=lambda x:(not x['is_dir'],x['path']))}
+def files(ident:str,limit:int=Query(default=500,ge=1,le=1000),cursor:str|None=None):
+    root=validate_project(ident)
+    entry=None
+    if cursor is not None:
+        if not isinstance(cursor,str) or len(cursor)<30:
+            error('INVALID_FILE_CURSOR','Invalid file-list cursor',422)
+        _prune_file_cursors()
+        with _FILE_CURSOR_LOCK:
+            entry=_FILE_CURSORS.get(cursor)
+            if entry is None:
+                error('FILE_CURSOR_EXPIRED','File-list cursor expired; reload the first page.',409,
+                      'Restart pagination from the first page.')
+            entry.expires=time.monotonic()+_FILE_CURSOR_TTL
+            _FILE_CURSORS.move_to_end(cursor)
+        if entry.session.project_id!=ident:
+            error('INVALID_FILE_CURSOR','Cursor belongs to a different project.',422)
+    else:
+        entry=_FileCursor(_FileCursorSession(ident,root))
+    session=entry.session
+    with entry.lock:
+        if entry.response is not None: return entry.response
+        page=[]
+        if session.pending is not None:
+            page.append(session.pending)
+            session.pending=None
+        while len(page)<limit+1:
+            try: page.append(next(session.iterator))
+            except StopIteration: break
+        has_more=len(page)>limit
+        if has_more: session.pending=page.pop()
+        items=page
+        next_cursor=_store_file_cursor(session) if has_more else None
+        response={'files':items,'has_more':has_more,'next_cursor':next_cursor}
+        if cursor is not None:
+            entry.expires=time.monotonic()+_FILE_CURSOR_TTL
+            with _FILE_CURSOR_LOCK: _prune_file_cursors()
+            entry.response=response
+        return response
+
+@router.post('/api/projects/{ident}/files/existing')
+def existing_files(ident:str,body:dict=Body(...)):
+    root=validate_project(ident)
+    paths=body.get('paths')
+    if not isinstance(paths,list) or len(paths)>1000 or any(
+            not isinstance(path,str) or not path or len(path)>4096 for path in paths):
+        error('INVALID_FILE_PATHS','Provide up to 1,000 nonempty relative file paths.',422)
+    existing=[]; directories=[]
+    for relative in dict.fromkeys(paths):
+        path=safe_path(root,relative)
+        if path.is_dir(): directories.append(relative)
+        elif path.exists(): existing.append(relative)
+    return {'existing':existing,'directories':directories}
+
 @router.get('/api/projects/{ident}/file')
 def read_file(ident:str,path:str):
     from services.worker.scheduler import _lock_project

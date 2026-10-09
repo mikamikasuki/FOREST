@@ -728,15 +728,31 @@ Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND or MISSING_ARTIFACT; `
 
 #### `GET /api/projects/{ident}/files`
 
-List at most 10000 entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.
+Return a bounded page of eligible workspace entries in depth-first filesystem traversal order. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Cursors are process-local and expire after 10 minutes; on expiration, restart from the first page. Skip symlinks and hidden path components except .forest-bases. Paths are relative to the project root and modified is a filesystem epoch time.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+| `limit` | query | integer | no | Default `500`.  minimum=1, maximum=1000. |
+| `cursor` | query | string or null | no |  |
+
+Success `200`: `application/json`: `FileList`.
+
+Known domain failures: `404` NOT_FOUND; `409` FILE_CURSOR_EXPIRED; `422` INVALID_FILE_CURSOR.
+
+#### `POST /api/projects/{ident}/files/existing`
+
+Return existing files and directories for supplied relative paths in the project workspace. Accepts at most 1,000 paths per request so multi-file uploads can confirm replacements before publishing any selected file; directories cannot be replaced by file uploads.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
 | `ident` | path | string | yes |  |
 
-Success `200`: `application/json`: `FileList`.
+Body: `application/json`: `FileExistenceRequest`; required.
 
-Known domain failures: `404` NOT_FOUND.
+Success `200`: `application/json`: `FileExistenceResult`.
+
+Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `422` INVALID_FILE_PATHS.
 
 #### `POST /api/projects/{ident}/upload`
 
@@ -2961,11 +2977,30 @@ Additional properties: extensible JSON.
 
 Additional properties: extensible JSON.
 
+### `FileExistenceRequest`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `paths` | string[] | yes |  |
+
+Additional properties: extensible JSON.
+
+### `FileExistenceResult`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `existing` | string[] | yes |  |
+| `directories` | string[] | yes |  |
+
+Additional properties: extensible JSON.
+
 ### `FileList`
 
 | Field | Type | Required | Details |
 | --- | --- | --- | --- |
 | `files` | FileEntry[] | yes |  |
+| `has_more` | boolean | yes |  |
+| `next_cursor` | string or null | yes |  |
 
 Additional properties: extensible JSON.
 
