@@ -20,6 +20,53 @@ test.afterEach(async ({ request }) => {
   }
 });
 
+test("queued approved actions do not offer an invalid continuation", async ({
+  page,
+}) => {
+  let runStatus = "queued";
+  let canResume = false;
+  await page.route(`**/api/projects/${projectId}/decisions*`, (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify([
+        {
+          id: "decision-queued",
+          project_id: projectId,
+          run_id: "run-queued",
+          action_id: "action-1",
+          attempt_id: null,
+          observed_revision: 0,
+          proposed: { tool: "write_file" },
+          status: "accepted",
+          answer: { choice: "accept" },
+          answered_at: "2026-10-09T00:00:00Z",
+          consumed_at: null,
+          created_at: "2026-10-09T00:00:00Z",
+          updated_at: "2026-10-09T00:00:00Z",
+          run_status: runStatus,
+          can_resume: canResume,
+        },
+      ]),
+    }),
+  );
+
+  await page.goto(`/projects/${projectId}/overview`);
+  const panel = page.getByRole("region", {
+    name: "Human instructions and decisions",
+  });
+  await expect(panel).toContainText("Decision saved; run status: queued");
+  await expect(
+    panel.getByRole("button", { name: "Continue saved decision" }),
+  ).toHaveCount(0);
+
+  runStatus = "waiting_input";
+  canResume = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("forest-refresh")));
+  await expect(
+    panel.getByRole("button", { name: "Continue saved decision" }),
+  ).toBeVisible();
+});
+
 test("a stale editor cannot overwrite a file recreated after deletion", async ({
   page,
   request,
