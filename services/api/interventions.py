@@ -69,7 +69,7 @@ def decision_answer(ident: str, body: DecisionAnswer):
     if body.resume:
         with Session() as session:
             run = get(session, TaskRun, result['run_id'])
-            waiting = (run.status == 'waiting_input' and result['status'] in ('accepted', 'rejected')
+            waiting = (run.status == 'waiting_input' and result['status'] in ('accepted', 'rejected', 'stale')
                        and run.resource.get('wait_for', {}).get('decision_id') == ident)
         if waiting:
             from .main import run_action
