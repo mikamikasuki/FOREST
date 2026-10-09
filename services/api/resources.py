@@ -76,7 +76,14 @@ def generate_ideas(body:dict=Body(...)):
     with Session.begin() as s: return asdict(enqueue(s,body['project_id'],'ideas',body,body.get('request_id')))
 @router.post('/api/research/suggest-paths')
 def suggest_paths(body:dict=Body(...)):
-    with Session.begin() as s: return asdict(enqueue(s,body['project_id'],'suggest_paths',body,body.get('request_id'),s.get(Node,body.get('node_id')) if body.get('node_id') else None))
+    scope=body.get('scope','node')
+    if scope not in ('node','branch','project'): error('INVALID_SCOPE','Scope must be node, branch, or project',422)
+    with Session.begin() as s:
+        project=get(s,Project,body['project_id'])
+        node=get(s,Node,body['node_id']) if body.get('node_id') else None
+        if node and node.project_id!=project.id: error('CROSS_PROJECT','Selected node belongs to another project',422)
+        if scope in ('node','branch') and not node: error('NODE_REQUIRED','Select a node to choose node or branch scope',422)
+        return asdict(enqueue(s,project.id,'suggest_paths',body,body.get('request_id'),node))
 @router.post('/api/ideas/{ident}/adopt')
 def adopt(ident:str,body:dict=Body(default={})):
     from copy import deepcopy
