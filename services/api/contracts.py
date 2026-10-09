@@ -677,7 +677,7 @@ operation("post", "/api/projects/{ident}/writing/review", "Manuscripts", "Propos
     "body.source is text (default empty). Return character offsets and one-based line numbers. replacement:null means an evidence judgment is required; never apply it as empty replacement. This endpoint does not edit a saved paper.", ref("WritingReview"), body="WritingReviewRequest", errors={404: "NOT_FOUND"})
 SCHEMAS["WritingReviewRequest"] = obj({"source": S})
 operation("post", "/api/projects/{ident}/graph/batch", "Graph", "Apply a batch of supported graph edits",
-    "Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.", ref("GraphBatchResult"), body="GraphBatchRequest", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT", 422: "INVALID_COMMANDS or UNSUPPORTED_BATCH_OPERATION"})
+    "Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; one edit_node may update selected node positions atomically with params.positions keyed by target ID. Workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.", ref("GraphBatchResult"), body="GraphBatchRequest", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT", 422: "INVALID_COMMANDS or UNSUPPORTED_BATCH_OPERATION"})
 operation("post", "/api/projects/{ident}/statistics/review", "Experiments", "Enqueue an independent statistics review",
     "Merge the extensible body, force review_scope=statistics and return queued Run. Optional request_id controls scheduler reuse; review findings arrive through saved run/resource output.", ref("Run"), body="JsonObject", errors={404: "NOT_FOUND"})
 operation("post", "/api/projects/{ident}/statistics/paired", "Experiments", "Enqueue paired real-data inference",
@@ -907,7 +907,7 @@ scheduling, not a synchronous experiment.
 | Graph operation | Target / main `params` fields | Resulting editable operation |
 | --- | --- | --- |
 | `add_node` | Node fields directly or `node:{...}`, optional branch_id/parent_id | Add a node and optional execution parent |
-| `edit_node` | targets: node IDs; fields directly or `patch:{...}`; optional stop_current_run | Deep-merge editable fields, analyze impact, optionally cancel the current run |
+| `edit_node` | targets: node IDs; fields directly or `patch:{...}`; optional stop_current_run; optional `positions:{node_id:{x,y}}` | Deep-merge editable fields, apply per-node layout positions atomically, analyze impact, optionally cancel the current run |
 | `apply_instruction_patch` | targets: node IDs; instructions or old_text/new_text | Replace instructions or one exact matching passage |
 | `delete_node` | targets; strategy subtree/reconnect/visual_only when descendants exist | Remove a subtree, reconnect execution reachability, or remove visual grouping |
 | `add_dependency`, `remove_dependency` | source/target or two targets; relation; add supports input_mapping | Add/remove the specified typed edge |

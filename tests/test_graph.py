@@ -393,6 +393,39 @@ def test_layout_keeps_running_configuration_revision(tmp_path):
     assert result["revision"] == 1
 
 
+def test_batch_layout_updates_more_than_two_hundred_nodes_atomically(tmp_path):
+    g = graph()
+    extra = [node(f"bulk-{index}") for index in range(205)]
+    g["nodes"].extend(extra)
+    positions = {
+        item["id"]: {"x": index * 5 + 1, "y": index * 3 + 1}
+        for index, item in enumerate(extra)
+    }
+    result = apply(
+        g,
+        tmp_path,
+        "edit_node",
+        list(positions),
+        positions=positions,
+    )
+
+    assert result["revision"] == 1
+    assert len(result["impact"]["changed_nodes"]) == 205
+    assert all(
+        get(result["graph"], node_id)["position"] == position
+        for node_id, position in positions.items()
+    )
+    assert all(get(result["graph"], node_id)["revision"] == 0 for node_id in positions)
+
+
+def test_bulk_layout_rejects_missing_or_invalid_node_positions(tmp_path):
+    g = graph()
+    with pytest.raises(GraphError, match="one position for each edited node"):
+        apply(g, tmp_path, "edit_node", ["a", "b"], positions={"a": {"x": 1, "y": 2}})
+    with pytest.raises(GraphError, match="finite numeric"):
+        apply(g, tmp_path, "edit_node", ["a"], positions={"a": {"x": float("nan"), "y": 2}})
+
+
 def test_fork_context_has_selected_inherited_material_not_whole_source(tmp_path):
     g = graph()
     (tmp_path / "selected.csv").write_text("selected measurements")
