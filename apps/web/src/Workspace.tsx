@@ -1812,15 +1812,21 @@ function NodeInspector({
               </Button>
               <Button
                 onClick={() =>
-                  action(async () =>
-                    setContext(
-                      await api(
-                        `/nodes/${node.id}/context/rebuild`,
-                        "POST",
-                        {},
-                      ),
-                    ),
-                  )
+                  action(async () => {
+                    const rebuilt = await api(
+                      `/nodes/${node.id}/context/rebuild`,
+                      "POST",
+                      {
+                        ...parseJson(overrides),
+                        expected_revision: base.revision,
+                      },
+                    );
+                    setContext(rebuilt);
+                    setBase((current) => ({
+                      ...current,
+                      revision: rebuilt.graph_revision,
+                    }));
+                  })
                 }
               >
                 <RefreshCw size={13} />
