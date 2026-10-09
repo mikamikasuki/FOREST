@@ -479,7 +479,9 @@ def system():
         workers=[asdict(w) for w in s.scalars(select(Worker))]; providers=list(s.scalars(select(Provider)))
     for w in workers: w['online']=(dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(w['heartbeat'])).total_seconds()<10
     provider_status=[provider_health(p) for p in providers]
-    return {'cpu_percent':psutil.cpu_percent(),'memory':{'total':vm.total,'used':vm.used,'percent':vm.percent},'disk':{'total':disk.total,'used':disk.used,'free':disk.free},'gpu':gpu,'workers':workers,'latex':shutil.which('tectonic') or shutil.which('pdflatex'),'model_connected':any(p['available'] for p in provider_status),'provider_status':provider_status,'platform':os.uname().sysname,'isolation':'trusted_local_process'}
+    verified_model=any(p['available'] and provider.kind!='codex_cli' for p,provider in zip(provider_status,providers))
+    codex_cli_signed_in=any(p['available'] and provider.kind=='codex_cli' for p,provider in zip(provider_status,providers))
+    return {'cpu_percent':psutil.cpu_percent(),'memory':{'total':vm.total,'used':vm.used,'percent':vm.percent},'disk':{'total':disk.total,'used':disk.used,'free':disk.free},'gpu':gpu,'workers':workers,'latex':shutil.which('tectonic') or shutil.which('pdflatex'),'model_connected':verified_model,'model_check_pending':codex_cli_signed_in and not verified_model,'provider_status':provider_status,'platform':os.uname().sysname,'isolation':'trusted_local_process'}
 @app.get('/api/settings')
 def read_settings():
     with Session() as s: p=s.get(Preference,'settings'); return p.value if p else {'language':'en','theme':'light','retention_days':30,'default_mode':'assisted'}

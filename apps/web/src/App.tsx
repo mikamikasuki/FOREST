@@ -376,6 +376,8 @@ function ProjectShell() {
               ? "Checking model…"
               : system.model_connected
                 ? t("模型已连接", "Model connected")
+                : system.model_check_pending
+                  ? t("Codex CLI 已登录，模型未验证", "Codex CLI signed in; model unchecked")
                 : t("模型未连接", "Model offline")}
           </span>
           <span className="budget-label">
