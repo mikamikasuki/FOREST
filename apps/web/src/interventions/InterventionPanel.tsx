@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { api, formatDate, uid } from "../api";
 import type { Graph } from "../api";
@@ -8,11 +8,12 @@ import { Badge, Button, ErrorBox, Field, Modal, useLoad, useUI } from "../ui";
 type Intervention = components["schemas"]["InterventionView"];
 type Decision = components["schemas"]["DecisionView"];
 type Instruction = components["schemas"]["InstructionRequest"];
+type HistoryPage = { before: { created_at: string; id: string }; rows: Intervention[]; hasMore: boolean };
 
 export function InterventionPanel({ projectId }: { projectId: string }) {
   const { t, action } = useUI();
   const receipts = useLoad<Intervention[]>(
-    `/projects/${projectId}/interventions?limit=20`,
+    `/projects/${projectId}/interventions?limit=21`,
     [],
   );
   const decisions = useLoad<Decision[]>(
@@ -26,10 +27,36 @@ export function InterventionPanel({ projectId }: { projectId: string }) {
   const [payload, setPayload] = useState("");
   const [reason, setReason] = useState("");
   const [resumeError, setResumeError] = useState("");
+  const [olderPages, setOlderPages] = useState<HistoryPage[]>([]);
+  const olderPagesRef = useRef<HistoryPage[]>([]);
+  const [historyError, setHistoryError] = useState("");
+  const visibleReceipts = [...receipts.data.slice(0, 20), ...olderPages.flatMap((page) => page.rows)];
+  const latestPage = olderPages[olderPages.length - 1];
+  const hasOlder = latestPage ? latestPage.hasMore : receipts.data.length > 20;
+  const loadHistoryPage = useCallback(async (before: HistoryPage["before"]) => {
+    const query = `before=${encodeURIComponent(before.created_at)}&before_id=${encodeURIComponent(before.id)}&limit=21`;
+    return api<Intervention[]>(`/projects/${projectId}/interventions?${query}`);
+  }, [projectId]);
+  useEffect(() => {
+    olderPagesRef.current = [];
+    setOlderPages([]);
+    setHistoryError("");
+  }, [projectId]);
   useEffect(() => {
     const refresh = () => {
       void receipts.reload();
       void decisions.reload();
+      const loaded = olderPagesRef.current;
+      if (loaded.length) {
+        void Promise.all(loaded.map(async (page) => {
+          const rows = await loadHistoryPage(page.before);
+          return { ...page, rows: rows.slice(0, 20), hasMore: rows.length > 20 };
+        })).then((pages) => {
+          olderPagesRef.current = pages;
+          setOlderPages(pages);
+          setHistoryError("");
+        }).catch((error) => setHistoryError((error as Error).message));
+      }
     };
     const timer = setInterval(refresh, 2000);
     window.addEventListener("forest-refresh", refresh);
@@ -37,7 +64,7 @@ export function InterventionPanel({ projectId }: { projectId: string }) {
       clearInterval(timer);
       window.removeEventListener("forest-refresh", refresh);
     };
-  }, [receipts.reload, decisions.reload]);
+  }, [receipts.reload, decisions.reload, loadHistoryPage]);
   return (
     <section
       className="surface progress-panel"
@@ -70,7 +97,7 @@ export function InterventionPanel({ projectId }: { projectId: string }) {
           "Instructions apply at the selected boundary. Saved does not mean consumed. Ordinary comments remain annotations.",
         )}
       </p>
-      <ErrorBox error={receipts.error || decisions.error || resumeError} />
+      <ErrorBox error={receipts.error || decisions.error || resumeError || historyError} />
       {decisions.data
         .filter(
           (item) =>
@@ -121,11 +148,11 @@ export function InterventionPanel({ projectId }: { projectId: string }) {
             )}
           </div>
         ))}
-      {!receipts.data.length && (
+      {!visibleReceipts.length && (
         <p>{t("还没有正式干预记录。", "No formal intervention recorded.")}</p>
       )}
       <ul>
-        {receipts.data.map((row) => (
+        {visibleReceipts.map((row) => (
           <li className="progress-fact" key={row.id}>
             <div>
               <strong>
@@ -172,6 +199,24 @@ export function InterventionPanel({ projectId }: { projectId: string }) {
           </li>
         ))}
       </ul>
+      {hasOlder && (
+        <Button onClick={() => action(async () => {
+          const lastVisible = olderPages.length
+            ? olderPages[olderPages.length - 1].rows[olderPages[olderPages.length - 1].rows.length - 1]
+            : receipts.data[19];
+          if (!lastVisible) return;
+          const before = { created_at: lastVisible.created_at, id: lastVisible.id };
+          const rows = await loadHistoryPage(before);
+          const page = { before, rows: rows.slice(0, 20), hasMore: rows.length > 20 };
+          setOlderPages((current) => {
+            const next = [...current, page];
+            olderPagesRef.current = next;
+            return next;
+          });
+        })}>
+          {t("加载更早记录", "Load older records")}
+        </Button>
+      )}
       {draft && graph && (
         <Modal
           title={t("发送正式指令", "Send owner instruction")}
