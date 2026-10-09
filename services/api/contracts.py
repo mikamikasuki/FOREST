@@ -546,7 +546,7 @@ operation("delete", "/api/shares/{token}", "Sharing", "Revoke a share token",
     "Require an already-valid owner cookie or bearer token even on trusted loopback; the public-prefix middleware shortcut does not authorize revocation. Disable the share and return revoked:true.", obj({"revoked": B}, ("revoked",)), errors={401: "UNAUTHORIZED", 404: "NOT_FOUND"}, owner_only=True)
 
 operation("get", "/api/projects/{ident}/files", "Files", "List project workspace files",
-    "List at most 10000 entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.", ref("FileList"), errors={404: "NOT_FOUND"})
+    "List all eligible workspace entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.", ref("FileList"), errors={404: "NOT_FOUND"})
 operation("get", "/api/projects/{ident}/file", "Files", "Read an editable text file",
     "Return text, file revision and origin from one snapshot serialized with owner uploads, edits, moves and deletes. Paths are normalized relative to the project root. Binary files need download/preview. The file revision is distinct from project, node and resource revisions. The default revision/origin for executor/import files is 0/executor_or_import.", ref("FileRead"), errors={400: "NOT_FILE", 403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 413: "FILE_TOO_LARGE (>10000000 bytes)", 415: "BINARY_FILE"})
 operation("get", "/api/projects/{ident}/file/preview", "Files", "Read a bounded source-table excerpt",

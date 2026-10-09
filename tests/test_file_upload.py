@@ -59,6 +59,19 @@ def case_rejected_new_upload_leaves_no_partial_file(client):
     assert_no_temporary_files(root)
 
 
+def case_files_list_includes_entries_after_10000(client):
+    project, root, _ = project_files(client)
+    generated = root / "generated"
+    generated.mkdir()
+    for index in range(10_001):
+        (generated / f"file-{index:05}.txt").touch()
+
+    response = ok(client.get(f"/api/projects/{project['id']}/files"))
+    paths = {item["path"] for item in response["files"]}
+    assert len(response["files"]) > 10_000
+    assert "generated/file-10000.txt" in paths
+
+
 def case_accepted_overwrite_and_limit_boundary(client):
     project, root, endpoint = project_files(client)
     ok(client.post(endpoint, files={"file": ("same.txt", b"original")}))

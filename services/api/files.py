@@ -118,7 +118,6 @@ def files(ident:str):
     root=validate_project(ident); items=[]
     for p in root.rglob('*'):
         if p.is_symlink() or any(v.startswith('.') and v!='.forest-bases' for v in p.relative_to(root).parts): continue
-        if len(items)>=10000: break
         st=p.stat(); items.append({'path':str(p.relative_to(root)),'size':st.st_size,'modified':st.st_mtime,'is_dir':p.is_dir()})
     return {'files':sorted(items,key=lambda x:(not x['is_dir'],x['path']))}
 @router.get('/api/projects/{ident}/file')
