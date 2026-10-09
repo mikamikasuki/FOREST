@@ -1358,6 +1358,46 @@ def case_regenerated_run_output_does_not_inherit_file_tombstone_origin(client, a
     assert rows['origin'] == 'measured', rows
 
 
+def case_zero_padded_csv_identifiers_survive_data_rows(client, app):
+    from services.api.db import Session, TaskRun
+
+    project = create(client)
+    node = add_node(client, project, config={
+        'kind': 'command', 'command': [sys.executable, '-c', 'pass'],
+    })
+    run = ok(client.post(f"/api/nodes/{node['id']}/run", json={
+        'request_id': 'run-for-zero-padded-identifiers',
+    }))
+    relative = run['output_path'] + '/identifiers.csv'
+    root = Path(os.environ['FOREST_DATA_DIR']) / 'projects' / project['id']
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        'postal_code,subject_id,serial,score,passed\n'
+        '02108,000123,0000,9.5,True\n'
+        '10001,000124,0007,10.5,False\n'
+    )
+    with Session.begin() as session:
+        session.get(TaskRun, run['id']).status = 'completed'
+
+    # The CSV bytes on disk keep the zeros; the readback must not corrupt them.
+    assert '02108' in path.read_text()
+    rows = ok(client.get(f"/api/data/{run['id']}/rows", params={'path': relative}))
+    assert rows['columns'] == ['postal_code', 'subject_id', 'serial', 'score', 'passed']
+    assert rows['rows'][0]['postal_code'] == '02108', rows
+    assert rows['rows'][0]['subject_id'] == '000123', rows
+    assert rows['rows'][0]['serial'] == '0000', rows
+    assert rows['rows'][1]['postal_code'] == '10001', rows
+    # Genuinely numeric and boolean columns keep their JSON types.
+    assert rows['rows'][0]['score'] == 9.5 and rows['rows'][0]['passed'] is True, rows
+    assert rows['rows'][1]['passed'] is False, rows
+    # Numeric sort keeps numeric (not lexicographic) ordering: 10.5 > 9.5.
+    sorted_rows = ok(client.get(f"/api/data/{run['id']}/rows", params={
+        'path': relative, 'sort': 'score', 'descending': 'true',
+    }))
+    assert [row['score'] for row in sorted_rows['rows']] == [10.5, 9.5], sorted_rows
+
+
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]
 
 

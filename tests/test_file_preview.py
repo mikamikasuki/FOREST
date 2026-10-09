@@ -112,6 +112,21 @@ def case_path_traversal_and_symlink_escape_remain_denied(client):
     assert unsupported.status_code == 415 and unsupported.json()["detail"]["code"] == "UNSUPPORTED_TABLE_FORMAT"
 
 
+def case_zero_padded_identifiers_survive_preview(client):
+    project = create(client)
+    content = (b"postal_code,subject_id,serial,score\n"
+               b"02108,000123,0000,9.5\n"
+               b"10001,000124,0007,10.5\n")
+    path = upload(client, project, "identifiers.csv", content)
+    page = ok(preview(client, project, path))
+    assert page["columns"] == ["postal_code", "subject_id", "serial", "score"]
+    assert page["rows"][0] == {"postal_code": "02108", "subject_id": "000123", "serial": "0000", "score": 9.5}, page
+    assert page["rows"][1]["postal_code"] == "10001", page
+    tsv = upload(client, project, "identifiers.tsv", content.replace(b",", b"\t"))
+    page = ok(preview(client, project, tsv))
+    assert page["rows"][0]["subject_id"] == "000123", page
+
+
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]
 
 
