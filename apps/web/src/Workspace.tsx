@@ -464,7 +464,9 @@ function WorkspaceInner() {
         return {
           ...e,
           ariaLabel,
-          selected: selectedEdgeIds.includes(e.id),
+          // Branch and collapse filters can change before the pruning effect
+          // below runs. Never expose a hidden edge as selected for that render.
+          selected: visibleEdgeIds.has(e.id) && selectedEdgeIds.includes(e.id),
           deletable: !e.implicit,
           type: "smoothstep",
           animated: runs.some(
@@ -497,7 +499,7 @@ function WorkspaceInner() {
           },
         };
       }),
-    [nodesById, runs, selectedEdgeIds, visibleEdges],
+    [nodesById, runs, selectedEdgeIds, visibleEdgeIds, visibleEdges],
   );
   const onSelectionChange = useCallback(
     ({ nodes }: { nodes: FlowNode[] }) =>
@@ -554,10 +556,26 @@ function WorkspaceInner() {
         setSelectedEdgeIds((current) =>
           current.filter((edgeId) => !removedIds.has(edgeId)),
         );
-        await reload();
+        try {
+          const latest = await api<Graph>(`/projects/${projectId}/graph`);
+          setGraph(latest);
+        } catch (error) {
+          // A successful delete changes node revisions and result freshness as
+          // well as the edge. Do not leave that now-stale graph on screen if the
+          // authoritative refresh fails; the action error tells the user why.
+          setGraph({
+            project_id: projectId,
+            revision: graph.revision + 1,
+            nodes: [],
+            edges: [],
+            branches: [],
+          });
+          throw error;
+        }
+        void reloadRuns();
       });
     },
-    [action, api, graph.revision, id, reload, visibleEdges],
+    [action, api, graph.revision, id, reload, reloadRuns, setGraph, visibleEdges],
   );
   const run = async (runScope = "single") => {
     if (!node) return;

@@ -165,7 +165,7 @@ test("Workspace edges expose their relationship and support keyboard deletion", 
     })
     .toBe(false);
   await expect(page.getByText("Refresh unavailable")).toBeVisible();
-  await expect(edge).toBeVisible();
+  await expect(edge).toHaveCount(0);
 
   await page.unroute(`**/api/projects/${projectId}/graph`);
   await page.reload();
@@ -259,6 +259,9 @@ test("filtering an edge off the canvas prevents its keyboard deletion", async ({
   await page.getByLabel("Current branch").selectOption(alternate.id);
   await expect(edge).toHaveCount(0);
   await page.locator(".react-flow").press("Delete");
+  await page.getByLabel("Current branch").selectOption("all");
+  await expect(edge).toBeVisible();
+  await expect(edge).not.toHaveClass(/selected/);
 
   const current = await (
     await request.get(`/api/projects/${projectId}/graph`)
