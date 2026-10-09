@@ -132,8 +132,9 @@ def edit_project(ident:str,body:dict=Body(...)):
         observed=p.revision
         for k in ('name','description','goal','current_direction','archived','mode','budget','config'):
             if k in body: setattr(p,k,body[k])
-        if 'mode' in body and p.config.get('controller'):
-            p.config={**p.config,'controller':{**p.config['controller'],'autonomous':p.mode=='auto'}}
+        controller=p.config.get('controller')
+        if 'mode' in body and isinstance(controller,dict) and 'autonomous' not in controller:
+            p.config={**p.config,'controller':{**controller,'autonomous':p.mode=='auto'}}
         if 'budget' in body:
             from services.worker.scheduler import reserve_project_time
             for run in s.scalars(select(TaskRun).where(TaskRun.project_id==ident,TaskRun.status.in_(('running','queued','waiting','pausing'))).with_for_update()):
