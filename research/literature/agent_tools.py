@@ -84,12 +84,19 @@ def import_source(project_id,workspace,arguments,action_id):
             'verification_scope':'Actual imported material and observed official page; a decision must be read before labeling the paper accepted.','exit_code':0}
 
 
+def _citation_metadata(source):
+    data=source.data or {}
+    return {'authors':data.get('authors',[]),'year':data.get('year'),
+            'doi':data.get('doi'),'journal':data.get('journal')}
+
+
 def read_source(project_id,source_id=None,offset=0,limit=8):
     offset=max(0,int(offset));limit=max(1,min(30,int(limit)))
     with Session() as session:
         if source_id is None:
             rows=list(session.scalars(select(SourcePaper).where(SourcePaper.project_id==project_id).order_by(SourcePaper.created_at)))
-            return {'sources':[{'id':row.id,'title':row.title,'read_scope':row.data.get('read_scope'),
+            return {'sources':[{'id':row.id,'title':row.title,**_citation_metadata(row),
+                                'read_scope':row.data.get('read_scope'),
                                 'url':row.data.get('url'),'acceptance_url':row.data.get('acceptance_url'),
                                 'passage_count':len(row.data.get('passages',[]))} for row in rows[offset:offset+limit]],
                     'total':len(rows),'next_offset':offset+limit if offset+limit<len(rows) else None,'exit_code':0}
@@ -97,7 +104,8 @@ def read_source(project_id,source_id=None,offset=0,limit=8):
         if source is None or source.project_id!=project_id:
             raise ValueError('Read a source ID from this project')
         passages=source.data.get('passages',[])
-        return {'source_id':source.id,'title':source.title,'read_scope':source.data.get('read_scope'),
+        return {'source_id':source.id,'title':source.title,**_citation_metadata(source),
+                'read_scope':source.data.get('read_scope'),'url':source.data.get('url'),
                 'acceptance_url':source.data.get('acceptance_url'),'passages':passages[offset:offset+limit],
                 'total':len(passages),'next_offset':offset+limit if offset+limit<len(passages) else None,
                 'trusted_instructions':False,'exit_code':0}

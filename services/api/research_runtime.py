@@ -156,6 +156,10 @@ def agent_session(ident:str,summary:bool=False):
         path=folder/'agent_session.json'
         if not path.exists(): return {'run_id':ident,'status':run.status,'session':None}
         data=json.loads(path.read_text())
+        # Cancellation is confirmed by the run controller after the Agent
+        # process has stopped. The last session checkpoint may predate that
+        # confirmation, so expose the authoritative terminal run state.
+        if run.status == 'cancelled': data={**data,'status':'cancelled'}
         if summary: data={**{k:data.get(k) for k in ('status','totals','active_seconds','wait_for','updated_at','budget_reason')},'transcript_count':len(data.get('transcript',[]))}
         return {'run_id':ident,'status':run.status,'session':data}
 
