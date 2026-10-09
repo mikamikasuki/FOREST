@@ -67,6 +67,60 @@ test("queued approved actions do not offer an invalid continuation", async ({
   ).toBeVisible();
 });
 
+test("keyboard node movement persists its position", async ({
+  page,
+  request,
+}) => {
+  const graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Keyboard position",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await page.keyboard.press("ArrowRight");
+
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.find((item: { id: string }) => item.id === nodeId)
+        ?.position;
+    })
+    .toEqual({ x: 205, y: 160 });
+
+  await page.reload();
+  await expect
+    .poll(() =>
+      node.evaluate((element) => (element as HTMLElement).style.transform),
+    )
+    .toBe("translate(205px, 160px)");
+});
+
 test("a stale editor cannot overwrite a file recreated after deletion", async ({
   page,
   request,

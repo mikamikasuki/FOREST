@@ -1,6 +1,6 @@
 import { RunEvidence } from "./RunEvidence";
 import { ExecutionSettings } from "./ExecutionSettings";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
   ReactFlow,
@@ -308,6 +308,85 @@ function WorkspaceInner() {
       return result;
     },
     [id, graph.revision, setGraph, reload, reloadRuns],
+  );
+  const positionRevisions = useRef(new Map<string, number>());
+  const positionSaveQueues = useRef(new Map<string, Promise<void>>());
+  useEffect(() => {
+    positionRevisions.current.set(
+      id!,
+      Math.max(positionRevisions.current.get(id!) ?? 0, graph.revision),
+    );
+  }, [graph.revision, id]);
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      setFlowNodes((nodes) => applyNodeChanges(changes, nodes));
+      const positions = changes.flatMap((change) =>
+        change.type === "position" &&
+        change.dragging === false &&
+        change.position
+          ? [{ id: change.id, position: change.position }]
+          : [],
+      );
+      if (!positions.length) return;
+      const projectId = id!;
+      const previous =
+        positionSaveQueues.current.get(projectId) ?? Promise.resolve();
+      const pending = previous
+        .catch(() => undefined)
+        .then(async () => {
+          const expectedRevision =
+            positionRevisions.current.get(projectId) ?? graph.revision;
+          let result: { revision: number };
+          try {
+            result = await api<{ revision: number }>(
+              `/projects/${projectId}/graph/batch`,
+              "POST",
+              {
+                request_id: uid(),
+                expected_revision: expectedRevision,
+                commands: positions.map(({ id: nodeId, position }) => ({
+                  operation: "edit_node",
+                  targets: [nodeId],
+                  params: { position },
+                })),
+              },
+            );
+          } catch (error) {
+            try {
+              const latest = await api<Graph>(`/projects/${projectId}/graph`);
+              positionRevisions.current.set(projectId, latest.revision);
+              setGraph(latest);
+            } catch {
+              // Keep the command error visible if the refresh also fails.
+            }
+            throw error;
+          }
+          positionRevisions.current.set(projectId, result.revision);
+          setGraph((current) => ({
+            ...current,
+            revision: result.revision,
+            nodes: current.nodes.map((node) => {
+              const moved = positions.find(
+                (position) => position.id === node.id,
+              );
+              return moved ? { ...node, position: moved.position } : node;
+            }),
+          }));
+          try {
+            const latest = await api<Graph>(`/projects/${projectId}/graph`);
+            setGraph(latest);
+            positionRevisions.current.set(projectId, latest.revision);
+          } catch {
+            // Keep the committed move visible until refresh succeeds.
+          }
+        });
+      positionSaveQueues.current.set(
+        projectId,
+        pending.catch(() => undefined),
+      );
+      void action(() => pending);
+    },
+    [action, api, graph.revision, id, setGraph],
   );
   useEffect(() => {
     const refresh = () => {
@@ -645,9 +724,7 @@ function WorkspaceInner() {
                     fitViewOptions={initialFitViewOptions}
                     minZoom={0.15}
                     maxZoom={2}
-                    onNodesChange={(changes: NodeChange[]) =>
-                      setFlowNodes((n) => applyNodeChanges(changes, n))
-                    }
+                    onNodesChange={onNodesChange}
                     onNodeClick={(_, n) => setSelected(n.id)}
                     onNodeDoubleClick={(_, n) => {
                       setSelected(n.id);
@@ -660,11 +737,6 @@ function WorkspaceInner() {
                       setCommand(true);
                     }}
                     onSelectionChange={onSelectionChange}
-                    onNodeDragStop={(_, n) =>
-                      action(() =>
-                        request("edit_node", [n.id], { position: n.position }),
-                      )
-                    }
                     onConnect={(c) => {
                       if (c.source && c.target) {
                         if (hasCycle(graph, c.source, c.target)) {
