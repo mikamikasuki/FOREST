@@ -112,7 +112,12 @@ def resolve_branch_references(project_dir, graph, branch_id):
         if not resolved.get("available"):
             missing.append(reference)
         elif resolved.get("path"):
-            bindings.append({"source_path": resolved["relative_path"], "destination": destination})
+            source_kind = reference.get("source")
+            if source_kind not in {"data", "results", "code"}:
+                top = Path(destination).parts[0]
+                source_kind = "data" if top in DATA_DIRS else "results" if top in RESULT_DIRS else "code"
+            bindings.append({"source_path": resolved["relative_path"], "destination": destination,
+                             "source": source_kind})
     return bindings, missing
 
 
@@ -204,7 +209,43 @@ class BranchWorkspace:
         # reference branch-relative. Workers resolve these paths against their
         # recorded source branch when they prepare an Agent workspace.
         inherited = source.get("input_mapping", [])
-        refs = [dict(ref) for ref in inherited if isinstance(ref, dict)] + refs
+        inherited_refs = []
+        maximum = policy.get("max_copy_bytes", 100 * 1024 * 1024)
+        for ref in inherited:
+            if not isinstance(ref, dict):
+                continue
+            value = dict(ref)
+            kind = value.get("source")
+            if kind not in {"data", "results", "code"}:
+                top = Path(value.get("destination") or value.get("path") or "").parts[:1]
+                kind = "data" if top and top[0] in DATA_DIRS else "results" if top and top[0] in RESULT_DIRS else "code"
+            strategy = policy.get(kind, "reference" if kind == "data" else "exclude" if kind == "results" else "copy")
+            if isinstance(strategy, bool):
+                strategy = "copy" if strategy else "exclude"
+            if strategy not in {"copy", "reference", "exclude"}:
+                raise GraphError("copy_policy", f"Unknown {kind} copy policy: {strategy}")
+            if strategy == "exclude":
+                continue
+            path_value = value.get("path")
+            destination = value.get("destination") or path_value
+            if not isinstance(path_value, str) or not isinstance(destination, str):
+                raise GraphError("copy_policy", "Inherited references need a path and destination.")
+            destination_path = Path(destination)
+            if destination_path.is_absolute() or not destination_path.parts or ".." in destination_path.parts:
+                raise GraphError("unsafe_path", "The inherited destination escapes the branch workspace.")
+            if destination in selected:
+                continue
+            if strategy == "copy":
+                resolved = self.resolver.resolve(value, source["id"])
+                if not resolved.get("available") or not resolved.get("path"):
+                    raise GraphError("missing_artifact", "An inherited file cannot be copied because its source is unavailable.")
+                selected[destination] = Path(resolved["path"])
+            else:
+                inherited_refs.append(value)
+        total = sum(path.stat().st_size for path in selected.values())
+        if total > maximum:
+            raise GraphError("copy_budget", f"The selected files total {total} bytes; use references or increase max_copy_bytes.")
+        refs = inherited_refs + refs
         normalized = []
         for ref in refs:
             value = dict(ref)

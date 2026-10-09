@@ -139,7 +139,9 @@ def model_json(config,prompt,system=''):
 
 def materialize_branch_references(root, workspace, bindings):
     """Copy branch-level reference files into an isolated task workspace."""
-    for binding in bindings:
+    # Keep the nearest/last mapping when nested forks reference the same path.
+    by_destination = {binding['destination']: binding for binding in bindings}
+    for binding in by_destination.values():
         origin=safe_path(root,binding['source_path'],True)
         destination=safe_path(workspace,binding['destination'])
         if destination.is_file():

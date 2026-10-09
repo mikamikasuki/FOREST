@@ -267,7 +267,14 @@ class WorkerLoop:
                     elif actual.get('path'): bound.append({'source_path':actual['relative_path'],
                         'destination':ref.get('destination') or Path(ref['path']).name,
                         'source_node_id':ref.get('node_id'), 'reference_path':ref.get('path')})
-                branch_bound,branch_missing=resolve_branch_references(project_dir(r.project_id),graph,r.branch_id)
+                reference_branch_id = r.branch_id or next(
+                    (item['id'] for item in graph.get('branches',[]) if item.get('is_main')),
+                    None)
+                if reference_branch_id:
+                    branch_bound,branch_missing=resolve_branch_references(
+                        project_dir(r.project_id),graph,reference_branch_id)
+                else:
+                    branch_bound,branch_missing=[],[]
                 missing.extend(branch_missing)
                 if missing:
                     r.status='waiting_input'; r.resource={**r.resource,'blocked_reason':'input_missing'}; r.error='Required input files are missing or unavailable: '+json.dumps(missing,ensure_ascii=False); emit(s,r.project_id,'run_changed',{'run_id':r.id,'status':r.status}); continue
