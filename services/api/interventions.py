@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_
 from services.api.db import Session, Project, Hypothesis, TaskRun, asdict, now
 from services.api.common import get, error, emit
 from services.worker.scheduler import _lock_project
@@ -40,11 +40,16 @@ def applicability_decision(ident: str, body: ApplicabilityDecision):
 
 
 @router.get('/api/projects/{ident}/interventions', response_model=list[InterventionView])
-def interventions(ident: str, limit: int = Query(50, ge=1, le=200), before: str | None = None):
+def interventions(ident: str, limit: int = Query(50, ge=1, le=200), before: str | None = None,
+                  before_id: str | None = Query(None, max_length=64)):
     with Session() as session:
         get(session, Project, ident)
         query = select(Intervention).where(Intervention.project_id == ident)
-        if before: query = query.where(Intervention.created_at < before)
+        if before and before_id:
+            query = query.where(or_(Intervention.created_at < before,
+                                    and_(Intervention.created_at == before, Intervention.id < before_id)))
+        elif before:
+            query = query.where(Intervention.created_at < before)
         return [readback(session, row) for row in session.scalars(query.order_by(
             Intervention.created_at.desc(), Intervention.id.desc()).limit(limit))]
 
@@ -60,7 +65,13 @@ def decisions(ident: str, limit: int = Query(50, ge=1, le=200), status: str | No
         get(session, Project, ident)
         query = select(ActionDecision).where(ActionDecision.project_id == ident)
         if status: query = query.where(ActionDecision.status == status)
-        return [asdict(row) for row in session.scalars(query.order_by(ActionDecision.created_at.desc()).limit(limit))]
+        rows = list(session.scalars(query.order_by(ActionDecision.created_at.desc()).limit(limit)))
+        runs = {run.id: run for run in session.scalars(select(TaskRun).where(
+            TaskRun.id.in_([row.run_id for row in rows])))}
+        from services.interventions.lifecycle import resume_available
+        return [{**asdict(row), 'run_status': runs[row.run_id].status if row.run_id in runs else None,
+                 'can_resume': resume_available(session, runs[row.run_id]) if row.run_id in runs else False}
+                for row in rows]
 
 
 @router.post('/api/decisions/{ident}/answer', response_model=DecisionView)
@@ -75,6 +86,11 @@ def decision_answer(ident: str, body: DecisionAnswer):
             from .main import run_action
             try: run_action(run.id, 'resume', {})
             except Exception as exc: result['resume_error'] = str(exc)[:1500]
+    with Session() as session:
+        run = get(session, TaskRun, result['run_id'])
+        from services.interventions.lifecycle import resume_available
+        result['run_status'] = run.status
+        result['can_resume'] = resume_available(session, run)
     return result
 
 

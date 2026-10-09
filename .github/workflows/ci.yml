@@ -101,7 +101,7 @@ jobs:
             if curl --fail --silent http://127.0.0.1:18340/api/health >/dev/null; then break; fi
             sleep 1
           done
-          npm --prefix apps/web run test:e2e -- progress.spec.ts
+          npm --prefix apps/web run test:e2e -- progress.spec.ts storage-cleanup-retention.spec.ts
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
