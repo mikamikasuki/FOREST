@@ -6,6 +6,7 @@ All records remain ordinary editable dictionaries.
 from __future__ import annotations
 
 import math
+import re
 from copy import deepcopy
 
 LABELS = {'MEASURED', 'REPORTED', 'INFERRED', 'ESTIMATED', 'SPECULATIVE'}
@@ -57,6 +58,39 @@ def validate_idea(idea):
     result['probability_range'] = list(base['probability_meaningful_improvement'])
     result['probability_interpretation'] = 'Subjective forecast, not a measured frequency or conference acceptance prediction'
     return result
+
+
+def distinct_idea_directions(ideas):
+    """Drop generated cards that describe the same core experimental design."""
+    facets = ('population', 'intervention', 'comparator', 'setting')
+    stop = {'a', 'an', 'and', 'as', 'at', 'by', 'for', 'from', 'in', 'into',
+            'of', 'on', 'or', 'the', 'to', 'using', 'with'}
+
+    def tokens(value):
+        if not isinstance(value, str):
+            return set()
+        return {word for word in re.findall(r'[^\W_]+', value.casefold()) if word not in stop}
+
+    def same_facet(left, right):
+        a, b = tokens(left), tokens(right)
+        return bool(a and b and len(a & b) / min(len(a), len(b)) >= .8)
+
+    unique = []
+    for idea in ideas:
+        design = idea.get('study_design')
+        if isinstance(design, dict) and all(isinstance(design.get(key), str) and design[key].strip() for key in facets):
+            duplicate = any(
+                isinstance(other.get('study_design'), dict)
+                and all(same_facet(design[key], other['study_design'].get(key)) for key in facets)
+                for other in unique
+            )
+        else:
+            # A generated direction without comparable design facets cannot
+            # establish that it is a distinct study, so leave it out.
+            duplicate = True
+        if not duplicate:
+            unique.append(idea)
+    return unique, len(ideas) - len(unique)
 
 
 def validate_experiment(plan):
