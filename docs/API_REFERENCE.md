@@ -428,6 +428,44 @@ Success `200`: `application/json`: `JsonValue`.
 
 Known domain failures: `404` NOT_FOUND.
 
+#### `GET /api/providers/{ident}/references`
+
+List project, node, Agent, reporting and global-default references, plus the count of preserved historical model requests.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `object`.
+
+Known domain failures: `404` NOT_FOUND.
+
+#### `POST /api/providers/{ident}/restore`
+
+Mark a retired provider untested so it can be edited and used again. Credentials removed during retirement must be configured again.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `Provider`.
+
+Known domain failures: `404` NOT_FOUND.
+
+#### `POST /api/providers/{ident}/retire`
+
+Replace or clear every active reference, remove the stored credential, and mark the provider retired while preserving historical model request records. replacement_provider_id may be null to clear references.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Body: `application/json`: `JsonObject`; optional.
+
+Success `200`: `application/json`: `JsonValue`.
+
+Known domain failures: `404` NOT_FOUND; `422` INVALID_REPLACEMENT.
+
 #### `POST /api/providers/{ident}/test`
 
 Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; success contains status plus extensible ModelClient result fields.

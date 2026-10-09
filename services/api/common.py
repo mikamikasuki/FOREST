@@ -100,6 +100,15 @@ def put_secret(value,ref=None):
 def read_secret(ref):
     return json.loads(secret_store().read_text()).get(ref,'') if ref else ''
 
+def delete_secret(ref):
+    if not ref: return
+    p=settings.data_dir/'secrets.json'
+    if not p.exists(): return
+    data=json.loads(p.read_text())
+    if ref not in data: return
+    data.pop(ref,None)
+    tmp=p.with_suffix('.tmp'); tmp.write_text(json.dumps(data)); tmp.chmod(0o600); tmp.replace(p)
+
 def owner_token():
     if settings.owner_token: return settings.owner_token
     path=settings.data_dir/'owner-token'
@@ -129,7 +138,8 @@ def make_project(s,name,goal='',description='',**kwargs):
     default_provider=preference.value.get('default_provider_id') if preference else None
     if default_provider:
         config=dict(kwargs.get('config',{}))
-        if not config.get('provider_id') and s.get(Provider,default_provider): config['provider_id']=default_provider
+        provider=s.get(Provider,default_provider) if default_provider else None
+        if not config.get('provider_id') and provider and provider.status!='retired': config['provider_id']=default_provider
         kwargs['config']=config
     p=Project(name=name,goal=goal,description=description,**kwargs); s.add(p); s.flush()
     bid=uid(); workspace=f'branches/{bid}/workspace'; safe_path(project_dir(p.id),workspace).mkdir(parents=True,exist_ok=True)

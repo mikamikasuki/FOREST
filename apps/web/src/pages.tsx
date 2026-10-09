@@ -2963,6 +2963,8 @@ export function SettingsPage() {
     null,
   );
   const [test, setTest] = useState<Json | null>(null);
+  const [retiring, setRetiring] = useState<{ provider: Json; references: Json[]; historical_request_count: number } | null>(null);
+  const [replacementProviderId, setReplacementProviderId] = useState("");
   const [settingsText, setSettingsText] = useState("{}");
   useEffect(
     () => setSettingsText(JSON.stringify(settings, null, 2)),
@@ -2973,6 +2975,7 @@ export function SettingsPage() {
     void reloadHosts();
     void reloadAgents();
     void reloadSystem();
+    void reloadSettings();
   };
   return (
     <>
@@ -3043,16 +3046,16 @@ export function SettingsPage() {
                     <code>{item.base_url || item.address || item.role}</code>
                   </div>
                   <Badge status={item.status || "idle"} />
-                  {tab === "providers" && item.kind !== "ollama" && (
+                  {tab === "providers" && item.kind !== "ollama" && item.status !== "retired" && (
                     <ProviderUsage providerId={item.id} />
                   )}
-                  <IconButton
+                  {!(tab === "providers" && item.status === "retired") && <IconButton
                     label={t("编辑连接", "Edit connection")}
                     onClick={() => setModal({ resource: tab, item })}
                   >
                     <Pencil size={15} />
-                  </IconButton>
-                  {tab !== "agents" && (
+                  </IconButton>}
+                  {tab !== "agents" && !(tab === "providers" && item.status === "retired") && (
                     <Button
                       onClick={() =>
                         action(async () => {
@@ -3067,7 +3070,7 @@ export function SettingsPage() {
                       {t("测试连接", "Test connection")}
                     </Button>
                   )}
-                  {tab === "providers" && (
+                  {tab === "providers" && item.status !== "retired" && (
                     <Button
                       onClick={() =>
                         action(
@@ -3080,6 +3083,20 @@ export function SettingsPage() {
                       }
                     >
                       Use for new projects
+                    </Button>
+                  )}
+                  {tab === "providers" && item.status !== "retired" && (
+                    <Button onClick={() => action(async () => {
+                      const result = await api<Json>(`/providers/${item.id}/references`);
+                      setReplacementProviderId("");
+                      setRetiring({ provider: item, references: result.references || [], historical_request_count: result.historical_request_count || 0 });
+                    })}>
+                      {t("退役", "Retire")}
+                    </Button>
+                  )}
+                  {tab === "providers" && item.status === "retired" && (
+                    <Button onClick={() => action(async () => { await api(`/providers/${item.id}/restore`, "POST", {}); reload(); }, t("提供方已恢复；请重新配置凭据。", "Provider restored; configure credentials again."))}>
+                      {t("恢复", "Restore")}
                     </Button>
                   )}
                 </section>
@@ -3167,6 +3184,26 @@ export function SettingsPage() {
           onSaved={reload}
         />
       )}{" "}
+      {retiring && (
+        <Modal title={t("退役模型提供方", "Retire model provider")} onClose={() => setRetiring(null)}>
+          <p>{t("退役会停止新请求使用此提供方，清除其保存的凭据，并保留历史请求记录。", "Retiring stops new requests from using this provider, removes its stored credential, and preserves request history.")}</p>
+          <p><strong>{retiring.provider.name}</strong> · {retiring.references.length} {t("处当前引用", "current references")} · {retiring.historical_request_count} {t("条历史请求", "historical requests")}</p>
+          {retiring.references.length > 0 && <ul>{retiring.references.map((ref) => <li key={`${ref.kind}:${ref.id}`}>{ref.name} — {ref.location}</li>)}</ul>}
+          <Field label={t("如何处理当前引用", "Handle current references")}>
+            <select value={replacementProviderId} onChange={(event) => setReplacementProviderId(event.target.value)}>
+              <option value="">{t("清除这些引用", "Clear these references")}</option>
+              {providers.filter((provider) => provider.id !== retiring.provider.id && provider.status !== "retired").map((provider) => <option key={provider.id} value={provider.id}>{provider.name} · {provider.model}</option>)}
+            </select>
+          </Field>
+          <div className="modal-actions">
+            <Button onClick={() => setRetiring(null)}>{t("取消", "Cancel")}</Button>
+            <Button className="primary" onClick={() => action(async () => {
+              await api(`/providers/${retiring.provider.id}/retire`, "POST", { replacement_provider_id: replacementProviderId || null });
+              setRetiring(null); reload();
+            }, t("提供方已退役", "Provider retired"))}>{t("确认退役", "Confirm retirement")}</Button>
+          </div>
+        </Modal>
+      )}
       {test && (
         <Modal
           title={t("实际连接测试结果", "Connection test result")}

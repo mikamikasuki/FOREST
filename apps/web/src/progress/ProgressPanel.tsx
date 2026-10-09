@@ -55,7 +55,7 @@ export function ProgressPanel({ projectId }: { projectId: string }) {
         <label><input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />Enable narrative</label>
         <label><input type="checkbox" checked={draft.automatic} onChange={(e) => setDraft({ ...draft, automatic: e.target.checked })} />Automatic meaningful-event refresh</label>
         <Field label="Narrative provider"><select aria-label="Narrative provider" value={draft.provider_id || ""} onChange={(e) => setDraft({ ...draft, provider_id: e.target.value || null })}>
-          <option value="">Choose provider</option>{providers.data.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.model}</option>)}</select></Field>
+          <option value="">Choose provider</option>{providers.data.filter((p) => p.status !== "retired").map((p) => <option key={p.id} value={p.id}>{p.name} · {p.model}</option>)}</select></Field>
         <Field label="Reporting cap (USD)"><input type="number" min="0" max="10000" step="0.01" value={draft.cap_usd} onChange={(e) => setDraft({ ...draft, cap_usd: Number(e.target.value) })} /></Field>
         <Field label="Reporting request cap"><input type="number" min="1" max="1000" value={draft.max_requests} onChange={(e) => setDraft({ ...draft, max_requests: Number(e.target.value) })} /></Field>
         <Button type="submit">Save narrative settings</Button>

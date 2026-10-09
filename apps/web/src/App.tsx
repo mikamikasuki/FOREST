@@ -497,7 +497,7 @@ function ProjectForm({
             onChange={(e) => setProviderId(e.target.value)}
           >
             <option value="">Workspace default</option>
-            {providers.map((p) => (
+            {providers.filter((p) => p.status !== "retired").map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name} · {p.model}
               </option>
