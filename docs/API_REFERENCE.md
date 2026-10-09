@@ -70,7 +70,7 @@ scheduling, not a synchronous experiment.
 | Graph operation | Target / main `params` fields | Resulting editable operation |
 | --- | --- | --- |
 | `add_node` | Node fields directly or `node:{...}`, optional branch_id/parent_id | Add a node and optional execution parent |
-| `edit_node` | targets: node IDs; fields directly or `patch:{...}`; optional stop_current_run | Deep-merge editable fields, analyze impact, optionally cancel the current run |
+| `edit_node` | targets: node IDs; fields directly or `patch:{...}`; optional stop_current_run; optional `positions:{node_id:{x,y}}` | Deep-merge editable fields, apply per-node layout positions atomically, analyze impact, optionally cancel the current run |
 | `apply_instruction_patch` | targets: node IDs; instructions or old_text/new_text | Replace instructions or one exact matching passage |
 | `delete_node` | targets; strategy subtree/reconnect/visual_only when descendants exist | Remove a subtree, reconnect execution reachability, or remove visual grouping |
 | `add_dependency`, `remove_dependency` | source/target or two targets; relation; add supports input_mapping | Add/remove the specified typed edge |
@@ -428,6 +428,44 @@ Success `200`: `application/json`: `JsonValue`.
 
 Known domain failures: `404` NOT_FOUND.
 
+#### `GET /api/providers/{ident}/references`
+
+List project, node, Agent, reporting and global-default references, plus the count of preserved historical model requests.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `object`.
+
+Known domain failures: `404` NOT_FOUND.
+
+#### `POST /api/providers/{ident}/restore`
+
+Mark a retired provider untested so it can be edited and used again. Credentials removed during retirement must be configured again.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Success `200`: `application/json`: `Provider`.
+
+Known domain failures: `404` NOT_FOUND.
+
+#### `POST /api/providers/{ident}/retire`
+
+Replace or clear every active reference, remove the stored credential, and mark the provider retired while preserving historical model request records. replacement_provider_id may be null to clear references.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+
+Body: `application/json`: `JsonObject`; optional.
+
+Success `200`: `application/json`: `JsonValue`.
+
+Known domain failures: `404` NOT_FOUND; `422` INVALID_REPLACEMENT.
+
 #### `POST /api/providers/{ident}/test`
 
 Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; status is the connection outcome, while request_status preserves the ModelClient request state when available. Other ModelClient result fields are extensible.
@@ -622,7 +660,7 @@ Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT.
 
 #### `POST /api/projects/import`
 
-multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped identifiers; active imported work is interrupted and execution is not replayed.
+multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped graph/resource identifiers; preserve its selected provider when that ID exists in the current workspace. If the saved provider is unavailable, mark provider_selection_required and prevent provider-backed runs from silently falling back until the owner edits project settings. Active imported work is interrupted and execution is not replayed.
 
 Body: `multipart/form-data`: `Body_import_project_api_projects_import_post`; required.
 
@@ -645,7 +683,7 @@ Known domain failures: `400` NOT_FILE; `403` PATH_ESCAPE; `404` NOT_FOUND or MIS
 
 #### `POST /api/projects/{ident}/export`
 
-ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and selected credential/machine fields; large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.
+ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and machine fields while preserving the nonsecret project provider ID; credentials remain excluded. Large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -685,7 +723,7 @@ Known domain failures: `400` NOT_FILE; `403` PATH_ESCAPE; `404` NOT_FOUND or MIS
 
 #### `PUT /api/projects/{ident}/file`
 
-FileWrite contains path/content and optional FILE expected_revision. Atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. A first write to a missing path may use expected_revision=0; after deletion it advances that path's retained revision generation. Omitting expected_revision accepts the current revision.
+FileWrite contains path/content, optional FILE expected_revision and create_only (default false). With create_only:true, reject an occupied path with FILE_EXISTS while holding the publication lock, preserving its bytes and revision. Otherwise atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. A first write to a missing path may use expected_revision=0; after deletion it advances that path's retained revision generation. Omitting expected_revision accepts the current revision.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -695,7 +733,7 @@ Body: `application/json`: `FileWrite`; required.
 
 Success `200`: `application/json`: `FileWritten`.
 
-Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `409` REVISION_CONFLICT or WORKSPACE_PENDING.
+Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `409` FILE_EXISTS, REVISION_CONFLICT or WORKSPACE_PENDING.
 
 #### `GET /api/projects/{ident}/file/preview`
 
@@ -728,15 +766,31 @@ Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND or MISSING_ARTIFACT; `
 
 #### `GET /api/projects/{ident}/files`
 
-List at most 10000 entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.
+Return a bounded page of eligible workspace entries in depth-first filesystem traversal order. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Cursors are process-local and expire after 10 minutes; on expiration, restart from the first page. Skip symlinks and hidden path components except .forest-bases. Paths are relative to the project root and modified is a filesystem epoch time.
+
+| Parameter | Location | Type | Required | Default / description |
+| --- | --- | --- | --- | --- |
+| `ident` | path | string | yes |  |
+| `limit` | query | integer | no | Default `500`.  minimum=1, maximum=1000. |
+| `cursor` | query | string or null | no |  |
+
+Success `200`: `application/json`: `FileList`.
+
+Known domain failures: `404` NOT_FOUND; `409` FILE_CURSOR_EXPIRED; `422` INVALID_FILE_CURSOR.
+
+#### `POST /api/projects/{ident}/files/existing`
+
+Return existing files and directories for supplied relative paths in the project workspace. Accepts at most 1,000 paths per request so multi-file uploads can confirm replacements before publishing any selected file; directories cannot be replaced by file uploads.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
 | `ident` | path | string | yes |  |
 
-Success `200`: `application/json`: `FileList`.
+Body: `application/json`: `FileExistenceRequest`; required.
 
-Known domain failures: `404` NOT_FOUND.
+Success `200`: `application/json`: `FileExistenceResult`.
+
+Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `422` INVALID_FILE_PATHS.
 
 #### `POST /api/projects/{ident}/upload`
 
@@ -809,7 +863,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/nodes/{ident}/context/rebuild`
 
-Merge the extensible body into node.context_overrides, force needs_refresh:false, emit context_changed and return a fresh ContextSnapshot. This endpoint has no expected_revision guard.
+When expected_revision is supplied, require it to match the current project revision. Merge the remaining extensible body into node.context_overrides, force needs_refresh:false, emit context_changed and return a fresh ContextSnapshot.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -819,7 +873,7 @@ Body: `application/json`: `JsonObject`; optional.
 
 Success `200`: `application/json`: `ContextSnapshot`.
 
-Known domain failures: `404` NOT_FOUND.
+Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT.
 
 #### `GET /api/projects/{ident}/graph`
 
@@ -835,7 +889,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/projects/{ident}/graph/batch`
 
-Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.
+Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; one edit_node may update selected node positions atomically with params.positions keyed by target ID. Workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -895,7 +949,7 @@ Known domain failures: `400` Graph command errors; `404` NOT_FOUND or missing_no
 
 #### `POST /api/decisions/{ident}/answer`
 
-Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -909,7 +963,7 @@ Known domain failures: `404` Target unavailable; `409` Reviewed revision, reques
 
 #### `GET /api/interventions/{ident}`
 
-Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -921,7 +975,7 @@ Known domain failures: `404` Target unavailable; `409` Reviewed revision, reques
 
 #### `GET /api/projects/{ident}/decisions`
 
-Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -935,7 +989,7 @@ Known domain failures: `404` Target unavailable; `409` Reviewed revision, reques
 
 #### `POST /api/projects/{ident}/instructions`
 
-Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -949,13 +1003,14 @@ Known domain failures: `404` Target unavailable; `409` Reviewed revision, reques
 
 #### `GET /api/projects/{ident}/interventions`
 
-Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path. The before timestamp cursor accepts before_id to disambiguate records sharing a timestamp; clients can page through all retained history.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
 | `ident` | path | string | yes |  |
 | `limit` | query | integer | no | Default `50`.  minimum=1, maximum=200. |
 | `before` | query | string or null | no |  |
+| `before_id` | query | string or null | no |  |
 
 Success `200`: `application/json`: `InterventionView[]`.
 
@@ -963,7 +1018,7 @@ Known domain failures: `404` Target unavailable; `409` Reviewed revision, reques
 
 #### `POST /api/research/proposals/{ident}/reject`
 
-Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -977,7 +1032,7 @@ Known domain failures: `404` Target unavailable; `409` Reviewed revision, reques
 
 #### `GET /api/runs/{ident}/acceptance`
 
-Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -989,7 +1044,7 @@ Known domain failures: `404` Target unavailable; `409` Reviewed revision, reques
 
 #### `GET /api/runs/{ident}/applicability`
 
-Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1001,7 +1056,7 @@ Known domain failures: `404` Target unavailable; `409` Reviewed revision, reques
 
 #### `POST /api/runs/{ident}/applicability/decisions`
 
-Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1145,7 +1200,7 @@ Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT.
 
 #### `POST /api/papers/{ident}/export`
 
-Resolve an existing paper/project ID. Optional expected_revision compares PaperDocument revision. format=pdf requires an existing compiled PDF of the CURRENT revision; other/omitted values return paper.tex/references.bib/assets ZIP and a current PDF when available. Source ZIP excludes .aux/.blg/.log artifacts.
+Resolve an existing paper/project ID. Optional expected_revision compares PaperDocument revision. For a source ZIP, optional source and bibtex fields export the editor's current draft without saving it. format=pdf requires an existing compiled PDF of the CURRENT revision; source ZIP includes a PDF only when its source matches the saved revision. Source ZIP excludes .aux/.blg/.log artifacts.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1403,7 +1458,7 @@ Success `200`: `application/json`: `Project[]`.
 
 #### `POST /api/projects`
 
-Create a project and its main workspace/graph. ProjectCreate supplies the existing Pydantic field limits and defaults. Return the persisted project; successful creation uses HTTP 200.
+Create a project and its main workspace/graph. When mode is omitted, use the saved default_mode preference, falling back to assisted if unset or invalid; an explicit mode takes precedence. Return the persisted project; successful creation uses HTTP 200.
 
 Body: `application/json`: `ProjectCreate`; required.
 
@@ -1651,7 +1706,7 @@ Known domain failures: `400` EMPTY_SELECTION or graph command errors; `404` NOT_
 
 #### `POST /api/research/suggest-paths`
 
-Enqueue path proposals; optional node_id supplies the scheduler node context. Return Run, not the final scientific output.
+Enqueue path proposals. scope=node sends the selected node and its execution ancestors; scope=branch sends only the selected node's branch; scope=project sends the full graph. Node and branch scopes require node_id. Return Run, not the final scientific output.
 
 Body: `application/json`: `QueuedTaskRequest`; required.
 
@@ -1731,7 +1786,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/analyses/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1793,7 +1848,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/claims/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1855,7 +1910,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/datasets/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1917,7 +1972,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/experiments/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1979,7 +2034,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/figures/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale. For figures, changes to render inputs (kind/style/code/code_origin/run_ids/metric/data/caption/purpose/image_prompt/narrative_mode/image_variants/candidates) clear old render outputs and review selection and set needs_review; render and review the new revision before insertion.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2041,7 +2096,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/ideas/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2103,7 +2158,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/library/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2155,7 +2210,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/reviews/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2217,7 +2272,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/theories/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2247,7 +2302,7 @@ Known domain failures: `400` EMPTY_BRANCH or scheduling/input errors; `404` NOT_
 
 #### `POST /api/nodes/{ident}/run`
 
-Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id.
+Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id. Provider-backed runs in imported projects with an unavailable archived provider require an explicit provider or workspace-default selection before scheduling.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2257,7 +2312,7 @@ Body: `application/json`: `RunRequest`; required.
 
 Success `200`: `application/json`: `Run or SelectedRunCollection`.
 
-Known domain failures: `400` Scheduling/input errors; `404` NOT_FOUND; `409` Submission/revision conflicts.
+Known domain failures: `400` Scheduling/input errors; `404` NOT_FOUND; `409` Submission/revision conflicts; `422` PROVIDER_SELECTION_REQUIRED.
 
 #### `GET /api/projects/{ident}/runs`
 
@@ -2354,7 +2409,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `GET /api/runs/{ident}/output`
 
-Read stdout.txt at max(offset,0), at most min(limit,1000000) bytes, decode with replacement and return the next byte offset. Optional case-insensitive search filters lines AFTER the cursor advances. A missing output file returns empty text at the requested nonnegative offset.
+Read stdout.txt at max(offset,0), at most min(limit,1000000) bytes and return the next byte offset. A trailing multi-byte UTF-8 character cut by the page limit is held back so the next page re-reads it whole; when the page limit is smaller than the next character the read grows by at most three bytes so the cursor still advances; invalid bytes decode with replacement. Optional case-insensitive search filters lines AFTER the cursor advances. A missing output file returns empty text at the requested nonnegative offset.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2369,7 +2424,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `GET /api/runs/{ident}/session`
 
-Return {run_id,status,session}. Missing agent_session.json means session:null. summary=true returns selected session status/totals/active_seconds/wait_for/updated_at/budget_reason plus transcript_count; selected fields can be null. Full session structure is extensible.
+Return {run_id,status,session}. Missing agent_session.json means session:null. For a cancelled run, the session status is reported as cancelled even if its last checkpoint predates cancellation. summary=true returns selected session status/totals/active_seconds/wait_for/updated_at/budget_reason plus transcript_count; selected fields can be null. Full session structure is extensible.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2778,6 +2833,8 @@ Additional properties: rejected by the existing typed/schema-specific validator.
 | `created_at` | string | yes |  |
 | `updated_at` | string | yes |  |
 | `resume_error` | string or null | no |  |
+| `run_status` | string or null | no |  |
+| `can_resume` | boolean or null | no |  |
 
 Additional properties: extensible JSON.
 
@@ -2959,11 +3016,30 @@ Additional properties: extensible JSON.
 
 Additional properties: extensible JSON.
 
+### `FileExistenceRequest`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `paths` | string[] | yes |  |
+
+Additional properties: extensible JSON.
+
+### `FileExistenceResult`
+
+| Field | Type | Required | Details |
+| --- | --- | --- | --- |
+| `existing` | string[] | yes |  |
+| `directories` | string[] | yes |  |
+
+Additional properties: extensible JSON.
+
 ### `FileList`
 
 | Field | Type | Required | Details |
 | --- | --- | --- | --- |
 | `files` | FileEntry[] | yes |  |
+| `has_more` | boolean | yes |  |
+| `next_cursor` | string or null | yes |  |
 
 Additional properties: extensible JSON.
 
@@ -3039,6 +3115,7 @@ Additional properties: extensible JSON.
 | `path` | string | yes |  minLength=1, maxLength=2000. |
 | `content` | string | yes |  maxLength=10000000. |
 | `expected_revision` | integer or null | no |  |
+| `create_only` | boolean | no |  Default: `False`. |
 
 Additional properties: extensible JSON.
 
@@ -3508,6 +3585,8 @@ Additional properties: extensible JSON.
 | --- | --- | --- | --- |
 | `expected_revision` | integer | no |  |
 | `format` | string | no | pdf returns the current compiled PDF; other/omitted values return a source ZIP. |
+| `source` | string | no |  |
+| `bibtex` | string | no |  |
 
 Additional properties: extensible JSON.
 
@@ -3666,7 +3745,7 @@ Additional properties: extensible JSON.
 | `name` | string | yes |  minLength=1, maxLength=240. |
 | `description` | string | no |  Default: ``. |
 | `goal` | string | no |  Default: ``. |
-| `mode` | string | no |  Default: `assisted`. Values: `auto`, `assisted`, `manual`. |
+| `mode` | string or null | no |  |
 | `budget` | object | no |  |
 | `config` | object | no |  |
 
@@ -4173,7 +4252,8 @@ Additional properties: extensible JSON.
 | `title` | string | no |  |
 | `status` | string | no |  |
 | `data` | JsonObject | no |  |
-| `expected_revision` | integer | no | Optional resource revision; data is merged one level into the existing record. |
+| `replace_data` | boolean | no | When true, replace the complete resource data object instead of merging it. |
+| `expected_revision` | integer | no | Optional resource revision; omission uses the current resource revision. |
 
 Additional properties: extensible JSON.
 
