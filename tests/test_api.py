@@ -444,6 +444,48 @@ def case_export_import_reference_roundtrip(client, app):
     assert ok(client.get(f"/api/runs/{new_runs[0]['id']}/output"))["text"] == "actual saved output\n"
 
 
+def case_project_provider_roundtrip_requires_explicit_resolution_when_missing(client, app):
+    provider = ok(client.post('/api/providers', json={
+        'name': 'Project archive provider', 'kind': 'openai',
+        'base_url': 'http://127.0.0.1:1/v1', 'model': 'test-model',
+    }))
+    source = ok(client.post('/api/projects', json={
+        'name': 'Provider-bound project', 'config': {'provider_id': provider['id']},
+    }))
+    exported = client.post(f"/api/projects/{source['id']}/export", json={})
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        entries = {item.filename: archive.read(item.filename) for item in archive.infolist()}
+    manifest = json.loads(entries['forest-project.json'])
+    assert manifest['project']['config']['provider_id'] == provider['id']
+    restored = ok(client.post('/api/projects/import', files={
+        'file': ('provider-bound.zip', exported.content, 'application/zip'),
+    }))
+    assert restored['config']['provider_id'] == provider['id']
+
+    manifest['project']['config']['provider_id'] = 'unavailable-provider-id'
+    entries['forest-project.json'] = json.dumps(manifest).encode()
+    unavailable_archive = io.BytesIO()
+    with zipfile.ZipFile(unavailable_archive, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, contents in entries.items():
+            archive.writestr(name, contents)
+    ok(client.patch('/api/settings', json={'default_provider_id': provider['id']}))
+    unresolved = ok(client.post('/api/projects/import', files={
+        'file': ('unavailable-provider.zip', unavailable_archive.getvalue(), 'application/zip'),
+    }))
+    assert unresolved['config'].get('provider_id') is None
+    assert unresolved['config']['provider_selection_required'] is True
+    node = ok(command(client, unresolved, 'add_node', title='Research agent', type='agent'))['graph']['nodes'][-1]
+    response = client.post(f"/api/nodes/{node['id']}/run", json={'request_id': str(uuid4())})
+    assert response.status_code == 422
+    assert response.json()['detail']['code'] == 'PROVIDER_SELECTION_REQUIRED'
+    resolved = ok(client.patch(f"/api/projects/{unresolved['id']}", json={
+        'config': {**unresolved['config'], 'provider_id': provider['id']},
+    }))
+    assert resolved['config']['provider_id'] == provider['id']
+    assert 'provider_selection_required' not in resolved['config']
+
+
 def case_import_running_controller_requires_explicit_start(client, app, mode="assisted"):
     p = create(client)
     ok(client.patch(f"/api/projects/{p['id']}", json={"mode": mode}))

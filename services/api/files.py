@@ -407,7 +407,7 @@ async def upload(ident:str,file:UploadFile=File(...),directory:str='uploads',ove
 
 def project_export(s,p,selection=None):
     root=project_dir(p.id); out=io.BytesIO(); project=asdict(p); project.pop('graph_meta',None)
-    project['config']={k:v for k,v in project.get('config',{}).items() if k not in ('provider_id','host_id')}
+    project['config']={k:v for k,v in project.get('config',{}).items() if k!='host_id'}
     graph=graph_from_db(s,p); graph.pop('_history',None)
     resources={k:[asdict(r) for r in s.scalars(select(m).where(m.project_id==p.id))] for k,m in RESOURCE_MODELS.items()}
     papers=[asdict(r) for r in s.scalars(select(PaperDocument).where(PaperDocument.project_id==p.id))]
@@ -496,6 +496,10 @@ async def import_project(file:UploadFile=File(...)):
         }
     with Session.begin() as s, cleanup_project_import_on_failure() as remember_import_root:
         orig=manifest['project']; config=dict(orig.get('config',{})); controller=config.get('controller')
+        selected_provider=config.get('provider_id')
+        if selected_provider and not s.get(Provider,selected_provider):
+            config.pop('provider_id',None)
+            config['provider_selection_required']=True
         if isinstance(controller,dict):
             # Runtime references belong to the source project; imported runs are
             # rekeyed and active ones interrupted, so do not carry them forward.
@@ -505,7 +509,11 @@ async def import_project(file:UploadFile=File(...)):
                 # Import is not an instruction to resume a research controller.
                 controller.update(status='paused',phase='PLAN')
             config['controller']=controller
-        p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),mode=mode,budget=orig.get('budget',{}),config=config); root=project_dir(p.id); remember_import_root(root)
+        p=make_project(s,orig['name']+' · Imported',orig.get('goal',''),orig.get('description',''),mode=mode,budget=orig.get('budget',{}),config=config)
+        if config.get('provider_selection_required'):
+            # Do not let make_project's workspace default silently replace an unavailable archived selection.
+            p.config=config
+        root=project_dir(p.id); remember_import_root(root)
         graph=manifest['graph']; old_id=graph['project_id']; mapping={item['id']:uid() for key in ('nodes','edges','branches') for item in graph[key]}
         for rows in list(manifest.get('resources',{}).values())+[manifest.get('papers',[]),manifest.get('runs',[])]:
             for item in rows: mapping.setdefault(item['id'],uid())

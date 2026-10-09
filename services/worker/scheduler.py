@@ -340,6 +340,11 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     role = merged.get('role', 'Researcher')
     agent = (s.get(Agent, merged['agent_id']) if merged.get('agent_id') else
              s.scalar(select(Agent).where(Agent.role == role)))
+    if (p.config.get('provider_selection_required') and not merged.get('provider_id')
+            and not (retry_snapshot and merged.get('provider_snapshot'))):
+        error('PROVIDER_SELECTION_REQUIRED',
+              'The imported project’s selected provider is unavailable. Edit the project and choose a provider or explicitly use the workspace default.',
+              422,suggestion='Open the project editor and save a provider selection before starting this Agent run.')
     provider_id = merged.get('provider_id') or (agent.provider_id if agent else None) or p.config.get('provider_id')
     provider_origin=provider_origin or ('agent' if agent and agent.provider_id else 'project' if p.config.get('provider_id') else None)
     if retry_snapshot and merged.get('provider_snapshot'):
