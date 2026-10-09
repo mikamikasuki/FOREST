@@ -38,7 +38,14 @@ def read_page(url,output_dir,screenshot=False):
                 html = data.decode('utf-8', errors='replace')
             parser=TextPage(); parser.feed(html); text='\n'.join(line.strip() for line in ''.join(parser.parts).splitlines() if line.strip())
             (target/'page.txt').write_text(text)
-            result={'url':url,'title':parser.title.strip(),'text':text[:40000],'text_path':str(target/'page.txt'),'reading_scope':'public_page_text','trusted_instructions':False}
+            chunk_size=20000
+            passages=[{'id':f'page-{index+1}','page':None,'section':f'Page text, part {index+1}',
+                       'text':text[start:start+chunk_size],'source_url':url}
+                      for index,start in enumerate(range(0,len(text),chunk_size))]
+            result={'url':url,'title':parser.title.strip(),'text':text[:40000],
+                    'text_length':len(text),'text_truncated':len(text)>40000,
+                    'passages':passages,'text_path':str(target/'page.txt'),
+                    'reading_scope':'public_page_text','trusted_instructions':False}
             if screenshot:
                 from playwright.sync_api import sync_playwright
                 with sync_playwright() as playwright:

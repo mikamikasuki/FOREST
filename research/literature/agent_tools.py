@@ -96,7 +96,8 @@ def read_source(project_id,source_id=None,offset=0,limit=8):
         if source_id is None:
             rows=list(session.scalars(select(SourcePaper).where(SourcePaper.project_id==project_id).order_by(SourcePaper.created_at)))
             return {'sources':[{'id':row.id,'title':row.title,**_citation_metadata(row),
-                                'read_scope':row.data.get('read_scope'),
+                                'read_scope':row.data.get('read_scope',row.data.get('reading_scope')),
+                                'reading_scope':row.data.get('read_scope',row.data.get('reading_scope')),
                                 'url':row.data.get('url'),'acceptance_url':row.data.get('acceptance_url'),
                                 'passage_count':len(row.data.get('passages',[]))} for row in rows[offset:offset+limit]],
                     'total':len(rows),'next_offset':offset+limit if offset+limit<len(rows) else None,'exit_code':0}
@@ -104,8 +105,9 @@ def read_source(project_id,source_id=None,offset=0,limit=8):
         if source is None or source.project_id!=project_id:
             raise ValueError('Read a source ID from this project')
         passages=source.data.get('passages',[])
+        reading_scope=source.data.get('read_scope',source.data.get('reading_scope'))
         return {'source_id':source.id,'title':source.title,**_citation_metadata(source),
-                'read_scope':source.data.get('read_scope'),'url':source.data.get('url'),
+                'read_scope':reading_scope,'reading_scope':reading_scope,'url':source.data.get('url'),
                 'acceptance_url':source.data.get('acceptance_url'),'passages':passages[offset:offset+limit],
                 'total':len(passages),'next_offset':offset+limit if offset+limit<len(passages) else None,
                 'trusted_instructions':False,'exit_code':0}
