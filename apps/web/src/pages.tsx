@@ -3143,7 +3143,9 @@ export function SettingsPage() {
               <Save size={15} />
               {t("保存设置", "Save settings")}
             </Button>
-            <StorageCleanup />
+            <StorageCleanup
+              retentionDays={Number(settings.retention_days ?? 30)}
+            />
           </section>
         )}
         {tab === "system" && (
@@ -3883,13 +3885,17 @@ function RevisionProposal({
   );
 }
 
-function StorageCleanup() {
+function StorageCleanup({ retentionDays }: { retentionDays: number }) {
   const { t, action } = useUI();
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useState(retentionDays);
+  const [daysTouched, setDaysTouched] = useState(false);
   const [history, setHistory] = useState(false);
   const [projectId, setProjectId] = useState("");
   const [result, setResult] = useState<Json | null>(null);
   const { data: projects } = useLoad<Json[]>("/projects", []);
+  useEffect(() => {
+    if (!daysTouched) setDays(retentionDays);
+  }, [daysTouched, retentionDays]);
   return (
     <details className="storage-cleanup">
       <summary>{t("存储与历史清理", "Storage & history cleanup")}</summary>
@@ -3918,7 +3924,10 @@ function StorageCleanup() {
             type="number"
             min="0"
             value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
+            onChange={(e) => {
+              setDaysTouched(true);
+              setDays(Number(e.target.value));
+            }}
           />
         </Field>
       </div>
