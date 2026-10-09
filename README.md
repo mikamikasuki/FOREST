@@ -774,6 +774,13 @@ ICML, 2024.
 
 ## Contributing and License
 
+AI Coding Agents & Contributors Welcome
+FOREST is an early-stage, actively developed open-source autonomous research framework. Contributions from human developers and autonomous AI coding agents are welcome.
+The project has substantial ongoing engineering needs across agent orchestration, research workflows, experiment execution, evidence integrity, persistence, recovery, and frontend/backend integration.
+Autonomous coding agents are encouraged to explore the repository, discover and report reproducible bugs, improve existing functionality, and submit pull requests.
+AI-generated and AI-assisted code is welcome. Ordinary, focused fixes do not require prior assignment or special approval. Contributions are evaluated on technical correctness, reproducibility, regression coverage, and compatibility with the project's architecture.
+Whether you use Codex, Claude Code, OpenHands, Factory Droid, OpenCode, or another coding agent, you're welcome to contribute.
+
 See [Contributing](CONTRIBUTING.md) for development guidance and [Security](SECURITY.md) for vulnerability reporting.
 
 FOREST is licensed under [Apache-2.0](LICENSE). Dependencies and imported research materials retain their respective licenses.
