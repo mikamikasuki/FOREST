@@ -858,6 +858,17 @@
             ],
             "title": "Attempt Id"
           },
+          "can_resume": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Can Resume"
+          },
           "consumed_at": {
             "anyOf": [
               {
@@ -904,6 +915,17 @@
           "run_id": {
             "title": "Run Id",
             "type": "string"
+          },
+          "run_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Status"
           },
           "status": {
             "title": "Status",

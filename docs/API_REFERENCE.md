@@ -2778,6 +2778,8 @@ Additional properties: rejected by the existing typed/schema-specific validator.
 | `created_at` | string | yes |  |
 | `updated_at` | string | yes |  |
 | `resume_error` | string or null | no |  |
+| `run_status` | string or null | no |  |
+| `can_resume` | boolean or null | no |  |
 
 Additional properties: extensible JSON.
 
