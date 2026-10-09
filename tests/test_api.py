@@ -1417,7 +1417,8 @@ def case_figure_render_is_invalidated_after_data_or_style_edit(client, app):
 
     edited = ok(client.patch(f"/api/figures/{figure['id']}", json={
         'expected_revision': figure['revision'],
-        'data': {**figure['data'], 'style': {'title': 'New'}, 'data': {'values': [2]}},
+        'data': {**figure['data'], 'style': {'title': 'New'}, 'data': {'values': [2]},
+                 'caption': 'New measured result.'},
     }))
     assert edited['status'] == 'needs_review'
     assert 'outputs' not in edited['data']

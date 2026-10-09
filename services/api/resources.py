@@ -487,7 +487,8 @@ def install_resource_routes(name,model):
                 from services.interventions.dependencies import validate_bindings
                 validate_bindings(s,r.project_id,{**r.data,**body['data']})
                 updated={**r.data,**body['data']}
-                if name=='figures' and any(updated.get(key)!=r.data.get(key) for key in ('kind','style','code','run_ids','metric','data','image_prompt')):
+                render_inputs=('kind','style','code','code_origin','run_ids','metric','data','caption','purpose','image_prompt','narrative_mode','image_variants','candidates')
+                if name=='figures' and any(updated.get(key)!=r.data.get(key) for key in render_inputs):
                     for key in ('outputs','svg_path','png_path','pdf_path','jpg_path','jpeg_path','visual_selection'):
                         updated.pop(key,None)
                     updated['visual_review_status']='stale'

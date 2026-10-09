@@ -1979,7 +1979,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `PATCH /api/figures/{ident}`
 
-Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale. For figures, changes to render-driving kind/style/code/run_ids/metric/data/image_prompt fields clear old render outputs and review selection and set needs_review; render and review the new revision before insertion.
+Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale. For figures, changes to render inputs (kind/style/code/code_origin/run_ids/metric/data/caption/purpose/image_prompt/narrative_mode/image_variants/candidates) clear old render outputs and review selection and set needs_review; render and review the new revision before insertion.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
