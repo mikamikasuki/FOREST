@@ -381,9 +381,14 @@ def output(ident:str,offset:int=0,limit:int=100000,search:str=''):
     with Session() as s: r=get(s,TaskRun,ident); p=safe_path(project_dir(r.project_id),r.output_path+'/stdout.txt'); status=r.status
     start=max(offset,0); text=''; end=start
     if p.exists():
+        size=min(limit,1000000)
         with p.open('rb') as f:
-            f.seek(start); data=f.read(min(limit,1000000))
-            end=start+utf8_page_prefix(data); text=data[:end-start].decode(errors='replace')
+            f.seek(start); data=f.read(size); prefix=utf8_page_prefix(data)
+            if data and not prefix:
+                # A page limit smaller than the next character must not stall the cursor: read up
+                # to three more bytes so the leading character completes (characters are <=4 bytes).
+                f.seek(start); data=f.read(size+3); prefix=utf8_page_prefix(data)
+            end=start+prefix; text=data[:prefix].decode(errors='replace')
     if search: text='\n'.join(l for l in text.splitlines() if search.lower() in l.lower())
     return {'text':text,'offset':end,'status':status}
 @app.get('/api/projects/{ident}/events')

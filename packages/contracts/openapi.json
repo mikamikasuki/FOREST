@@ -24938,7 +24938,7 @@
     },
     "/api/runs/{ident}/output": {
       "get": {
-        "description": "Read stdout.txt at max(offset,0), at most min(limit,1000000) bytes and return the next byte offset. A trailing multi-byte UTF-8 character cut by the page limit is held back so the next page re-reads it whole; invalid bytes decode with replacement. Optional case-insensitive search filters lines AFTER the cursor advances. A missing output file returns empty text at the requested nonnegative offset.",
+        "description": "Read stdout.txt at max(offset,0), at most min(limit,1000000) bytes and return the next byte offset. A trailing multi-byte UTF-8 character cut by the page limit is held back so the next page re-reads it whole; when the page limit is smaller than the next character the read grows by at most three bytes so the cursor still advances; invalid bytes decode with replacement. Optional case-insensitive search filters lines AFTER the cursor advances. A missing output file returns empty text at the requested nonnegative offset.",
         "operationId": "output_api_runs__ident__output_get",
         "parameters": [
           {

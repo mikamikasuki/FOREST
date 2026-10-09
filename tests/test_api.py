@@ -1446,6 +1446,23 @@ def case_run_output_keeps_utf8_character_split_at_page_boundary(client, app):
     released = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': held['offset'], 'limit': 100000}))
     assert released['text'] == '\ufffdb' and released['offset'] == 3
 
+    # A page limit smaller than the next character must still make progress, or a client
+    # following the cursor would repeat the same request forever.
+    for limit, content in ((1, 'é中b'), (2, '中😀b'), (3, '😀b'), (1, 'ab')):
+        path.write_bytes(content.encode())
+        pages, offset, text = [], 0, ''
+        while True:
+            page = ok(client.get(f"/api/runs/{run['id']}/output", params={'offset': offset, 'limit': limit}))
+            pages.append((page['offset'], page['text']))
+            text += page['text']
+            assert page['offset'] > offset or not page['text'], f"cursor stalled at {offset} with limit={limit}: {pages}"
+            if page['offset'] == offset:
+                break
+            offset = page['offset']
+            if offset >= len(content.encode()):
+                break
+        assert text == content, f"limit={limit} reassembled {text!r}"
+
 
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]
 
