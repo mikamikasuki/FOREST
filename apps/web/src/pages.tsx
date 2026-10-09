@@ -1,5 +1,6 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
+import { createFileSelectionGuard } from "./fileSelection";
 import { orderFileTreeEntries, visibleFileTreeEntries } from "./files/fileTree";
 import { updateDefaultProviderDraft } from "./settingsDraft";
 import { hostEditorConfig, hostPayload } from "./connectionPayload";
@@ -2721,6 +2722,11 @@ export function FilesPage() {
   const [content, setContent] = useState("");
   const [original, setOriginal] = useState("");
   const [revision, setRevision] = useState<number | undefined>();
+  const [loadedPath, setLoadedPath] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const fileSelection = useRef(createFileSelectionGuard()).current;
+  const fileReadGeneration = useRef(0);
+  const draftVersion = useRef(0);
   const [filter, setFilter] = useState("");
   const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(
     () => new Set(),
@@ -2736,8 +2742,12 @@ export function FilesPage() {
     | null
   >(null);
   const fileDraftKey = (relativePath: string) => `forest-file-draft:${id}:${relativePath}`;
-  const loadTextFile = async (relativePath: string) => {
+  const loadTextFile = async (
+    relativePath: string,
+    isStale?: () => boolean,
+  ) => {
     const saved = await api(`/projects/${id}/file?path=${encodeURIComponent(relativePath)}`);
+    if (isStale?.()) return;
     const key = fileDraftKey(relativePath);
     let draft: Json | null = null;
     try {
@@ -2745,6 +2755,7 @@ export function FilesPage() {
     } catch {
       sessionStorage.removeItem(key);
     }
+    if (isStale?.()) return;
     if (draft && typeof draft.content === "string" && draft.content !== draft.original) {
       setContent(draft.content);
       setOriginal(typeof draft.original === "string" ? draft.original : saved.content);
@@ -2789,31 +2800,67 @@ export function FilesPage() {
     if (dirty && !confirm(t("放弃未保存修改？", "Discard unsaved changes?")))
       return;
     if (dirty && path) sessionStorage.removeItem(fileDraftKey(path));
+    const selection = fileSelection.select(p);
+    fileReadGeneration.current += 1;
     setPath(p);
     setDiff(false);
     setTablePreview(false);
     setDirty(false);
+    setLoadedPath("");
+    setLoadError("");
+    setContent("");
+    setOriginal("");
+    setRevision(undefined);
     if (/\.(csv|tsv)$/i.test(p)) {
       setTablePreview(true);
-      setContent("");
-      setOriginal("");
-      setRevision(undefined);
+      setLoadedPath(p);
       return;
     }
     if (!/\.(pdf|png|jpe?g|svg|webp|gif|parquet|zip|pkl|npy|npz)$/i.test(p)) {
-      await loadTextFile(p);
+      try {
+        await loadTextFile(p, () => !fileSelection.isCurrent(selection));
+        if (!fileSelection.isCurrent(selection)) return;
+        setLoadedPath(p);
+      } catch (error) {
+        if (!fileSelection.isCurrent(selection)) return;
+        setLoadError((error as Error).message);
+        throw error;
+      }
+    } else {
+      setLoadedPath(p);
     }
   };
   const save = async (force = false) => {
+    const selection = fileSelection.current();
+    const targetPath = path;
+    const savedContent = content;
+    const savedRevision = revision;
+    const savedDraftVersion = draftVersion.current;
+    if (
+      !targetPath ||
+      selection.path !== targetPath ||
+      loadedPath !== targetPath ||
+      savedRevision === undefined
+    ) {
+      throw new Error("Wait for the selected file to finish loading before saving.");
+    }
     try {
       const r = await api(
-        `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+        `/projects/${id}/file?path=${encodeURIComponent(targetPath)}`,
         "PUT",
-        { path, content, ...(force ? {} : { expected_revision: revision }) },
+        {
+          path: targetPath,
+          content: savedContent,
+          ...(force ? {} : { expected_revision: savedRevision }),
+        },
       );
+      if (!fileSelection.isCurrent(selection)) {
+        await reload();
+        return;
+      }
       setRevision(r.revision);
-      setOriginal(content);
-      setDirty(false);
+      setOriginal(savedContent);
+      setDirty(draftVersion.current !== savedDraftVersion);
       setConflict(null);
       sessionStorage.removeItem(fileDraftKey(path));
       await reload();
@@ -2821,16 +2868,18 @@ export function FilesPage() {
       if ((e as any).status === 409) {
         try {
           const latest = await api(
-            `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+            `/projects/${id}/file?path=${encodeURIComponent(targetPath)}`,
           );
+          if (!fileSelection.isCurrent(selection)) return;
           setConflict({
             kind: "changed",
             content: latest.content,
             revision: latest.revision,
           });
         } catch (readError) {
+          if (!fileSelection.isCurrent(selection)) return;
           if ((readError as any).status !== 404) throw readError;
-          setConflict({ kind: "missing", path });
+          setConflict({ kind: "missing", path: targetPath });
         }
         return;
       }
@@ -3030,8 +3079,32 @@ export function FilesPage() {
                           setTablePreview(false);
                         } else {
                           void action(async () => {
-                            await loadTextFile(path);
-                            setTablePreview(false);
+                            const selection = fileSelection.current();
+                            const readGeneration = ++fileReadGeneration.current;
+                            setLoadedPath("");
+                            setLoadError("");
+                            try {
+                              await loadTextFile(
+                                path,
+                                () =>
+                                  !fileSelection.isCurrent(selection) ||
+                                  fileReadGeneration.current !== readGeneration,
+                              );
+                              if (
+                                !fileSelection.isCurrent(selection) ||
+                                fileReadGeneration.current !== readGeneration
+                              )
+                                return;
+                              setLoadedPath(path);
+                              setTablePreview(false);
+                            } catch (error) {
+                              if (
+                                fileSelection.isCurrent(selection) &&
+                                fileReadGeneration.current === readGeneration
+                              )
+                                setLoadError((error as Error).message);
+                              throw error;
+                            }
                           });
                         }
                       } else setTablePreview(true);
@@ -3048,7 +3121,10 @@ export function FilesPage() {
                     >
                       <GitCompare size={15} />
                     </IconButton>
-                    <Button onClick={() => action(() => save())}>
+                    <Button
+                      disabled={loadedPath !== path || revision === undefined}
+                      onClick={() => action(() => save())}
+                    >
                       <Save size={14} />
                       {t("保存", "Save")}
                     </Button>
@@ -3070,20 +3146,26 @@ export function FilesPage() {
                 </IconButton>
                 <IconButton
                   label={t("重命名", "Rename")}
+                  disabled={loadedPath !== path}
                   onClick={() => {
                     const next = prompt(t("新文件路径", "New file path"), path);
                     if (next && next !== path)
                       void action(async () => {
+                        const selection = fileSelection.current();
+                        const targetPath = path;
                         const renamed = await api(
                           `/projects/${id}/file/rename`,
                           "POST",
-                          {
-                            path,
-                            new_path: next,
-                          },
+                          { path: targetPath, new_path: next },
                         );
+                        if (!fileSelection.isCurrent(selection)) {
+                          await reload();
+                          return;
+                        }
+                        fileSelection.select(next);
                         setPath(next);
                         setRevision(renamed.revision);
+                        setLoadedPath(next);
                         await reload();
                       });
                   }}
@@ -3095,11 +3177,23 @@ export function FilesPage() {
                   onClick={() => {
                     if (confirm(t(`删除 ${path}？`, `Delete ${path}?`)))
                       void action(async () => {
+                        const selection = fileSelection.current();
+                        const targetPath = path;
                         await api(
-                          `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+                          `/projects/${id}/file?path=${encodeURIComponent(targetPath)}`,
                           "DELETE",
                         );
+                        if (!fileSelection.isCurrent(selection)) {
+                          await reload();
+                          return;
+                        }
+                        fileSelection.select("");
                         setPath("");
+                        setContent("");
+                        setOriginal("");
+                        setRevision(undefined);
+                        setLoadedPath("");
+                        setDirty(false);
                         await reload();
                       });
                   }}
@@ -3107,7 +3201,16 @@ export function FilesPage() {
                   <Trash2 size={15} />
                 </IconButton>
               </div>
-              {extension === "pdf" ? (
+              {loadedPath !== path ? (
+                loadError ? (
+                  <ErrorBox
+                    error={loadError}
+                    retry={() => void action(() => open(path))}
+                  />
+                ) : (
+                  <p role="status">{t("正在加载文件…", "Loading file…")}</p>
+                )
+              ) : extension === "pdf" ? (
                 <PDFViewer url={url} />
               ) : image ? (
                 <div className="file-image">
@@ -3144,7 +3247,10 @@ export function FilesPage() {
                     <span>{t("当前编辑", "Current edit")}</span>
                     <CodeEditor
                       value={content}
-                      onChange={changeContent}
+                      onChange={(v) => {
+                        draftVersion.current += 1;
+                        changeContent(v);
+                      }}
                       language={extension}
                     />
                   </div>
@@ -3152,7 +3258,10 @@ export function FilesPage() {
               ) : (
                 <CodeEditor
                   value={content}
-                  onChange={changeContent}
+                  onChange={(v) => {
+                    draftVersion.current += 1;
+                    changeContent(v);
+                  }}
                   language={
                     extension === "py"
                       ? "python"
@@ -3264,16 +3373,25 @@ export function FilesPage() {
                 );
                 if (next)
                   void action(async () => {
+                    const selection = fileSelection.current();
+                    const savedContent = content;
+                    const savedDraftVersion = draftVersion.current;
                     const saved = await api(
                       `/projects/${id}/file?path=${encodeURIComponent(next)}`,
                       "PUT",
-                      { path: next, content },
+                      { path: next, content: savedContent },
                     );
+                    if (!fileSelection.isCurrent(selection)) {
+                      await reload();
+                      return;
+                    }
+                    fileSelection.select(next);
                     setConflict(null);
                     setPath(next);
                     setRevision(saved.revision);
-                    setOriginal(content);
-                    setDirty(false);
+                    setOriginal(savedContent);
+                    setLoadedPath(next);
+                    setDirty(draftVersion.current !== savedDraftVersion);
                     await reload();
                   });
               }}

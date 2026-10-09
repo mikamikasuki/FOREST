@@ -671,6 +671,76 @@ test("Files upload preflight detects conflicts outside the visible page", async 
   await expect.poll(() => overwrite).toBe("true");
 });
 
+test("the newest CSV text read wins when preview toggles overlap", async ({
+  page,
+  request,
+}) => {
+  const path = "measurements.csv";
+  const saved = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path, content: "value\nsaved\n", expected_revision: 0 },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  let readCount = 0;
+  const started: Array<() => void> = [];
+  const releases: Array<(content: string) => void> = [];
+  await page.route(
+    `**/api/projects/${projectId}/file?path=*`,
+    async (route) => {
+      const index = readCount++;
+      started[index]?.();
+      const content = await new Promise<string>((resolve) => {
+        releases[index] = resolve;
+      });
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ path, content, revision: index + 2 }),
+      });
+    },
+  );
+  const firstStarted = new Promise<void>((resolve) => {
+    started[0] = resolve;
+  });
+  const secondStarted = new Promise<void>((resolve) => {
+    started[1] = resolve;
+  });
+
+  await page.goto(`/projects/${projectId}/files`);
+  await page.locator(".file-tree").getByRole("button", { name: path }).click();
+  const toggle = page.getByRole("button", { name: "Toggle saved table preview" });
+  await toggle.click();
+  await firstStarted;
+  await toggle.click();
+  await secondStarted;
+
+  releases[1]("value\nnewest read\n");
+  const editor = page.locator(".monaco-editor").first();
+  await expect(editor).toContainText("newest read");
+  releases[0]("value\nolder read\n");
+  await expect(editor).toContainText("newest read");
+  await expect(editor).not.toContainText("older read");
+});
+
+test("a failed CSV text read shows an error with a retry action", async ({
+  page,
+  request,
+}) => {
+  const path = "measurements.csv";
+  const saved = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path, content: "value\nsaved\n", expected_revision: 0 },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.goto(`/projects/${projectId}/files`);
+  await page.locator(".file-tree").getByRole("button", { name: path }).click();
+  await page.route(`**/api/projects/${projectId}/file?path=*`, (route) =>
+    route.fulfill({ status: 503, body: "temporarily unavailable" }),
+  );
+  await page.getByRole("button", { name: "Toggle saved table preview" }).click();
+  await expect(page.locator(".error-box")).toContainText("Service Unavailable");
+  await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+});
+
 for (const scenario of [
   {
     name: "silent success",
