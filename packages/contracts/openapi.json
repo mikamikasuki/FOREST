@@ -9579,7 +9579,7 @@
     },
     "/api/decisions/{ident}/answer": {
       "post": {
-        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
+        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
         "operationId": "decision_answer_api_decisions__ident__answer_post",
         "parameters": [
           {
@@ -12599,7 +12599,7 @@
     },
     "/api/interventions/{ident}": {
       "get": {
-        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
+        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
         "operationId": "intervention_api_interventions__ident__get",
         "parameters": [
           {
@@ -16333,7 +16333,7 @@
     },
     "/api/projects/{ident}/decisions": {
       "get": {
-        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
+        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
         "operationId": "decisions_api_projects__ident__decisions_get",
         "parameters": [
           {
@@ -18436,7 +18436,7 @@
     },
     "/api/projects/{ident}/instructions": {
       "post": {
-        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
+        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
         "operationId": "instruction_api_projects__ident__instructions_post",
         "parameters": [
           {
@@ -18562,7 +18562,7 @@
     },
     "/api/projects/{ident}/interventions": {
       "get": {
-        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
+        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
         "operationId": "interventions_api_projects__ident__interventions_get",
         "parameters": [
           {
@@ -23077,7 +23077,7 @@
     },
     "/api/research/proposals/{ident}/reject": {
       "post": {
-        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
+        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
         "operationId": "reject_proposal_api_research_proposals__ident__reject_post",
         "parameters": [
           {
@@ -24126,7 +24126,7 @@
     },
     "/api/runs/{ident}/acceptance": {
       "get": {
-        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
+        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
         "operationId": "acceptance_api_runs__ident__acceptance_get",
         "parameters": [
           {
@@ -24242,7 +24242,7 @@
     },
     "/api/runs/{ident}/applicability": {
       "get": {
-        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
+        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
         "operationId": "applicability_api_runs__ident__applicability_get",
         "parameters": [
           {
@@ -24358,7 +24358,7 @@
     },
     "/api/runs/{ident}/applicability/decisions": {
       "post": {
-        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
+        "description": "Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.",
         "operationId": "applicability_decision_api_runs__ident__applicability_decisions_post",
         "parameters": [
           {
