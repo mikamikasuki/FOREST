@@ -169,6 +169,7 @@ export default function App() {
               navigation.map(([path, zh, en, Icon]) => (
                 <NavLink
                   key={path}
+                  aria-label={t(zh, en)}
                   to={demoLink(
                     `/projects/${projectId}/${path}`,
                     location.search,
