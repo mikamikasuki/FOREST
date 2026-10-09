@@ -122,7 +122,10 @@ export default function App() {
     const fn = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        setPalette((x) => !x);
+        setPalette((open) => {
+          if (open) setPaletteQuery("");
+          return !open;
+        });
       }
     };
     window.addEventListener("keydown", fn);
@@ -153,7 +156,10 @@ export default function App() {
           <button
             className="quick-search"
             aria-label={t("搜索或跳转", "Search workspace")}
-            onClick={() => setPalette(true)}
+            onClick={() => {
+              setPaletteQuery("");
+              setPalette(true);
+            }}
           >
             <Search size={15} />
             <span>{t("搜索或跳转", "Search workspace")}</span>
@@ -245,7 +251,13 @@ export default function App() {
         </div>
       )}
       {palette && (
-        <Modal title={t("前往…", "Go to…")} onClose={() => setPalette(false)}>
+        <Modal
+          title={t("前往…", "Go to…")}
+          onClose={() => {
+            setPalette(false);
+            setPaletteQuery("");
+          }}
+        >
           <input
             autoFocus
             placeholder={t("搜索页面或命令", "Search pages or commands")}
