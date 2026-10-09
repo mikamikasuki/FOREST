@@ -631,11 +631,19 @@ def apply_proposal(ident:str,body:dict=Body(...)):
         if not selected or any(type(i) is not int or not 0<=i<len(commands) for i in selected):
             error('INVALID_SELECTION','Choose valid proposed commands',422)
         request_id=body.get('request_id') or uid()
+        accepted=set(proposal.data.get('accepted_indices',[]))
+        receipt=s.scalar(select(CommandReceipt).where(CommandReceipt.project_id==p.id,
+            CommandReceipt.request_id==request_id))
+        if not receipt and accepted.intersection(selected):
+            error('PROPOSAL_ALREADY_APPLIED','An accepted suggestion cannot be applied again',409)
         result=apply_in_session(s,p,request_id,body.get('expected_revision',proposal.data.get('graph_revision')),
                                 [commands[i] for i in selected],actor='owner_proposal',batch=True,
                                 origin={'proposal_id':ident,'indices':selected})
-        proposal.data={**proposal.data,'accepted_indices':sorted(set(proposal.data.get('accepted_indices',[])+selected))}
-        proposal.status='partly_adopted' if len(proposal.data['accepted_indices'])<len(commands) else 'adopted'
+        if not receipt:
+            applied_commands={**proposal.data.get('applied_commands',{}),**{str(i):commands[i] for i in selected}}
+            proposal.data={**proposal.data,'accepted_indices':sorted(accepted.union(selected)),
+                           'applied_commands':applied_commands}
+            proposal.status='partly_adopted' if len(proposal.data['accepted_indices'])<len(commands) else 'adopted'
         result['accepted_indices']=selected;intervention_id=result['intervention']['id']
     kick_effects(intervention_id=intervention_id,limit=10)
     with Session() as s:result['intervention']=readback(s,get(s,Intervention,intervention_id))
