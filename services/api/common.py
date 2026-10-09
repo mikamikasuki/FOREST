@@ -59,6 +59,29 @@ def safe_path(root:Path,relative:str,must_exist=False):
     if must_exist and not candidate.exists(): error('MISSING_ARTIFACT',f'Missing project file: {relative}',404)
     return candidate
 
+def utf8_page_prefix(data:bytes):
+    """Length of the longest leading part of `data` that ends on a complete UTF-8 character.
+
+    A character whose bytes are cut by a page limit is held back (at most three bytes) so the next
+    page re-reads it whole. Trailing bytes that cannot start a valid character are not held back;
+    they decode with replacement like any other invalid input."""
+    size=len(data); index=size-1; skipped=0
+    while index>=0 and skipped<3 and 0x80<=data[index]<=0xBF:
+        index-=1; skipped+=1
+    if index<0: return size
+    lead=data[index]
+    if lead<0x80: return size
+    if 0xC2<=lead<=0xDF: need=2
+    elif 0xE0<=lead<=0xEF: need=3
+    elif 0xF0<=lead<=0xF4: need=4
+    else: return size
+    available=size-index
+    if available>=need: return size
+    tail=data[index:]
+    if any(not 0x80<=byte<=0xBF for byte in tail[1:]): return size
+    if len(tail)>1 and ((lead==0xE0 and tail[1]<0xA0) or (lead==0xED and tail[1]>0x9F) or (lead==0xF0 and tail[1]<0x90) or (lead==0xF4 and tail[1]>0x8F)): return size
+    return index
+
 def graph_from_db(s,p,*,refresh=False):
     def rows(model):
         return s.scalars(select(model).where(model.project_id==p.id).execution_options(populate_existing=refresh))
@@ -66,6 +89,21 @@ def graph_from_db(s,p,*,refresh=False):
     graph.update(p.graph_meta or {})
     graph['goal']=p.goal
     graph['budget']=p.budget
+    return graph
+
+def attach_context_ideas(s,p,graph,overrides=None):
+    """Attach only saved idea records explicitly referenced by Agent context."""
+    refs=[ref for node in graph.get('nodes',[]) for ref in node.get('inputs',[])]
+    for ref in (overrides or {}).get('imports',[]):
+        refs.append(ref)
+    for ref in (overrides or {}).get('materials',(overrides or {}).get('add',[])):
+        refs.append(ref)
+    ids={ref.get('id') for ref in refs if isinstance(ref,dict)
+         and ref.get('kind')=='idea' and isinstance(ref.get('id'),str)}
+    if not ids:return graph
+    graph['_context_ideas']={row.id:{'id':row.id,'title':row.title,'revision':row.revision,
+        'status':row.status,'data':row.data} for row in s.scalars(
+            select(Hypothesis).where(Hypothesis.project_id==p.id,Hypothesis.id.in_(ids)))}
     return graph
 
 def save_graph(s,p,graph):
@@ -100,6 +138,15 @@ def put_secret(value,ref=None):
 def read_secret(ref):
     return json.loads(secret_store().read_text()).get(ref,'') if ref else ''
 
+def delete_secret(ref):
+    if not ref: return
+    p=settings.data_dir/'secrets.json'
+    if not p.exists(): return
+    data=json.loads(p.read_text())
+    if ref not in data: return
+    data.pop(ref,None)
+    tmp=p.with_suffix('.tmp'); tmp.write_text(json.dumps(data)); tmp.chmod(0o600); tmp.replace(p)
+
 def owner_token():
     if settings.owner_token: return settings.owner_token
     path=settings.data_dir/'owner-token'
@@ -132,7 +179,8 @@ def make_project(s,name,goal='',description='',**kwargs):
     default_provider=preference.value.get('default_provider_id') if preference else None
     config=dict(kwargs.get('config',{}))
     if default_provider and not config.get('provider_selection_required'):
-        if not config.get('provider_id') and s.get(Provider,default_provider): config['provider_id']=default_provider
+        provider=s.get(Provider,default_provider)
+        if not config.get('provider_id') and provider and provider.status!='retired': config['provider_id']=default_provider
     kwargs['config']=config
     p=Project(name=name,goal=goal,description=description,**kwargs); s.add(p); s.flush()
     bid=uid(); workspace=f'branches/{bid}/workspace'; safe_path(project_dir(p.id),workspace).mkdir(parents=True,exist_ok=True)

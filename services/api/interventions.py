@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_
 from services.api.db import Session, Project, Hypothesis, TaskRun, asdict, now
 from services.api.common import get, error, emit
 from services.worker.scheduler import _lock_project
@@ -40,11 +40,16 @@ def applicability_decision(ident: str, body: ApplicabilityDecision):
 
 
 @router.get('/api/projects/{ident}/interventions', response_model=list[InterventionView])
-def interventions(ident: str, limit: int = Query(50, ge=1, le=200), before: str | None = None):
+def interventions(ident: str, limit: int = Query(50, ge=1, le=200), before: str | None = None,
+                  before_id: str | None = Query(None, max_length=64)):
     with Session() as session:
         get(session, Project, ident)
         query = select(Intervention).where(Intervention.project_id == ident)
-        if before: query = query.where(Intervention.created_at < before)
+        if before and before_id:
+            query = query.where(or_(Intervention.created_at < before,
+                                    and_(Intervention.created_at == before, Intervention.id < before_id)))
+        elif before:
+            query = query.where(Intervention.created_at < before)
         return [readback(session, row) for row in session.scalars(query.order_by(
             Intervention.created_at.desc(), Intervention.id.desc()).limit(limit))]
 
@@ -75,7 +80,7 @@ def decision_answer(ident: str, body: DecisionAnswer):
     if body.resume:
         with Session() as session:
             run = get(session, TaskRun, result['run_id'])
-            waiting = (run.status == 'waiting_input' and result['status'] in ('accepted', 'rejected')
+            waiting = (run.status == 'waiting_input' and result['status'] in ('accepted', 'rejected', 'stale')
                        and run.resource.get('wait_for', {}).get('decision_id') == ident)
         if waiting:
             from .main import run_action

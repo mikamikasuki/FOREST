@@ -172,6 +172,8 @@ svg {
   display: flex;
   flex-direction: column;
   padding: 27px 18px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   z-index: 25;
 }
 .brand {
@@ -4370,9 +4372,9 @@ td.numeric {
     font-size: 9px;
   }
 }
-/* Keep dense research labels readable in the default light workspace. */
-:root {
-  --muted: #6d7c68;
+/* Keep normal-sized muted text readable in the light theme. */
+:root:not([data-theme="dark"]) {
+  --muted: #687763;
 }
 .sidebar nav a {
   color: #5e7157;

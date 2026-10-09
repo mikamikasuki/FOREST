@@ -38,18 +38,43 @@ def _bib_escape(value):
     return str(value or "").replace("\\", "\\textbackslash{}").replace("&", r"\&").replace("%", r"\%").replace("_", r"\_").replace("#", r"\#").replace("{", "").replace("}", "")
 
 
+def _author_names(value):
+    if isinstance(value, (str, dict)):
+        value = [value]
+    elif not isinstance(value, (list, tuple)):
+        value = []
+    names = []
+    for author in value or []:
+        if isinstance(author, str):
+            name = author.strip()
+        elif isinstance(author, dict):
+            name = author.get("name") or " ".join(
+                str(part).strip()
+                for part in (author.get("given"), author.get("family"))
+                if part
+            )
+        else:
+            name = ""
+        if name:
+            names.append(name)
+    return names
+
+
 def bibtex(records: list[dict]) -> str:
     entries = []
     for i, record in enumerate(records):
-        key = record.get("citation_key") or re.sub(r"[^a-zA-Z0-9]", "", (record.get("authors") or ["source"])[0].split()[-1]) + str(record.get("year") or "nd") + str(i)
-        fields = {"title": record.get("title"), "author": " and ".join(record.get("authors", [])), "year": record.get("year"), "doi": record.get("doi"), "url": record.get("url"), "journal": record.get("journal")}
+        authors = _author_names(record.get("authors"))
+        first_author = authors[0] if authors else "source"
+        surname = first_author.split(",", 1)[0].split()[-1]
+        key = record.get("citation_key") or re.sub(r"[^a-zA-Z0-9]", "", surname) + str(record.get("year") or "nd") + str(i)
+        fields = {"title": record.get("title"), "author": " and ".join(authors), "year": record.get("year"), "doi": record.get("doi"), "url": record.get("url"), "journal": record.get("journal"), "volume": record.get("volume"), "number": record.get("number"), "pages": record.get("pages")}
         entries.append("@article{" + key + ",\n" + ",\n".join(f"  {k} = {{{_bib_escape(v)}}}" for k, v in fields.items() if v) + "\n}")
     return "\n\n".join(entries)
 
 
 def _crossref(item):
     dates = item.get("published", item.get("issued", {})).get("date-parts", [[]])[0]
-    record = {"title": _clean((item.get("title") or ["Untitled"])[0]), "authors": [" ".join(filter(None, [a.get("given"), a.get("family")])) or a.get("name", "") for a in item.get("author", [])], "year": dates[0] if dates else None, "doi": item.get("DOI"), "arxiv_id": None, "url": item.get("URL"), "abstract": _clean(item.get("abstract")), "journal": (item.get("container-title") or [""])[0], "source": "crossref", "read_scope": "metadata", "links": item.get("link", []), "passages": [], "trusted_instructions": False}
+    record = {"title": _clean((item.get("title") or ["Untitled"])[0]), "authors": [" ".join(filter(None, [a.get("given"), a.get("family")])) or a.get("name", "") for a in item.get("author", [])], "year": dates[0] if dates else None, "doi": item.get("DOI"), "arxiv_id": None, "url": item.get("URL"), "abstract": _clean(item.get("abstract")), "journal": (item.get("container-title") or [""])[0], "volume": item.get("volume"), "number": item.get("issue"), "pages": item.get("page"), "publisher": item.get("publisher"), "source": "crossref", "read_scope": "metadata", "links": item.get("link", []), "passages": [], "trusted_instructions": False}
     if record["abstract"]:
         record["read_scope"] = "abstract"
         record["passages"] = [{"id": "abstract", "section": "Abstract", "page": None, "text": record["abstract"], "source_url": record["url"]}]

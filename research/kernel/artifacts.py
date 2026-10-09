@@ -45,6 +45,17 @@ class ArtifactResolver:
         source_branch = ref.get("branch_id", branch_id)
         result = {"reference": ref, "source_branch_id": source_branch, "imported": source_branch != branch_id,
                   "source": ref.get("source", "file"), "available": False}
+        if ref.get("kind") == "idea" and ref.get("id") and not ref.get("path"):
+            record = self.graph.get("_context_ideas", {}).get(ref["id"])
+            if record is None:
+                snapshot = ref.get("snapshot")
+                if isinstance(snapshot, dict):
+                    return {**result, "available": True, "record": snapshot,
+                            "stale": True, "source_deleted": True}
+                return {**result, "error": "missing_record", "message": "The referenced saved idea is no longer available."}
+            expected_revision = ref.get("revision")
+            return {**result, "available": True, "record": record,
+                    "stale": expected_revision is not None and expected_revision != record.get("revision")}
         node_id = ref.get("node_id")
         if node_id:
             node = next((n for n in self.graph.get("nodes", []) if n["id"] == node_id), None)

@@ -1,7 +1,10 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
+import { createFileSelectionGuard } from "./fileSelection";
+import { orderFileTreeEntries, visibleFileTreeEntries } from "./files/fileTree";
+import { updateDefaultProviderDraft } from "./settingsDraft";
 import { hostEditorConfig, hostPayload } from "./connectionPayload";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
   Plus,
@@ -84,6 +87,7 @@ function RecordEditor({
   item,
   projectId,
   initial = {},
+  preserveDraft = false,
   onClose,
   onSaved,
 }: {
@@ -91,15 +95,39 @@ function RecordEditor({
   item?: RecordItem;
   projectId: string;
   initial?: Json;
+  preserveDraft?: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const { t, action } = useUI();
-  const [title, setTitle] = useState(item?.title || "");
+  const draftKey = `forest:record-draft:${projectId}:${resource}:${item?.id || "new"}`;
+  const [savedDraft] = useState(() => {
+    if (!preserveDraft || typeof window === "undefined") return null;
+    try {
+      return JSON.parse(sessionStorage.getItem(draftKey) || "null");
+    } catch {
+      return null;
+    }
+  });
+  const [title, setTitle] = useState(item?.title ?? savedDraft?.title ?? "");
   const [data, setData] = useState(
-    JSON.stringify(item?.data || initial, null, 2),
+    savedDraft?.data ?? JSON.stringify(item?.data || initial, null, 2),
   );
   const [busy, setBusy] = useState(false);
+  const persistDraft = (nextTitle = title, nextData = data) => {
+    if (!preserveDraft) return;
+    try {
+      sessionStorage.setItem(
+        draftKey,
+        JSON.stringify({ title: nextTitle, data: nextData }),
+      );
+    } catch {
+      // Keep editing available when browser storage is disabled or full.
+    }
+  };
+  useEffect(() => {
+    persistDraft();
+  }, [data, draftKey, preserveDraft, title]);
   return (
     <Modal
       wide
@@ -120,12 +148,20 @@ function RecordEditor({
                 project_id: projectId,
                 title,
                 data: parseJson(data),
+                ...(resource === "library" ? { replace_data: true } : {}),
                 ...(item ? { expected_revision: item.revision } : {}),
               },
             ),
           );
           setBusy(false);
           if (result) {
+            if (preserveDraft) {
+              try {
+                sessionStorage.removeItem(draftKey);
+              } catch {
+                // Saving still succeeds if browser storage is unavailable.
+              }
+            }
             onSaved();
             onClose();
           }
@@ -136,7 +172,10 @@ function RecordEditor({
             autoFocus
             required
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              persistDraft(e.target.value, data);
+            }}
           />
         </Field>
         <Field label={t("研究内容与配置", "Research content & configuration")}>
@@ -144,7 +183,10 @@ function RecordEditor({
             className="code-input"
             rows={17}
             value={data}
-            onChange={(e) => setData(e.target.value)}
+            onChange={(e) => {
+              setData(e.target.value);
+              persistDraft(title, e.target.value);
+            }}
           />
         </Field>
         <div className="modal-actions">
@@ -671,7 +713,11 @@ export function ResearchPage({ resource }: { resource: string }) {
         <Loading />
       ) : records.length ? (
         <div className="idea-grid">
-          {records.map((r) => (
+          {records.map((r) => {
+            const meaningfulRange = r.data.base_case?.probability_meaningful_improvement;
+            const hasMeaningfulRange = Array.isArray(meaningfulRange) && meaningfulRange.length === 2;
+            const probabilityRange = hasMeaningfulRange ? meaningfulRange : r.data.probability_range;
+            return (
             <article key={r.id} className="surface idea-card">
               <div className="section-toolbar">
                 <Badge status={r.status} />
@@ -696,15 +742,35 @@ export function ResearchPage({ resource }: { resource: string }) {
                     </div>
                   ),
               )}
-              {r.data.probability_range && (
+              {probabilityRange && (
                 <div className="estimate">
                   <span>
                     {t(
-                      "有意义改进的估计概率",
-                      "Estimated probability of meaningful improvement",
+                      hasMeaningfulRange ? "有意义改进的估计概率" : "估计概率范围（结果未分类）",
+                      hasMeaningfulRange ? "Estimated probability of meaningful improvement" : "Estimated probability range (outcome unspecified)",
                     )}
                   </span>
-                  <strong>{String(r.data.probability_range)}</strong>
+                  <strong>{String(probabilityRange)}</strong>
+                </div>
+              )}
+              {Array.isArray(r.data.supporting_source_titles) && (
+                <div className="idea-field">
+                  <span>{t("模型选出的相关来源（引用前请核实）", "Model-selected supporting or motivating sources (verify before citing)")}</span>
+                  {r.data.supporting_source_titles.length ? (
+                    <ul>{r.data.supporting_source_titles.map((title: string, index: number) => <li key={`${title}:${index}`}>{title}</li>)}</ul>
+                  ) : <p>{t("没有检索来源被选为此方向的直接依据。", "No retrieved source was selected as direct support for this direction.")}</p>}
+                </div>
+              )}
+              {Array.isArray(r.data.background_source_titles) && r.data.background_source_titles.length > 0 && (
+                <div className="idea-field">
+                  <span>{t("检索背景（不作为此方向的直接依据）", "Retrieved background (not direct support for this direction)")}</span>
+                  <ul>{r.data.background_source_titles.map((title: string, index: number) => <li key={`${title}:${index}`}>{title}</li>)}</ul>
+                </div>
+              )}
+              {!Array.isArray(r.data.supporting_source_titles) && Array.isArray(r.data.source_titles) && r.data.source_titles.length > 0 && (
+                <div className="idea-field">
+                  <span>{t("旧记录的检索来源池（未归属到此方向）", "Retrieved source pool in this older record (not attributed to this direction)")}</span>
+                  <ul>{r.data.source_titles.map((title: string, index: number) => <li key={`${title}:${index}`}>{title}</li>)}</ul>
                 </div>
               )}
               {Array.isArray(r.data.commands) && (
@@ -739,16 +805,19 @@ export function ResearchPage({ resource }: { resource: string }) {
                 </Button>
               </div>
             </article>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <Empty title={t("暂无想法", "No ideas")} />
       )}{" "}
       {editing !== false && (
         <RecordEditor
+          key={editing === null ? "new" : editing.id}
           resource={resource}
           item={editing || undefined}
           projectId={id!}
+          preserveDraft
           initial={{
             hypothesis: "",
             mechanism: "",
@@ -932,22 +1001,44 @@ function ExperimentForm({
   item?: RecordItem;
 }) {
   const { t, action } = useUI();
-  const [title, setTitle] = useState(item?.title || "");
-  const [command, setCommand] = useState(item?.data.command || "");
-  const [code, setCode] = useState(item?.data.code || "");
-  const [dataset, setDataset] = useState(item?.data.dataset || "");
-  const [seeds, setSeeds] = useState((item?.data.seeds || [0, 1, 2]).join(","));
+  const draftKey = `forest:experiment-draft:${projectId}:${item?.id || "new"}`;
+  const [savedDraft] = useState(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return JSON.parse(sessionStorage.getItem(draftKey) || "null");
+    } catch {
+      return null;
+    }
+  });
+  const [title, setTitle] = useState(savedDraft?.title ?? item?.title ?? "");
+  const [command, setCommand] = useState(savedDraft?.command ?? item?.data.command ?? "");
+  const [code, setCode] = useState(savedDraft?.code ?? item?.data.code ?? "");
+  const [dataset, setDataset] = useState(savedDraft?.dataset ?? item?.data.dataset ?? "");
+  const [seeds, setSeeds] = useState<string>(
+    savedDraft?.seeds ?? (item?.data.seeds || [0, 1, 2]).join(","),
+  );
   const [params, setParams] = useState(
-    JSON.stringify(item?.data.parameters || {}, null, 2),
+    savedDraft?.params ?? JSON.stringify(item?.data.parameters || {}, null, 2),
   );
   const [seconds, setSeconds] = useState(
-    String(item?.data.timeout ?? item?.data.budget?.seconds ?? ""),
+    String(savedDraft?.seconds ?? item?.data.timeout ?? item?.data.budget?.seconds ?? ""),
   );
-  const [duty, setDuty] = useState(item?.data.duty || "effectiveness");
+  const [duty, setDuty] = useState(savedDraft?.duty ?? item?.data.duty ?? "effectiveness");
   const [executionConfig, setExecutionConfig] = useState<Json>(
-    item?.data || {},
+    savedDraft?.executionConfig ?? item?.data ?? {},
   );
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      sessionStorage.setItem(
+        draftKey,
+        JSON.stringify({ title, command, code, dataset, seeds, params, seconds, duty, executionConfig }),
+      );
+    } catch {
+      // Keep editing available when browser storage is disabled or full.
+    }
+  }, [command, code, dataset, draftKey, duty, executionConfig, params, seconds, seeds, title]);
   return (
     <Modal
       wide
@@ -958,6 +1049,11 @@ function ExperimentForm({
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
+          const parsedSeeds = seeds
+            .split(",")
+            .map((seed) => seed.trim())
+            .filter(Boolean)
+            .map(Number);
           const r = await action(() =>
             api(
               item ? `/experiments/${item.id}` : "/experiments",
@@ -971,7 +1067,7 @@ function ExperimentForm({
                   command,
                   code,
                   dataset,
-                  seeds: seeds.split(",").map(Number),
+                  seeds: parsedSeeds,
                   parameters: parseJson(params),
                   budget: seconds.trim() ? { seconds: Number(seconds) } : {},
                   timeout: seconds.trim() ? Number(seconds) : null,
@@ -983,6 +1079,11 @@ function ExperimentForm({
           );
           setBusy(false);
           if (r) {
+            try {
+              sessionStorage.removeItem(draftKey);
+            } catch {
+              // Saving still succeeds if browser storage is unavailable.
+            }
             onSaved();
             onClose();
           }
@@ -1280,6 +1381,7 @@ export function ExperimentsPage() {
       )}
       {editing !== false && (
         <ExperimentForm
+          key={editing === null ? "new" : editing.id}
           projectId={id!}
           item={editing || undefined}
           onClose={() => setEditing(false)}
@@ -2083,13 +2185,33 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
   );
   const [layoutDirty, setLayoutDirty] = useState(false);
   const [layoutRun, setLayoutRun] = useState<string | null>(null);
+  const draftKey = `forest-paper-draft:${id}`;
   useEffect(() => {
-    if (paper && !dirty) {
-      setSource(paper.data.source || "");
-      setBibtex(paper.data.bibtex || "");
-      setEditingRevision(paper.revision);
+    if (!paper) return;
+    try {
+      const stored = sessionStorage.getItem(draftKey);
+      if (stored) {
+        const draft = JSON.parse(stored);
+        if (
+          typeof draft.source === "string" &&
+          typeof draft.bibtex === "string" &&
+          typeof draft.revision === "number"
+        ) {
+          setSource(draft.source);
+          setBibtex(draft.bibtex);
+          setEditingRevision(draft.revision);
+          setDirty(true);
+          return;
+        }
+      }
+    } catch {
+      // Ignore an unreadable browser draft and load the saved paper instead.
     }
-  }, [paper, dirty]);
+    setSource(paper.data.source || "");
+    setBibtex(paper.data.bibtex || "");
+    setEditingRevision(paper.revision);
+    setDirty(false);
+  }, [paper, draftKey]);
   useEffect(() => {
     if (!paper) return;
     const currentLayout = paperLayoutDefaults(paper.data);
@@ -2115,6 +2237,11 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
       expected_revision: editingRevision,
       data: { source, bibtex },
     });
+    try {
+      sessionStorage.removeItem(draftKey);
+    } catch {
+      // Saving the paper must still succeed if browser storage is unavailable.
+    }
     setEditingRevision(saved.revision);
     setDirty(false);
     await reload();
@@ -2200,7 +2327,12 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
             action(() =>
               download(
                 `/papers/${id}/export`,
-                { request_id: uid() },
+                {
+                  request_id: uid(),
+                  expected_revision: editingRevision,
+                  source,
+                  bibtex,
+                },
                 "paper-source.zip",
               ),
             )
@@ -2274,6 +2406,14 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
               onChange={(v) => {
                 setSource(v);
                 setDirty(true);
+                try {
+                  sessionStorage.setItem(
+                    draftKey,
+                    JSON.stringify({ source: v, bibtex, revision: editingRevision }),
+                  );
+                } catch {
+                  // Keep editing even when the browser cannot persist a draft.
+                }
               }}
             />
           ) : tab === "bibtex" ? (
@@ -2283,6 +2423,14 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
               onChange={(v) => {
                 setBibtex(v);
                 setDirty(true);
+                try {
+                  sessionStorage.setItem(
+                    draftKey,
+                    JSON.stringify({ source, bibtex: v, revision: editingRevision }),
+                  );
+                } catch {
+                  // Keep editing even when the browser cannot persist a draft.
+                }
               }}
             />
           ) : (
@@ -2656,6 +2804,11 @@ export function FilesPage() {
     await reloadFirstPage();
   };
   useEffect(() => {
+    const refreshFiles = () => void reload();
+    window.addEventListener("forest-refresh", refreshFiles);
+    return () => window.removeEventListener("forest-refresh", refreshFiles);
+  }, [reload]);
+  useEffect(() => {
     pageRequestGeneration.current += 1;
     setPageData(null);
     setPageCursor(null);
@@ -2699,7 +2852,15 @@ export function FilesPage() {
   const [content, setContent] = useState("");
   const [original, setOriginal] = useState("");
   const [revision, setRevision] = useState<number | undefined>();
+  const [loadedPath, setLoadedPath] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const fileSelection = useRef(createFileSelectionGuard()).current;
+  const fileReadGeneration = useRef(0);
+  const draftVersion = useRef(0);
   const [filter, setFilter] = useState("");
+  const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [newFile, setNewFile] = useState(false);
   const [newPath, setNewPath] = useState("");
   const [diff, setDiff] = useState(false);
@@ -2710,6 +2871,41 @@ export function FilesPage() {
     | { kind: "missing"; path: string }
     | null
   >(null);
+  const fileDraftKey = (relativePath: string) => `forest-file-draft:${id}:${relativePath}`;
+  const loadTextFile = async (
+    relativePath: string,
+    isStale?: () => boolean,
+  ) => {
+    const saved = await api(`/projects/${id}/file?path=${encodeURIComponent(relativePath)}`);
+    if (isStale?.()) return;
+    const key = fileDraftKey(relativePath);
+    let draft: Json | null = null;
+    try {
+      draft = JSON.parse(sessionStorage.getItem(key) || "null");
+    } catch {
+      sessionStorage.removeItem(key);
+    }
+    if (isStale?.()) return;
+    if (draft && typeof draft.content === "string" && draft.content !== draft.original) {
+      setContent(draft.content);
+      setOriginal(typeof draft.original === "string" ? draft.original : saved.content);
+      setRevision(typeof draft.revision === "number" ? draft.revision : saved.revision);
+      setDirty(true);
+      return;
+    }
+    sessionStorage.removeItem(key);
+    setContent(saved.content);
+    setOriginal(saved.content);
+    setRevision(saved.revision);
+    setDirty(false);
+  };
+  const changeContent = (value: string) => {
+    setContent(value);
+    setDirty(value !== original);
+    const key = fileDraftKey(path);
+    if (value === original) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, JSON.stringify({ content: value, original, revision }));
+  };
   const extension = path.split(".").pop()?.toLowerCase();
   const image = ["png", "jpg", "jpeg", "svg", "webp", "gif"].includes(
     extension || "",
@@ -2717,54 +2913,103 @@ export function FilesPage() {
   const binary = ["parquet", "zip", "pkl", "npy", "npz"].includes(
     extension || "",
   );
+  const orderedFiles = useMemo(
+    () =>
+      orderFileTreeEntries(
+        filePage.files as Array<Json & { path: string; is_dir?: boolean; size: number }>,
+      ),
+    [filePage.files],
+  );
+  const visibleFiles = visibleFileTreeEntries(
+    orderedFiles,
+    filter,
+    collapsedDirectories,
+  );
   const url = `/api/projects/${id}/download?path=${encodeURIComponent(path)}`;
   const open = async (p: string) => {
     if (dirty && !confirm(t("放弃未保存修改？", "Discard unsaved changes?")))
       return;
+    if (dirty && path) sessionStorage.removeItem(fileDraftKey(path));
+    const selection = fileSelection.select(p);
+    fileReadGeneration.current += 1;
     setPath(p);
     setDiff(false);
     setTablePreview(false);
     setDirty(false);
+    setLoadedPath("");
+    setLoadError("");
+    setContent("");
+    setOriginal("");
+    setRevision(undefined);
     if (/\.(csv|tsv)$/i.test(p)) {
       setTablePreview(true);
-      setContent("");
-      setOriginal("");
-      setRevision(undefined);
+      setLoadedPath(p);
       return;
     }
     if (!/\.(pdf|png|jpe?g|svg|webp|gif|parquet|zip|pkl|npy|npz)$/i.test(p)) {
-      const r = await api(`/projects/${id}/file?path=${encodeURIComponent(p)}`);
-      setContent(r.content);
-      setOriginal(r.content);
-      setRevision(r.revision);
+      try {
+        await loadTextFile(p, () => !fileSelection.isCurrent(selection));
+        if (!fileSelection.isCurrent(selection)) return;
+        setLoadedPath(p);
+      } catch (error) {
+        if (!fileSelection.isCurrent(selection)) return;
+        setLoadError((error as Error).message);
+        throw error;
+      }
+    } else {
+      setLoadedPath(p);
     }
   };
   const save = async (force = false) => {
+    const selection = fileSelection.current();
+    const targetPath = path;
+    const savedContent = content;
+    const savedRevision = revision;
+    const savedDraftVersion = draftVersion.current;
+    if (
+      !targetPath ||
+      selection.path !== targetPath ||
+      loadedPath !== targetPath ||
+      savedRevision === undefined
+    ) {
+      throw new Error("Wait for the selected file to finish loading before saving.");
+    }
     try {
       const r = await api(
-        `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+        `/projects/${id}/file?path=${encodeURIComponent(targetPath)}`,
         "PUT",
-        { path, content, ...(force ? {} : { expected_revision: revision }) },
+        {
+          path: targetPath,
+          content: savedContent,
+          ...(force ? {} : { expected_revision: savedRevision }),
+        },
       );
+      if (!fileSelection.isCurrent(selection)) {
+        await reload();
+        return;
+      }
       setRevision(r.revision);
-      setOriginal(content);
-      setDirty(false);
+      setOriginal(savedContent);
+      setDirty(draftVersion.current !== savedDraftVersion);
       setConflict(null);
+      sessionStorage.removeItem(fileDraftKey(path));
       await reload();
     } catch (e) {
       if ((e as any).status === 409) {
         try {
           const latest = await api(
-            `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+            `/projects/${id}/file?path=${encodeURIComponent(targetPath)}`,
           );
+          if (!fileSelection.isCurrent(selection)) return;
           setConflict({
             kind: "changed",
             content: latest.content,
             revision: latest.revision,
           });
         } catch (readError) {
+          if (!fileSelection.isCurrent(selection)) return;
           if ((readError as any).status !== 404) throw readError;
-          setConflict({ kind: "missing", path });
+          setConflict({ kind: "missing", path: targetPath });
         }
         return;
       }
@@ -2775,7 +3020,9 @@ export function FilesPage() {
     const selected = [...files].map((file) => {
       const relativePath = file.webkitRelativePath || file.name;
       const parts = relativePath.split("/");
-      const safeParts = parts.every((part) => part && part !== "." && part !== "..");
+      const safeParts = parts.every(
+        (part) => part && part !== "." && part !== "..",
+      );
       const path = `uploads/${safeParts ? relativePath : file.name}`;
       return {
         file,
@@ -2804,7 +3051,8 @@ export function FilesPage() {
     const seen = new Set<string>();
     const conflicts = new Set<string>();
     for (const item of selected) {
-      if (existing.has(item.path) || seen.has(item.path)) conflicts.add(item.path);
+      if (existing.has(item.path) || seen.has(item.path))
+        conflicts.add(item.path);
       seen.add(item.path);
     }
     if (conflicts.size) {
@@ -2821,15 +3069,30 @@ export function FilesPage() {
       )
         return;
     }
+    const uploaded: string[] = [];
     for (const item of selected) {
       const body = new FormData();
       body.append("file", item.file);
       const overwrite = conflicts.has(item.path);
-      await api(
-        `/projects/${id}/upload?directory=${encodeURIComponent(item.directory)}&overwrite=${overwrite}`,
-        "POST",
-        body,
-      );
+      try {
+        await api(
+          `/projects/${id}/upload?directory=${encodeURIComponent(item.directory)}&overwrite=${overwrite}`,
+          "POST",
+          body,
+        );
+        uploaded.push(item.path);
+      } catch (error) {
+        await reload();
+        if (!uploaded.length) throw error;
+        const names = uploaded.slice(0, 5).join(", ");
+        const more = uploaded.length > 5 ? ` (+${uploaded.length - 5})` : "";
+        throw new Error(
+          t(
+            `已上传 ${uploaded.length} 个文件（${names}${more}）；${item.path} 上传失败。文件列表已刷新。`,
+            `Uploaded ${uploaded.length} file(s) (${names}${more}); ${item.path} failed. The file list has been refreshed.`,
+          ),
+        );
+      }
     }
     await reload();
   };
@@ -2879,30 +3142,39 @@ export function FilesPage() {
             />
           </label>
           <div className="file-tree-list">
-            {filePage.files
-              .filter((f) =>
-                f.path.toLowerCase().includes(filter.toLowerCase()),
-              )
-              .map((f) => (
-                <button
-                  key={f.path}
-                  className={path === f.path ? "active" : ""}
-                  onClick={() => {
-                    if (!f.is_dir) void action(() => open(f.path));
-                  }}
-                  title={f.path}
-                >
-                  {f.is_dir ? <Folder size={15} /> : <File size={14} />}
-                  <span>{f.path}</span>
-                  <small>
-                    {f.is_dir
-                      ? ""
-                      : f.size < 1024
-                        ? `${f.size} B`
-                        : `${(f.size / 1024).toFixed(1)} K`}
-                  </small>
-                </button>
-              ))}
+            {visibleFiles.map((f) => (
+              <button
+                key={f.path}
+                className={`${path === f.path ? "active" : ""}${f.is_dir ? " directory" : ""}`}
+                aria-expanded={
+                  f.is_dir ? !collapsedDirectories.has(f.path) : undefined
+                }
+                style={{
+                  paddingLeft: `${15 + (f.path.split("/").length - 1) * 14}px`,
+                }}
+                onClick={() => {
+                  if (f.is_dir) {
+                    setCollapsedDirectories((current) => {
+                      const next = new Set(current);
+                      if (next.has(f.path)) next.delete(f.path);
+                      else next.add(f.path);
+                      return next;
+                    });
+                  } else void action(() => open(f.path));
+                }}
+                title={f.path}
+              >
+                {f.is_dir ? <Folder size={15} /> : <File size={14} />}
+                <span>{f.path}</span>
+                <small>
+                  {f.is_dir
+                    ? ""
+                    : f.size < 1024
+                      ? `${f.size} B`
+                      : `${(f.size / 1024).toFixed(1)} K`}
+                </small>
+              </button>
+            ))}
           </div>
           {!filePage.files.length && <Empty title={t("暂无文件", "No files")} />}
           {(cursorHistory.length > 0 || filePage.has_more) && (
@@ -2952,13 +3224,32 @@ export function FilesPage() {
                           setTablePreview(false);
                         } else {
                           void action(async () => {
-                            const result = await api(
-                              `/projects/${id}/file?path=${encodeURIComponent(path)}`,
-                            );
-                            setContent(result.content);
-                            setOriginal(result.content);
-                            setRevision(result.revision);
-                            setTablePreview(false);
+                            const selection = fileSelection.current();
+                            const readGeneration = ++fileReadGeneration.current;
+                            setLoadedPath("");
+                            setLoadError("");
+                            try {
+                              await loadTextFile(
+                                path,
+                                () =>
+                                  !fileSelection.isCurrent(selection) ||
+                                  fileReadGeneration.current !== readGeneration,
+                              );
+                              if (
+                                !fileSelection.isCurrent(selection) ||
+                                fileReadGeneration.current !== readGeneration
+                              )
+                                return;
+                              setLoadedPath(path);
+                              setTablePreview(false);
+                            } catch (error) {
+                              if (
+                                fileSelection.isCurrent(selection) &&
+                                fileReadGeneration.current === readGeneration
+                              )
+                                setLoadError((error as Error).message);
+                              throw error;
+                            }
                           });
                         }
                       } else setTablePreview(true);
@@ -2975,7 +3266,10 @@ export function FilesPage() {
                     >
                       <GitCompare size={15} />
                     </IconButton>
-                    <Button onClick={() => action(() => save())}>
+                    <Button
+                      disabled={loadedPath !== path || revision === undefined}
+                      onClick={() => action(() => save())}
+                    >
                       <Save size={14} />
                       {t("保存", "Save")}
                     </Button>
@@ -2997,16 +3291,26 @@ export function FilesPage() {
                 </IconButton>
                 <IconButton
                   label={t("重命名", "Rename")}
+                  disabled={loadedPath !== path}
                   onClick={() => {
                     const next = prompt(t("新文件路径", "New file path"), path);
                     if (next && next !== path)
                       void action(async () => {
-                        const renamed = await api(`/projects/${id}/file/rename`, "POST", {
-                          path,
-                          new_path: next,
-                        });
+                        const selection = fileSelection.current();
+                        const targetPath = path;
+                        const renamed = await api(
+                          `/projects/${id}/file/rename`,
+                          "POST",
+                          { path: targetPath, new_path: next },
+                        );
+                        if (!fileSelection.isCurrent(selection)) {
+                          await reload();
+                          return;
+                        }
+                        fileSelection.select(next);
                         setPath(next);
                         setRevision(renamed.revision);
+                        setLoadedPath(next);
                         await reload();
                       });
                   }}
@@ -3018,11 +3322,23 @@ export function FilesPage() {
                   onClick={() => {
                     if (confirm(t(`删除 ${path}？`, `Delete ${path}?`)))
                       void action(async () => {
+                        const selection = fileSelection.current();
+                        const targetPath = path;
                         await api(
-                          `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+                          `/projects/${id}/file?path=${encodeURIComponent(targetPath)}`,
                           "DELETE",
                         );
+                        if (!fileSelection.isCurrent(selection)) {
+                          await reload();
+                          return;
+                        }
+                        fileSelection.select("");
                         setPath("");
+                        setContent("");
+                        setOriginal("");
+                        setRevision(undefined);
+                        setLoadedPath("");
+                        setDirty(false);
                         await reload();
                       });
                   }}
@@ -3030,7 +3346,16 @@ export function FilesPage() {
                   <Trash2 size={15} />
                 </IconButton>
               </div>
-              {extension === "pdf" ? (
+              {loadedPath !== path ? (
+                loadError ? (
+                  <ErrorBox
+                    error={loadError}
+                    retry={() => void action(() => open(path))}
+                  />
+                ) : (
+                  <p role="status">{t("正在加载文件…", "Loading file…")}</p>
+                )
+              ) : extension === "pdf" ? (
                 <PDFViewer url={url} />
               ) : image ? (
                 <div className="file-image">
@@ -3068,8 +3393,8 @@ export function FilesPage() {
                     <CodeEditor
                       value={content}
                       onChange={(v) => {
-                        setContent(v);
-                        setDirty(true);
+                        draftVersion.current += 1;
+                        changeContent(v);
                       }}
                       language={extension}
                     />
@@ -3079,8 +3404,8 @@ export function FilesPage() {
                 <CodeEditor
                   value={content}
                   onChange={(v) => {
-                    setContent(v);
-                    setDirty(true);
+                    draftVersion.current += 1;
+                    changeContent(v);
                   }}
                   language={
                     extension === "py"
@@ -3116,7 +3441,7 @@ export function FilesPage() {
                 await api(
                   `/projects/${id}/file?path=${encodeURIComponent(newPath)}`,
                   "PUT",
-                  { path: newPath, content: "" },
+                  { path: newPath, content: "", create_only: true },
                 );
                 await reload();
                 await open(newPath);
@@ -3193,16 +3518,25 @@ export function FilesPage() {
                 );
                 if (next)
                   void action(async () => {
+                    const selection = fileSelection.current();
+                    const savedContent = content;
+                    const savedDraftVersion = draftVersion.current;
                     const saved = await api(
                       `/projects/${id}/file?path=${encodeURIComponent(next)}`,
                       "PUT",
-                      { path: next, content },
+                      { path: next, content: savedContent },
                     );
+                    if (!fileSelection.isCurrent(selection)) {
+                      await reload();
+                      return;
+                    }
+                    fileSelection.select(next);
                     setConflict(null);
                     setPath(next);
                     setRevision(saved.revision);
-                    setOriginal(content);
-                    setDirty(false);
+                    setOriginal(savedContent);
+                    setLoadedPath(next);
+                    setDirty(draftVersion.current !== savedDraftVersion);
                     await reload();
                   });
               }}
@@ -3239,6 +3573,8 @@ export function SettingsPage() {
     null,
   );
   const [test, setTest] = useState<Json | null>(null);
+  const [retiring, setRetiring] = useState<{ provider: Json; references: Json[]; historical_request_count: number } | null>(null);
+  const [replacementProviderId, setReplacementProviderId] = useState("");
   const [settingsText, setSettingsText] = useState("{}");
   useEffect(
     () => setSettingsText(JSON.stringify(settings, null, 2)),
@@ -3249,6 +3585,7 @@ export function SettingsPage() {
     void reloadHosts();
     void reloadAgents();
     void reloadSystem();
+    void reloadSettings();
   };
   return (
     <>
@@ -3327,16 +3664,16 @@ export function SettingsPage() {
                     <code>{item.base_url || item.address || item.role}</code>
                   </div>
                   <Badge status={item.status || "idle"} />
-                  {tab === "providers" && item.kind !== "ollama" && (
+                  {tab === "providers" && item.kind !== "ollama" && item.status !== "retired" && (
                     <ProviderUsage providerId={item.id} />
                   )}
-                  <IconButton
+                  {!(tab === "providers" && item.status === "retired") && <IconButton
                     label={t("编辑连接", "Edit connection")}
                     onClick={() => setModal({ resource: tab, item })}
                   >
                     <Pencil size={15} />
-                  </IconButton>
-                  {tab !== "agents" && (
+                  </IconButton>}
+                  {tab !== "agents" && !(tab === "providers" && item.status === "retired") && (
                     <Button
                       onClick={() =>
                         action(async () => {
@@ -3351,19 +3688,37 @@ export function SettingsPage() {
                       {t("测试连接", "Test connection")}
                     </Button>
                   )}
-                  {tab === "providers" && (
+                  {tab === "providers" && item.status !== "retired" && (
                     <Button
                       onClick={() =>
                         action(
-                          () =>
-                            api("/settings", "PATCH", {
+                          async () => {
+                            await api("/settings", "PATCH", {
                               default_provider_id: item.id,
-                            }),
+                            });
+                            setSettingsText((current) =>
+                              updateDefaultProviderDraft(current, item.id),
+                            );
+                          },
                           "Default model updated",
                         )
                       }
                     >
                       Use for new projects
+                    </Button>
+                  )}
+                  {tab === "providers" && item.status !== "retired" && (
+                    <Button onClick={() => action(async () => {
+                      const result = await api<Json>(`/providers/${item.id}/references`);
+                      setReplacementProviderId("");
+                      setRetiring({ provider: item, references: result.references || [], historical_request_count: result.historical_request_count || 0 });
+                    })}>
+                      {t("退役", "Retire")}
+                    </Button>
+                  )}
+                  {tab === "providers" && item.status === "retired" && (
+                    <Button onClick={() => action(async () => { await api(`/providers/${item.id}/restore`, "POST", {}); reload(); }, t("提供方已恢复；请重新配置凭据。", "Provider restored; configure credentials again."))}>
+                      {t("恢复", "Restore")}
                     </Button>
                   )}
                 </section>
@@ -3419,6 +3774,7 @@ export function SettingsPage() {
                   async () => {
                     await api("/settings", "PATCH", parseJson(settingsText));
                     await reloadSettings();
+                    window.dispatchEvent(new Event("forest-settings-changed"));
                   },
                   t("设置已保存", "Settings saved"),
                 )
@@ -3460,6 +3816,26 @@ export function SettingsPage() {
           onSaved={reload}
         />
       )}{" "}
+      {retiring && (
+        <Modal title={t("退役模型提供方", "Retire model provider")} onClose={() => setRetiring(null)}>
+          <p>{t("退役会停止新请求使用此提供方，清除其保存的凭据，并保留历史请求记录。", "Retiring stops new requests from using this provider, removes its stored credential, and preserves request history.")}</p>
+          <p><strong>{retiring.provider.name}</strong> · {retiring.references.length} {t("处当前引用", "current references")} · {retiring.historical_request_count} {t("条历史请求", "historical requests")}</p>
+          {retiring.references.length > 0 && <ul>{retiring.references.map((ref) => <li key={`${ref.kind}:${ref.id}`}>{ref.name} — {ref.location}</li>)}</ul>}
+          <Field label={t("如何处理当前引用", "Handle current references")}>
+            <select value={replacementProviderId} onChange={(event) => setReplacementProviderId(event.target.value)}>
+              <option value="">{t("清除这些引用", "Clear these references")}</option>
+              {providers.filter((provider) => provider.id !== retiring.provider.id && provider.status !== "retired").map((provider) => <option key={provider.id} value={provider.id}>{provider.name} · {provider.model}</option>)}
+            </select>
+          </Field>
+          <div className="modal-actions">
+            <Button onClick={() => setRetiring(null)}>{t("取消", "Cancel")}</Button>
+            <Button className="primary" onClick={() => action(async () => {
+              await api(`/providers/${retiring.provider.id}/retire`, "POST", { replacement_provider_id: replacementProviderId || null });
+              setRetiring(null); reload();
+            }, t("提供方已退役", "Provider retired"))}>{t("确认退役", "Confirm retirement")}</Button>
+          </div>
+        </Modal>
+      )}
       {test && (
         <Modal
           title={t("实际连接测试结果", "Connection test result")}

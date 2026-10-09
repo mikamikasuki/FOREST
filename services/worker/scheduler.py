@@ -357,8 +357,9 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
         preference=s.get(Preference,'settings')
         provider_id=preference.value.get('default_provider_id') if preference else None
         provider_origin='global' if provider_id else 'first_available'
-    provider = s.get(Provider, provider_id) if provider_id else s.scalar(select(Provider).order_by(Provider.created_at))
+    provider = s.get(Provider, provider_id) if provider_id else s.scalar(select(Provider).where(Provider.status!='retired').order_by(Provider.created_at))
     if provider_id and not provider: error('PROVIDER_NOT_FOUND','Selected model provider no longer exists',422)
+    if provider and provider.status=='retired': error('PROVIDER_RETIRED','Selected model provider has been retired. Choose an active provider in settings.',422)
     if provider:
         if not (retry_snapshot and merged.get('provider_snapshot')):
             merged['provider_snapshot'] = asdict(provider, secrets=True)
@@ -438,6 +439,8 @@ def _validate_inputs(s, node, graph, selected):
                 error('INPUT_UNAVAILABLE', actual.get('message', 'A referenced input is unavailable or has changed'), 409,
                       'Restore the material, update its reference, or run the producing steps.')
         elif ref.get('kind') in ('idea', 'paper', 'dataset', 'run', 'figure', 'analysis') and ref.get('id'):
+            if ref.get('kind') == 'idea' and isinstance(ref.get('snapshot'),dict):
+                continue
             model = {'idea': Hypothesis, 'paper': SourcePaper, 'dataset': DatasetAsset, 'run': TaskRun, 'figure': Figure, 'analysis': Analysis}[ref['kind']]
             record = s.get(model, ref['id'])
             if record is None or record.project_id != node.project_id:

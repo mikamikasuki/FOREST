@@ -1680,9 +1680,12 @@ function NodeInspector({
   request: (op: string, targets?: string[], params?: Json) => Promise<any>;
 }) {
   const { t, action } = useUI();
+  const instructionDraftKey = `forest-node-instructions:${projectId}:${node.id}`;
   const [tab, setTab] = useState("instructions");
   const [title, setTitle] = useState(node.title);
-  const [instructions, setInstructions] = useState(node.instructions || "");
+  const [instructions, setInstructions] = useState(
+    () => sessionStorage.getItem(instructionDraftKey) ?? node.instructions ?? "",
+  );
   const [config, setConfig] = useState(
     JSON.stringify(node.config || {}, null, 2),
   );
@@ -1712,6 +1715,10 @@ function NodeInspector({
   const [conflict, setConflict] = useState(false);
   const [context, setContext] = useState<Json | null>(null);
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (sessionStorage.getItem(instructionDraftKey) === node.instructions)
+      sessionStorage.removeItem(instructionDraftKey);
+  }, [instructionDraftKey, node.instructions]);
   const related = runs.filter((r) => r.node_id === node.id);
   const save = async () => {
     if (JSON.stringify(editableNode(node)) !== JSON.stringify(base.content)) {
@@ -1737,7 +1744,8 @@ function NodeInspector({
         "Node saved; existing runs retain their starting configuration.",
       ),
     );
-    if (saved)
+    if (saved) {
+      sessionStorage.removeItem(instructionDraftKey);
       setBase({
         revision: saved.revision,
         content: editableNode(
@@ -1748,6 +1756,7 @@ function NodeInspector({
           saved.graph?.nodes?.find((n: ResearchNode) => n.id === node.id)
             ?.revision ?? node.revision,
       });
+    }
     setBusy(false);
   };
   return (
@@ -1777,8 +1786,9 @@ function NodeInspector({
           <div className="modal-actions">
             <Button
               onClick={() => {
-                setTitle(node.title);
-                setInstructions(node.instructions);
+              setTitle(node.title);
+              setInstructions(node.instructions);
+              sessionStorage.removeItem(instructionDraftKey);
                 setConfig(JSON.stringify(node.config, null, 2));
                 setInputs(JSON.stringify(node.inputs, null, 2));
                 setOverrides(JSON.stringify(node.context_overrides, null, 2));
@@ -1849,13 +1859,27 @@ function NodeInspector({
               <textarea
                 rows={9}
                 value={instructions}
-                onChange={(e) => setInstructions(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setInstructions(value);
+                  if (value === node.instructions)
+                    sessionStorage.removeItem(instructionDraftKey);
+                  else sessionStorage.setItem(instructionDraftKey, value);
+                }}
                 placeholder={t(
                   "清晰描述目标、方法和预期产物。",
                   "Describe the objective, method, and expected outputs.",
                 )}
               />
             </Field>
+            {instructions !== node.instructions && (
+              <small className="muted" role="status">
+                {t(
+                  "未保存的指令草稿会保留在此浏览器标签页中。",
+                  "Unsaved instruction drafts are kept in this browser tab.",
+                )}
+              </small>
+            )}
             <div className="inspector-meta">
               <span>{t("所属路线", "Branch")}</span>
               <strong>
@@ -1937,15 +1961,21 @@ function NodeInspector({
               </Button>
               <Button
                 onClick={() =>
-                  action(async () =>
-                    setContext(
-                      await api(
-                        `/nodes/${node.id}/context/rebuild`,
-                        "POST",
-                        {},
-                      ),
-                    ),
-                  )
+                  action(async () => {
+                    const rebuilt = await api(
+                      `/nodes/${node.id}/context/rebuild`,
+                      "POST",
+                      {
+                        ...parseJson(overrides),
+                        expected_revision: base.revision,
+                      },
+                    );
+                    setContext(rebuilt);
+                    setBase((current) => ({
+                      ...current,
+                      revision: rebuilt.graph_revision,
+                    }));
+                  })
                 }
               >
                 <RefreshCw size={13} />

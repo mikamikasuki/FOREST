@@ -1,5 +1,6 @@
 """Persistent research sessions and actual, separately supervised tool processes."""
 from __future__ import annotations
+import codecs
 from copy import deepcopy
 import hashlib
 import json
@@ -125,9 +126,17 @@ class ToolRuntime:
                 raise ValueError('offset must be nonnegative and limit between 1 and 1000000 bytes')
             with p.open('rb') as handle:
                 handle.seek(offset)
-                content = handle.read(limit)
-                next_offset = handle.tell()
-            return {'content': content.decode('utf-8', errors='replace'), 'path': args['path'], 'next_offset': next_offset, 'size_bytes': p.stat().st_size, 'exit_code': 0}
+                raw = handle.read(limit)
+            size_bytes = p.stat().st_size
+            decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+            content = decoder.decode(raw)
+            pending, _ = decoder.getstate()
+            next_offset = offset + len(raw)
+            if offset + len(raw) >= size_bytes:
+                content += decoder.decode(b'', final=True)
+            else:
+                next_offset -= len(pending)
+            return {'content': content, 'path': args['path'], 'next_offset': next_offset, 'size_bytes': size_bytes, 'exit_code': 0}
         if name == 'write_file':
             p = safe_path(self.workspace, args['path'])
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -603,6 +612,8 @@ def run_agent(run_id, workspace, config):
             from research.kernel import ContextBuilder
             context_overrides = dict(config.get('context_overrides') or {})
             context_overrides.setdefault('max_chars', context_packet_char_budget(config))
+            from services.api.common import attach_context_ideas
+            attach_context_ideas(s,p,graph,context_overrides)
             packet = ContextBuilder(graph, project_dir(p.id)).build(run.node_id, role, context_overrides)
         else:
             packet = {'goal': p.goal, 'instructions': config.get('instructions', config.get('prompt', ''))}
@@ -728,6 +739,8 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
                 fresh_graph = graph_from_db(s, p)
                 if current.node_id:
                     from research.kernel import ContextBuilder
+                    from services.api.common import attach_context_ideas
+                    attach_context_ideas(s,p,fresh_graph,context_overrides)
                     packet = ContextBuilder(fresh_graph, project_dir(p.id)).build(current.node_id, role, context_overrides)
                     # Ordinary node edits are next-run configuration. Explicit
                     # instruction interventions provide the live overlay below.
