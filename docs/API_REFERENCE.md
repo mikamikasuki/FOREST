@@ -728,7 +728,7 @@ Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND or MISSING_ARTIFACT; `
 
 #### `GET /api/projects/{ident}/files`
 
-List at most 10000 entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.
+List all eligible workspace entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
