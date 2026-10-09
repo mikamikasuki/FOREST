@@ -13,6 +13,7 @@ from pathlib import Path
 
 from research.agents.context_store import (ContextStore, pack_context, recover_context_rejection, message_chars,
                                           provider_working_preference, can_attempt_direct, original_task_brief)
+from research.agents.budget import BudgetExceeded
 from research.agents.processes import atomic_json
 from research.agents.provider import ProviderError
 from .loop import compact_planning_context
@@ -73,6 +74,9 @@ def context_model_json(client, messages, workspace, *, char_hint=48000, material
     directory.mkdir(parents=True)
     atomic_json(directory / 'original_messages.json', messages)
     direct_failure = None
+    managed_initial_requests = 0
+    managed_initial_responses = []
+    managed_initial_failures = []
     # Preserve the normal JSON-only request for already fitting documents.
     # Planning with omitted optional evidence keeps retrieval tools available.
     if not materials and can_attempt_direct(client,messages,int(char_hint or 48000)):
@@ -86,9 +90,99 @@ def context_model_json(client, messages, workspace, *, char_hint=48000, material
             direct_failure = error
         else:
             atomic_json(directory / 'direct_response.json', response)
-            response = {**response, 'model_requests': 1, 'context_session_path': str(directory),
-                        'context_delivery':'direct_full_originals','original_input_characters':message_chars(messages)}
-            return json.loads(response['text']) if parse_result else None, response
+            if not parse_result:
+                response = {**response, 'model_requests': 1, 'context_session_path': str(directory),
+                            'context_delivery':'direct_full_originals','original_input_characters':message_chars(messages)}
+                return None, response
+            repair_attempted = False
+            try:
+                proposal = json.loads(response['text'])
+                if not isinstance(proposal, dict):
+                    raise ValueError('The requested result must be a JSON object')
+            except (json.JSONDecodeError, TypeError, ValueError) as format_error:
+                repair_attempted = True
+                atomic_json(directory / 'direct_format_error.json', {
+                    'error': str(format_error), 'request_id': response.get('request_id'),
+                    'response_id': response.get('response_id'),
+                })
+                repair_messages = [*messages,
+                    {'role': 'assistant', 'content': response['text']},
+                    {'role': 'user', 'content': (
+                        'Your previous response was not a valid JSON object: ' + str(format_error) +
+                        '. Return one corrected JSON object that satisfies the original request. ' +
+                        'Preserve the full proposal and its meaning; output JSON only.'
+                    )},
+                ]
+                try:
+                    repaired = client.complete(repair_messages)
+                except BudgetExceeded as repair_error:
+                    atomic_json(directory / 'direct_repair_failure.json', {
+                        'error': str(repair_error),
+                        'code': getattr(repair_error, 'code', None),
+                        'request_id': getattr(repair_error, 'request_id', None),
+                    })
+                    raise
+                except ProviderError as repair_error:
+                    atomic_json(directory / 'direct_repair_failure.json', {
+                        'error': str(repair_error), 'code': repair_error.code,
+                        'request_id': repair_error.request_id,
+                        'ambiguous': repair_error.ambiguous, 'usage': repair_error.usage,
+                    })
+                    if repair_error.code == 'context_window_exceeded' and not repair_error.ambiguous:
+                        direct_failure = repair_error
+                        managed_initial_requests = 2
+                        managed_initial_responses = [
+                            {key: response.get(key) for key in ('usage', 'model', 'elapsed') if key in response},
+                            *([{'usage': repair_error.usage, 'model': repair_error.model, 'elapsed': 0}]
+                              if repair_error.usage else []),
+                        ]
+                        managed_initial_failures = [{
+                            'code': repair_error.code, 'request_id': repair_error.request_id,
+                            'usage': repair_error.usage, 'ambiguous': False,
+                        }]
+                    else:
+                        raise ValueError(
+                            f'Model returned invalid JSON and the single repair request failed; '
+                            f'original response and diagnostics are saved in {directory}'
+                        ) from repair_error
+                except Exception as repair_error:
+                    atomic_json(directory / 'direct_repair_failure.json', {
+                        'error': str(repair_error),
+                        'code': getattr(repair_error, 'code', None),
+                        'request_id': getattr(repair_error, 'request_id', None),
+                    })
+                    raise ValueError(
+                        f'Model returned invalid JSON and the single repair request failed; '
+                        f'original response and diagnostics are saved in {directory}'
+                    ) from repair_error
+                if direct_failure is None and repair_attempted:
+                    atomic_json(directory / 'direct_repair_response.json', repaired)
+                    try:
+                        proposal = json.loads(repaired['text'])
+                        if not isinstance(proposal, dict):
+                            raise ValueError('The repaired result must be a JSON object')
+                    except (json.JSONDecodeError, TypeError, ValueError) as repair_format_error:
+                        atomic_json(directory / 'direct_repair_failure.json', {
+                            'error': str(repair_format_error),
+                            'request_id': repaired.get('request_id'),
+                            'response_id': repaired.get('response_id'),
+                        })
+                        raise ValueError(
+                            f'Model returned invalid JSON twice; original and repaired responses '
+                            f'and diagnostics are saved in {directory}'
+                        ) from repair_format_error
+                    repaired = {**repaired,
+                        'usage': _usage_total([response, repaired]),
+                        'elapsed': sum(item.get('elapsed', 0) for item in (response, repaired)),
+                        'model_requests': 2, 'format_repair_attempts': 1,
+                        'context_session_path': str(directory),
+                        'context_delivery':'direct_full_originals',
+                        'original_input_characters':message_chars(messages)}
+                    return proposal, repaired
+            if direct_failure is None and not repair_attempted:
+                response = {**response, 'model_requests': 1, 'context_session_path': str(directory),
+                            'context_delivery':'direct_full_originals','original_input_characters':message_chars(messages)}
+                return proposal, response
     store = ContextStore(directory)
     pointers = {name: store.put('material:' + name, content, origin=name)
                 for name, content in (materials or {}).items()}
@@ -97,15 +191,16 @@ def context_model_json(client, messages, workspace, *, char_hint=48000, material
     if pointers:
         messages[1]['content'] += '\nFULL RETRIEVABLE ORIGINAL MATERIALS: ' + json.dumps(pointers, ensure_ascii=False)
     state = {'messages': messages,
-             'transcript': [], 'status': 'reading_context', 'responses': [],
+             'transcript': [], 'status': 'reading_context',
              'original_task_brief':task_brief,
-             'model_requests': 1 if direct_failure is not None else 0}
+             'model_requests': managed_initial_requests or (1 if direct_failure is not None else 0),
+             'responses': managed_initial_responses}
     if direct_failure is not None:
         state['context_management'] = {'input_characters': message_chars(messages)}
         recover_context_rejection(state, direct_failure)
-        state['failures'] = [{'code': direct_failure.code, 'request_id': direct_failure.request_id,
+        state['failures'] = managed_initial_failures or [{'code': direct_failure.code, 'request_id': direct_failure.request_id,
                              'usage': direct_failure.usage, 'ambiguous': False}]
-        if direct_failure.usage:
+        if direct_failure.usage and not managed_initial_failures:
             state['responses'].append({'usage': direct_failure.usage, 'model': direct_failure.model})
     native = bool(client.native_tools)
     latest_page = None
