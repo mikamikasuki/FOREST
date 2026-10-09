@@ -14,6 +14,13 @@ function FactRow({ fact }: { fact: Fact }) {
     <small>{fact.classification} · {fact.applicability} · {formatDate(fact.observed_at)}</small>
     {fact.sources.map((source, index) => <NavLink key={index} to={sourceLink(source)}>Inspect source</NavLink>)}</li>;
 }
+export function narrativeDraftAfterSettingsLoad(
+  incoming: SettingsView["settings"],
+  current: SettingsView["settings"] | null,
+  editing: boolean,
+) {
+  return editing && current ? current : incoming;
+}
 export function ProgressPanel({ projectId }: { projectId: string }) {
   const { t, action } = useUI();
   const { snapshot, error } = useProgress(projectId);
@@ -27,7 +34,11 @@ export function ProgressPanel({ projectId }: { projectId: string }) {
     const timer = setInterval(() => { void latest.reload(); }, 5000);
     return () => clearInterval(timer);
   }, [latest.reload]);
-  useEffect(() => { if (!editing) setDraft(settings.data?.settings || null); }, [settings.data, editing]);
+  useEffect(() => {
+    if (settings.data?.settings) {
+      setDraft((current) => narrativeDraftAfterSettingsLoad(settings.data!.settings, current, editing));
+    }
+  }, [settings.data, editing]);
   useEffect(() => { void settings.reload(); }, [latest.data?.id, latest.data?.status, settings.reload]);
   const sections = [["now", "现在", "Now"], ["attention", "需要处理", "Needs attention"], ["blocked", "受阻", "Blocked"],
     ["recent", "最近变化", "Recent changes"], ["next", "已排队工作", "Next planned work"], ["evidence", "证据与交付", "Evidence and delivery"]] as const;

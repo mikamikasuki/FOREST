@@ -9,6 +9,10 @@ ACTIVE = ('queued', 'running', 'pausing', 'paused', 'waiting_input', 'waiting', 
 TERMINAL = ('completed', 'failed', 'cancelled', 'interrupted', 'skipped')
 TIME_BUDGET_RESERVED_STATUSES = ('queued', 'running', 'pausing', 'paused', 'waiting', 'budget_exhausted')
 _TIMEOUT_UNSET = object()
+MODEL_BACKED_RUN_KINDS = frozenset({
+    'agent', 'research_plan', 'research_route_review', 'paper_generate',
+    'ideas', 'suggest_paths', 'figure_revise', 'paper_revise', 'review',
+})
 
 
 def _node_created_before_run(node, run):
@@ -320,9 +324,13 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     merged = {**config, 'timeout': timeout, 'project_goal': p.goal, 'allow_paid': bool(budget.get('allow_paid', False))}
     from services.interventions.applicability import goal_scope_snapshot
     merged['goal_scope'] = goal_scope_snapshot(s, p, node.id if node else None)
+    from research.agents.policy import publication_scope
     from research.publication.profile import publication_profile
     try:
-        merged['publication_profile'] = publication_profile({**p.config, **config})
+        if publication_scope(config.get('role', 'Researcher'), config, kind):
+            merged['publication_profile'] = publication_profile({**p.config, **config})
+        else:
+            merged.pop('publication_profile', None)
     except (ValueError, TypeError) as exc:
         error('INVALID_PUBLICATION_PROFILE', str(exc), 422)
     if kind == 'paper_generate':
@@ -340,6 +348,11 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     provider_origin=provider_origin or ('agent' if agent and agent.provider_id else 'project' if p.config.get('provider_id') else None)
     if retry_snapshot and merged.get('provider_snapshot'):
         provider_id=merged['provider_snapshot']['id'];provider_origin='historical_run'
+    if (p.config.get('provider_selection_required') and kind in MODEL_BACKED_RUN_KINDS
+            and not provider_id and not (retry_snapshot and merged.get('provider_snapshot'))):
+        error('PROVIDER_SELECTION_REQUIRED',
+              'The imported project’s selected provider is unavailable. Edit the project and choose a provider or explicitly use the workspace default.',
+              422,suggestion='Open the project editor and save a provider selection before starting this model-backed run.')
     if not provider_id:
         preference=s.get(Preference,'settings')
         provider_id=preference.value.get('default_provider_id') if preference else None
