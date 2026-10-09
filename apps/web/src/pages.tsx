@@ -1278,7 +1278,13 @@ export function DataPage() {
       ),
     ),
   ];
-  const visible = runs.filter((r) => status === "all" || r.status === status);
+  const visible = runs.filter(
+    (r) =>
+      status === "all" ||
+      (status === "succeeded"
+        ? r.status === "completed" || r.status === "succeeded"
+        : r.status === status),
+  );
   const exportCSV = () => {
     const fields = ["run_id", "kind", "status", ...metrics];
     const cell = (v: any) => `"${String(v ?? "").replaceAll('"', '""')}"`;
@@ -1338,11 +1344,10 @@ export function DataPage() {
             <option value="all">
               {t("全部（含缺失/失败）", "All (including failed)")}
             </option>
-            {["completed", "succeeded", "failed", "running", "queued"].map(
-              (s) => (
-                <option key={s}>{s}</option>
-              ),
-            )}
+            <option value="succeeded">{t("成功", "Succeeded")}</option>
+            {["failed", "running", "queued"].map((s) => (
+              <option key={s}>{s}</option>
+            ))}
           </select>
         </Field>
         <Button
