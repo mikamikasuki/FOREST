@@ -13,7 +13,7 @@ from research.figures.narrative import (
 )
 from research.figures.render import render_figure
 from research.figures.workflow import render_candidates, review_requests
-from research.agents.policy import RESEARCH_POLICY, ROLES
+from research.agents.policy import RESEARCH_POLICY, ROLES, agent_policy
 from research.publication.profile import publication_instructions, publication_profile
 
 
@@ -189,9 +189,9 @@ def test_actual_candidates_have_three_narrative_review_jobs_and_real_source_prec
     assert payload['accepted_design_precedents'] == references
     assert 'actual catalog identities' in request['instruction']
     assert 'scientific' in ROLES['Figure Designer'] and 'generic module directories' in ROLES['Visual Selector']
-    assert 'SCIENTIFIC VISUAL NARRATIVE' in RESEARCH_POLICY
-    assert 'cannot delete a core negative result' in RESEARCH_POLICY
-    assert 'never switch a metric or comparator to manufacture a win' in RESEARCH_POLICY
+    assert 'SCIENTIFIC VISUAL NARRATIVE' in agent_policy('Figure Designer', {}, publication_profile())
+    assert 'cannot remove a core negative result' in agent_policy('Writer', {}, publication_profile())
+    assert 'Never change a metric or comparator to manufacture a win' in agent_policy('Writer', {}, publication_profile())
     assert 'uncertain request retains its reserved bound' in RESEARCH_POLICY
     assert 'empty task queue' in RESEARCH_POLICY
     assert 'SCIENTIFIC VISUAL NARRATIVE' in publication_instructions(publication_profile())
