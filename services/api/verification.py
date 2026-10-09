@@ -527,6 +527,12 @@ def verification_gate(session, run, *, resolved_inputs=None, copied_workspace=No
                     'requirements':requirements,'numerical_coverage':coverage}
     guarded = required_policy(session, run) or bool(identifiers)
     if guarded:
+        unbound_branch_results = [item for item in run.config.get('resolved_branch_references', [])
+                                  if item.get('source') == 'results']
+        if unbound_branch_results:
+            return {'ready': False, 'blocked_reason': 'verification_scope',
+                    'message': 'Branch-level result references must be bound to a verified producer node before guarded use',
+                    'requirements': requirements}
         for binding in resolved_inputs if resolved_inputs is not None else run.config.get('resolved_inputs', []):
             source = next((item for item in sources if item.node_id == binding.get('source_node_id')), None)
             if source is None:
