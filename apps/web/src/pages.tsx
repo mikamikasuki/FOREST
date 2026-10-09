@@ -1521,6 +1521,9 @@ export function FiguresPage() {
   const [figureDirty, setFigureDirty] = useState(false);
   const figure = figures.find((f) => f.id === selected) || figures[0];
   useEffect(() => {
+    if (!selected && figures.length) setSelected(figures[0].id);
+  }, [figures, selected]);
+  useEffect(() => {
     const refresh = () => void reloadRuns();
     window.addEventListener("forest-refresh", refresh);
     return () => window.removeEventListener("forest-refresh", refresh);
@@ -1545,7 +1548,10 @@ export function FiguresPage() {
                 key={f.id}
                 className={figure?.id === f.id ? "active" : ""}
                 onClick={() => {
-                  if (figure?.id === f.id) return;
+                  if (figure?.id === f.id) {
+                    if (!selected) setSelected(f.id);
+                    return;
+                  }
                   if (
                     figureDirty &&
                     !confirm(
