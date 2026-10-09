@@ -101,6 +101,7 @@ test("keyboard node movement persists its position", async ({
   await expect(node).toBeVisible();
   await node.focus();
   await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
   const layoutBatches: Array<{ commands: Array<Record<string, unknown>> }> = [];
   let releaseLayoutBatch!: () => void;
   let signalLayoutBatch!: () => void;
@@ -119,8 +120,9 @@ test("keyboard node movement persists its position", async ({
     if (
       new URL(request.url()).pathname.endsWith("/graph/batch") &&
       request.method() === "POST"
-    )
+    ) {
       layoutBatches.push(request.postDataJSON());
+    }
   });
   for (let index = 0; index < 6; index++)
     await page.keyboard.press("ArrowRight");
@@ -237,6 +239,7 @@ test("keyboard position saves recover from a graph revision conflict", async ({
   await expect(node).toBeVisible();
   await node.focus();
   await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
   await page.keyboard.press("ArrowRight");
 
   await expect
@@ -255,6 +258,162 @@ test("keyboard position saves recover from a graph revision conflict", async ({
       node.evaluate((element) => (element as HTMLElement).style.transform),
     )
     .toBe("translate(205px, 160px)");
+});
+
+test("a lost position-save response replays the original command receipt", async ({
+  page,
+  request,
+}) => {
+  let graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Uncertain keyboard position",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+  graph = (await created.json()).graph;
+  const submitted: Array<Record<string, any>> = [];
+  let loseFirstResponse = true;
+  await page.route("**/graph/batch", async (route) => {
+    const payload = route.request().postDataJSON();
+    submitted.push(payload);
+    if (loseFirstResponse) {
+      loseFirstResponse = false;
+      const response = await route.fetch();
+      expect(response.ok()).toBeTruthy();
+      await response.json();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
+  for (let index = 0; index < 6; index++)
+    await page.keyboard.press("ArrowRight");
+
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.find((item: { id: string }) => item.id === nodeId)
+        ?.position;
+    })
+    .toEqual({ x: 230, y: 160 });
+  await expect.poll(() => submitted.length).toBe(2);
+  expect(submitted[1]).toEqual(submitted[0]);
+  const current = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  expect(current.revision).toBe(graph.revision + 1);
+});
+
+test("discard position retries for nodes deleted by a concurrent edit", async ({
+  page,
+  request,
+}) => {
+  const graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Deleted during keyboard move",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+  let batchCount = 0;
+  await page.route("**/graph/batch", async (route) => {
+    batchCount += 1;
+    const current = await (
+      await request.get(`/api/projects/${projectId}/graph`)
+    ).json();
+    const deleted = await request.post(
+      `/api/projects/${projectId}/graph/commands`,
+      {
+        data: {
+          request_id: crypto.randomUUID(),
+          expected_revision: current.revision,
+          operation: "delete_node",
+          targets: [nodeId],
+          params: {},
+          run: false,
+        },
+      },
+    );
+    expect(deleted.ok()).toBeTruthy();
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        detail: { code: "REVISION_CONFLICT", message: "Graph changed" },
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
+  await page.keyboard.press("ArrowRight");
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.some((item: { id: string }) => item.id === nodeId);
+    })
+    .toBe(false);
+
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+z" : "Control+z");
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.some((item: { id: string }) => item.id === nodeId);
+    })
+    .toBe(true);
+  expect(batchCount).toBe(1);
 });
 
 test("a stale editor cannot overwrite a file recreated after deletion", async ({

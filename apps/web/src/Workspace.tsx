@@ -288,6 +288,16 @@ function WorkspaceInner() {
   const positionRevisions = useRef(new Map<string, number>());
   const positionOnlyRevisions = useRef(new Map<string, Set<number>>());
   const positionConflictRetries = useRef(new Map<string, number>());
+  const positionSubmissions = useRef(
+    new Map<
+      string,
+      {
+        requestId: string;
+        expectedRevision: number;
+        positions: Record<string, { x: number; y: number }>;
+      }
+    >(),
+  );
   const positionFlushPromises = useRef(new Map<string, Promise<void>>());
   const graphMutationQueues = useRef(new Map<string, Promise<void>>());
   const pendingPositionChanges = useRef(
@@ -353,14 +363,33 @@ function WorkspaceInner() {
         pending?.clear();
         const targets = Object.keys(positions);
         if (!targets.length) return;
-        const expectedRevision = positionRevisions.current.get(projectId) ?? 0;
+        const previousSubmission = positionSubmissions.current.get(projectId);
+        const samePositions = Boolean(
+          previousSubmission &&
+          Object.keys(previousSubmission.positions).length === targets.length &&
+          targets.every((nodeId) => {
+            const previous = previousSubmission.positions[nodeId];
+            const current = positions[nodeId];
+            return previous?.x === current.x && previous?.y === current.y;
+          }),
+        );
+        const submission = samePositions && previousSubmission
+          ? previousSubmission
+          : {
+              requestId: uid(),
+              expectedRevision:
+                positionRevisions.current.get(projectId) ?? 0,
+              positions,
+            };
+        positionSubmissions.current.set(projectId, submission);
+        const expectedRevision = submission.expectedRevision;
         let result: { revision: number };
         try {
           result = await api<{ revision: number }>(
             `/projects/${projectId}/graph/batch`,
             "POST",
             {
-              request_id: uid(),
+              request_id: submission.requestId,
               expected_revision: expectedRevision,
               commands: [
                 {
@@ -380,9 +409,29 @@ function WorkspaceInner() {
           let latest: Graph | undefined;
           try {
             latest = await refreshGraph(projectId);
+            const existingNodeIds = new Set(latest.nodes.map((item) => item.id));
+            for (const nodeId of stillPending.keys())
+              if (!existingNodeIds.has(nodeId)) stillPending.delete(nodeId);
+            if (stillPending.size)
+              pendingPositionChanges.current.set(projectId, stillPending);
+            else pendingPositionChanges.current.delete(projectId);
           } catch {
             // Keep the original mutation error visible.
           }
+          const retryPositions = Object.fromEntries(
+            pendingPositionChanges.current.get(projectId) ?? [],
+          );
+          const retryMatchesSubmission =
+            Object.keys(retryPositions).length ===
+              Object.keys(submission.positions).length &&
+            Object.entries(submission.positions).every(([nodeId, position]) => {
+              const next = retryPositions[nodeId];
+              return next?.x === position.x && next?.y === position.y;
+            });
+          const uncertainSubmission =
+            !(error instanceof ApiError) || error.status >= 500;
+          if (!uncertainSubmission || !retryMatchesSubmission)
+            positionSubmissions.current.delete(projectId);
           const retries = positionConflictRetries.current.get(projectId) ?? 0;
           const recoveredConflict =
             error instanceof ApiError &&
@@ -390,10 +439,10 @@ function WorkspaceInner() {
             latest !== undefined &&
             latest.revision > expectedRevision;
           const failedAfterUnmount = activeProjectId.current !== projectId;
-          const retryableFailure =
-            !(error instanceof ApiError) || error.status >= 500;
+          const retryableFailure = uncertainSubmission;
           if (
             retries < 1 &&
+            Object.keys(retryPositions).length > 0 &&
             (recoveredConflict || failedAfterUnmount || retryableFailure)
           ) {
             positionConflictRetries.current.set(projectId, retries + 1);
@@ -415,6 +464,8 @@ function WorkspaceInner() {
           ),
         );
         positionConflictRetries.current.delete(projectId);
+        if (positionSubmissions.current.get(projectId) === submission)
+          positionSubmissions.current.delete(projectId);
         const layoutRevisions =
           positionOnlyRevisions.current.get(projectId) ?? new Set<number>();
         layoutRevisions.add(result.revision);
@@ -541,7 +592,7 @@ function WorkspaceInner() {
       setFlowNodes((nodes) => applyNodeChanges(changes, nodes));
       const positions = changes.flatMap((change) =>
         change.type === "position" &&
-        change.dragging === false &&
+        change.dragging !== true &&
         change.position
           ? [{ id: change.id, position: change.position }]
           : [],
