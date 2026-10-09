@@ -505,14 +505,7 @@ async def import_project(file:UploadFile=File(...)):
         from services.interventions.history import history_ids,import_history,historical_resource
         for ident in history_ids(manifest):mapping.setdefault(ident,uid())
         def remap(obj):
-            if isinstance(obj,dict): return {k:remap(v) for k,v in obj.items()}
-            if isinstance(obj,list): return [remap(v) for v in obj]
-            if isinstance(obj,str):
-                if obj==old_id: return p.id
-                if obj in mapping: return mapping[obj]
-                for old,new in mapping.items(): obj=obj.replace(old,new)
-                return obj
-            return obj
+            return remap_identifiers(obj,mapping,project_id=old_id,new_project_id=p.id)
         controller=p.config.get('controller')
         if isinstance(controller,dict) and controller.get('branch_id'):
             branch_id=controller['branch_id']; remapped_branch=mapping.get(branch_id)
