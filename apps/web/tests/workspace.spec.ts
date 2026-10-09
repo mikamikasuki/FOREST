@@ -133,13 +133,41 @@ test("Workspace edges expose their relationship and support keyboard deletion", 
   );
   expect(connected.ok()).toBeTruthy();
   graph = (await connected.json()).graph;
-  const edgeId = graph.edges[0].id as string;
+  const derived = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_dependency",
+        targets: [],
+        params: {
+          source: sourceId,
+          target: targetId,
+          relation: "derived_from",
+        },
+        run: false,
+      },
+    },
+  );
+  expect(derived.ok()).toBeTruthy();
+  graph = (await derived.json()).graph;
+  const edgeId = graph.edges.find(
+    (item: { relation: string }) => item.relation === "depends_on",
+  ).id as string;
+  const derivedEdgeId = graph.edges.find(
+    (item: { relation: string }) => item.relation === "derived_from",
+  ).id as string;
 
   await page.goto(`/projects/${projectId}/workspace`);
   const edge = page.getByTestId(`rf__edge-${edgeId}`);
   await expect(edge).toHaveAttribute(
     "aria-label",
     "Target node depends on Source node",
+  );
+  await expect(page.getByTestId(`rf__edge-${derivedEdgeId}`)).toHaveAttribute(
+    "aria-label",
+    "Target node is derived from Source node",
   );
   await edge.focus();
   await page.keyboard.press("Enter");
@@ -164,12 +192,16 @@ test("Workspace edges expose their relationship and support keyboard deletion", 
       return current.edges.some((item: { id: string }) => item.id === edgeId);
     })
     .toBe(false);
-  await expect(page.getByText("Refresh unavailable")).toBeVisible();
   await expect(edge).toHaveCount(0);
+  await expect(page.getByTestId(`rf__node-${sourceId}`)).toBeVisible();
+  await expect(page.getByTestId(`rf__node-${targetId}`)).toBeVisible();
+  await expect(page.getByTestId(`rf__edge-${derivedEdgeId}`)).toBeVisible();
+  await expect(page.getByText("No nodes")).toHaveCount(0);
 
   await page.unroute(`**/api/projects/${projectId}/graph`);
   await page.reload();
   await expect(edge).toHaveCount(0);
+  await expect(page.getByTestId(`rf__edge-${derivedEdgeId}`)).toBeVisible();
 });
 
 test("filtering an edge off the canvas prevents its keyboard deletion", async ({

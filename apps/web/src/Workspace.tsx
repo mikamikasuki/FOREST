@@ -460,7 +460,9 @@ function WorkspaceInner() {
             ? `${targetTitle} depends on ${sourceTitle}`
             : e.relation === "consumes"
               ? `${targetTitle} consumes ${sourceTitle}`
-              : `${sourceTitle} ${relationLabel} ${targetTitle}`;
+              : e.relation === "derived_from"
+                ? `${targetTitle} is derived from ${sourceTitle}`
+                : `${sourceTitle} ${relationLabel} ${targetTitle}`;
         return {
           ...e,
           ariaLabel,
@@ -536,19 +538,24 @@ function WorkspaceInner() {
         const projectId = id!;
         const removedIds = new Set(removedEdges.map((edge) => edge.id));
         try {
-          await api(`/projects/${projectId}/graph/batch`, "POST", {
-            request_id: uid(),
-            expected_revision: graph.revision,
-            commands: removedEdges.map((edge) => ({
-              operation: "remove_dependency",
-              targets: [],
-              params: {
-                source: edge.source,
-                target: edge.target,
-                relation: edge.relation,
-              },
-            })),
-          });
+          const result = await api<{ graph: Graph }>(
+            `/projects/${projectId}/graph/batch`,
+            "POST",
+            {
+              request_id: uid(),
+              expected_revision: graph.revision,
+              commands: removedEdges.map((edge) => ({
+                operation: "remove_dependency",
+                targets: [],
+                params: {
+                  source: edge.source,
+                  target: edge.target,
+                  relation: edge.relation,
+                },
+              })),
+            },
+          );
+          setGraph(result.graph);
         } catch (error) {
           await reload();
           throw error;
@@ -556,26 +563,19 @@ function WorkspaceInner() {
         setSelectedEdgeIds((current) =>
           current.filter((edgeId) => !removedIds.has(edgeId)),
         );
-        try {
-          const latest = await api<Graph>(`/projects/${projectId}/graph`);
-          setGraph(latest);
-        } catch (error) {
-          // A successful delete changes node revisions and result freshness as
-          // well as the edge. Do not leave that now-stale graph on screen if the
-          // authoritative refresh fails; the action error tells the user why.
-          setGraph({
-            project_id: projectId,
-            revision: graph.revision + 1,
-            nodes: [],
-            edges: [],
-            branches: [],
-          });
-          throw error;
-        }
         void reloadRuns();
       });
     },
-    [action, api, graph.revision, id, reload, reloadRuns, setGraph, visibleEdges],
+    [
+      action,
+      api,
+      graph.revision,
+      id,
+      reload,
+      reloadRuns,
+      setGraph,
+      visibleEdges,
+    ],
   );
   const run = async (runScope = "single") => {
     if (!node) return;
