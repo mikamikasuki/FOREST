@@ -612,7 +612,7 @@ def execute(run_id):
             else:
                 from research.paper.model_draft import draft_with_model
                 from research.agents.provider import ModelClient
-                from research.agents.policy import RESEARCH_POLICY
+                from research.agents.policy import agent_policy
                 provider=config.get('provider_snapshot')
                 if not provider: raise ValueError('Connect a real model provider before drafting a manuscript')
                 client=ModelClient(provider,read_secret(provider.get('credential_ref')),config.get('allow_paid',False))
@@ -624,7 +624,8 @@ def execute(run_id):
                 evidence=prepare_statistical_presentation(evidence,folder/'statistical_presentation',selected_layout,client)
                 required_figures=list(dict.fromkeys([*(config.get('figure_ids') or []),
                     *evidence.get('statistical_presentation',{}).get('figure_ids',[])]))
-                draft,response=draft_with_model(client,evidence,config.get('instructions') or config.get('project_goal',''),folder,title=config.get('title'),attempts=int(config.get('paper_draft_attempts',3)),system=RESEARCH_POLICY,expected_type=config.get('manuscript_type','full_paper'),layout=selected_layout,publication=config.get('publication_profile'),required_figure_ids=required_figures if required_figures else config.get('figure_ids'))
+                manuscript_policy=agent_policy('Writer', {'authoring_mode':'manuscript'}, config.get('publication_profile'))
+                draft,response=draft_with_model(client,evidence,config.get('instructions') or config.get('project_goal',''),folder,title=config.get('title'),attempts=int(config.get('paper_draft_attempts',3)),system=manuscript_policy,expected_type=config.get('manuscript_type','full_paper'),layout=selected_layout,publication=config.get('publication_profile'),required_figure_ids=required_figures if required_figures else config.get('figure_ids'))
                 from research.paper.visual_review import review_placements
                 draft,placement_review=review_placements(client,evidence,draft,folder/'visual_placement_reviews')
             generated=generate_paper(None,folder,config.get('title'),config.get('template','article'),evidence=evidence,draft=draft,layout=config.get('layout'))
