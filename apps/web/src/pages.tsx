@@ -2681,15 +2681,19 @@ export function FilesPage() {
                     )}
                     onClick={() => {
                       if (tablePreview) {
-                        void action(async () => {
-                          const result = await api(
-                            `/projects/${id}/file?path=${encodeURIComponent(path)}`,
-                          );
-                          setContent(result.content);
-                          setOriginal(result.content);
-                          setRevision(result.revision);
+                        if (dirty) {
                           setTablePreview(false);
-                        });
+                        } else {
+                          void action(async () => {
+                            const result = await api(
+                              `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+                            );
+                            setContent(result.content);
+                            setOriginal(result.content);
+                            setRevision(result.revision);
+                            setTablePreview(false);
+                          });
+                        }
                       } else setTablePreview(true);
                     }}
                   >
