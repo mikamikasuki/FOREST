@@ -444,6 +444,67 @@ def case_export_import_reference_roundtrip(client, app):
     assert ok(client.get(f"/api/runs/{new_runs[0]['id']}/output"))["text"] == "actual saved output\n"
 
 
+def case_project_provider_roundtrip_requires_explicit_resolution_when_missing(client, app):
+    provider = ok(client.post('/api/providers', json={
+        'name': 'Project archive provider', 'kind': 'openai',
+        'base_url': 'http://127.0.0.1:1/v1', 'model': 'test-model',
+    }))
+    source = ok(client.post('/api/projects', json={
+        'name': 'Provider-bound project', 'config': {'provider_id': provider['id']},
+    }))
+    exported = client.post(f"/api/projects/{source['id']}/export", json={})
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        entries = {item.filename: archive.read(item.filename) for item in archive.infolist()}
+    manifest = json.loads(entries['forest-project.json'])
+    assert manifest['project']['config']['provider_id'] == provider['id']
+    restored = ok(client.post('/api/projects/import', files={
+        'file': ('provider-bound.zip', exported.content, 'application/zip'),
+    }))
+    assert restored['config']['provider_id'] == provider['id']
+
+    manifest['project']['config']['provider_id'] = 'unavailable-provider-id'
+    entries['forest-project.json'] = json.dumps(manifest).encode()
+    unavailable_archive = io.BytesIO()
+    with zipfile.ZipFile(unavailable_archive, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, contents in entries.items():
+            archive.writestr(name, contents)
+    ok(client.patch('/api/settings', json={'default_provider_id': provider['id']}))
+    unresolved = ok(client.post('/api/projects/import', files={
+        'file': ('unavailable-provider.zip', unavailable_archive.getvalue(), 'application/zip'),
+    }))
+    assert unresolved['config'].get('provider_id') is None
+    assert unresolved['config']['provider_selection_required'] is True
+    node = ok(command(client, unresolved, 'add_node', title='Research agent', type='agent'))['graph']['nodes'][-1]
+    response = client.post(f"/api/nodes/{node['id']}/run", json={'request_id': str(uuid4())})
+    assert response.status_code == 422
+    assert response.json()['detail']['code'] == 'PROVIDER_SELECTION_REQUIRED'
+
+    local_node = ok(command(
+        client, unresolved, 'add_node', title='Local experiment', type='experiment',
+        config={'command': ['true']},
+    ))['graph']['nodes'][-1]
+    local_run = client.post(f"/api/nodes/{local_node['id']}/run", json={'request_id': str(uuid4())})
+    assert local_run.status_code == 200, local_run.text
+
+    duplicate = ok(client.post(f"/api/projects/{unresolved['id']}/duplicate"))
+    assert duplicate['config'].get('provider_id') is None
+    assert duplicate['config']['provider_selection_required'] is True
+    duplicate_agent = next(
+        item for item in graph(client, duplicate)['nodes']
+        if item['title'] == 'Research agent'
+    )
+    duplicate_run = client.post(f"/api/nodes/{duplicate_agent['id']}/run", json={'request_id': str(uuid4())})
+    assert duplicate_run.status_code == 422
+    assert duplicate_run.json()['detail']['code'] == 'PROVIDER_SELECTION_REQUIRED'
+
+    resolved = ok(client.patch(f"/api/projects/{unresolved['id']}", json={
+        'config': {**unresolved['config'], 'provider_id': provider['id']},
+    }))
+    assert resolved['config']['provider_id'] == provider['id']
+    assert 'provider_selection_required' not in resolved['config']
+
+
 def case_import_running_controller_requires_explicit_start(client, app, mode="assisted"):
     p = create(client)
     ok(client.patch(f"/api/projects/{p['id']}", json={"mode": mode}))
@@ -1428,6 +1489,18 @@ def case_figure_render_is_invalidated_after_data_or_style_edit(client, app):
         'expected_revision': paper['revision'], 'figure_id': figure['id'], 'anchor_text': anchor,
     })
     assert response.status_code == 409, response.text
+
+
+def case_new_projects_inherit_default_run_mode(client, app):
+    ok(client.patch('/api/settings', json={'default_mode': 'manual'}))
+    inherited = ok(client.post('/api/projects', json={'name': 'Inherit configured mode'}))
+    explicit = ok(client.post('/api/projects', json={
+        'name': 'Keep explicit mode', 'mode': 'assisted',
+    }))
+
+    assert inherited['mode'] == 'manual'
+    assert ok(client.get(f"/api/projects/{inherited['id']}"))['mode'] == 'manual'
+    assert explicit['mode'] == 'assisted'
 
 
 CASES = [name.removeprefix("case_") for name in list(globals()) if name.startswith("case_")]
