@@ -1403,7 +1403,7 @@ Success `200`: `application/json`: `Project[]`.
 
 #### `POST /api/projects`
 
-Create a project and its main workspace/graph. ProjectCreate supplies the existing Pydantic field limits and defaults. Return the persisted project; successful creation uses HTTP 200.
+Create a project and its main workspace/graph. When mode is omitted, use the saved default_mode preference, falling back to assisted if unset or invalid; an explicit mode takes precedence. Return the persisted project; successful creation uses HTTP 200.
 
 Body: `application/json`: `ProjectCreate`; required.
 
@@ -3666,7 +3666,7 @@ Additional properties: extensible JSON.
 | `name` | string | yes |  minLength=1, maxLength=240. |
 | `description` | string | no |  Default: ``. |
 | `goal` | string | no |  Default: ``. |
-| `mode` | string | no |  Default: `assisted`. Values: `auto`, `assisted`, `manual`. |
+| `mode` | string or null | no |  |
 | `budget` | object | no |  |
 | `config` | object | no |  |
 

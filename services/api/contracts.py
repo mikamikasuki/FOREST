@@ -466,7 +466,7 @@ operation("get", "/api/health", "System", "Check API and database health",
 operation("get", "/api/projects", "Projects", "List projects",
     "Return a bare array ordered by updated_at descending. Optional archived filters the rows; limit is capped at 200 and offset is clamped to zero. Pagination is not wrapped in a total/cursor object.", array(ref("Project")))
 operation("post", "/api/projects", "Projects", "Create a project",
-    "Create a project and its main workspace/graph. ProjectCreate supplies the existing Pydantic field limits and defaults. Return the persisted project; successful creation uses HTTP 200.", ref("Project"))
+    "Create a project and its main workspace/graph. When mode is omitted, use the saved default_mode preference, falling back to assisted if unset or invalid; an explicit mode takes precedence. Return the persisted project; successful creation uses HTTP 200.", ref("Project"))
 operation("get", "/api/projects/{ident}", "Projects", "Read a project",
     "Return the project with graph_meta omitted. Read /graph for the editable graph state.", ref("Project"), errors={404: "NOT_FOUND"})
 operation("patch", "/api/projects/{ident}", "Projects", "Edit project settings and goal",
