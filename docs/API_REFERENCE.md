@@ -723,7 +723,7 @@ Known domain failures: `400` NOT_FILE; `403` PATH_ESCAPE; `404` NOT_FOUND or MIS
 
 #### `PUT /api/projects/{ident}/file`
 
-FileWrite contains path/content and optional FILE expected_revision. Atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. A first write to a missing path may use expected_revision=0; after deletion it advances that path's retained revision generation. Omitting expected_revision accepts the current revision.
+FileWrite contains path/content, optional FILE expected_revision and create_only (default false). With create_only:true, reject an occupied path with FILE_EXISTS while holding the publication lock, preserving its bytes and revision. Otherwise atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. A first write to a missing path may use expected_revision=0; after deletion it advances that path's retained revision generation. Omitting expected_revision accepts the current revision.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -733,7 +733,7 @@ Body: `application/json`: `FileWrite`; required.
 
 Success `200`: `application/json`: `FileWritten`.
 
-Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `409` REVISION_CONFLICT or WORKSPACE_PENDING.
+Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND; `409` FILE_EXISTS, REVISION_CONFLICT or WORKSPACE_PENDING.
 
 #### `GET /api/projects/{ident}/file/preview`
 
@@ -3114,6 +3114,7 @@ Additional properties: extensible JSON.
 | `path` | string | yes |  minLength=1, maxLength=2000. |
 | `content` | string | yes |  maxLength=10000000. |
 | `expected_revision` | integer or null | no |  |
+| `create_only` | boolean | no |  Default: `False`. |
 
 Additional properties: extensible JSON.
 

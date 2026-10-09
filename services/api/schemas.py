@@ -28,3 +28,4 @@ class FileWrite(BaseModel):
     path:str=Field(min_length=1,max_length=2000)
     content:str=Field(max_length=10_000_000)
     expected_revision:int|None=None
+    create_only:bool=False

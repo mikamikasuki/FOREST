@@ -1677,6 +1677,11 @@
             "title": "Content",
             "type": "string"
           },
+          "create_only": {
+            "default": false,
+            "title": "Create Only",
+            "type": "boolean"
+          },
           "expected_revision": {
             "anyOf": [
               {
@@ -17313,7 +17318,7 @@
         }
       },
       "put": {
-        "description": "FileWrite contains path/content and optional FILE expected_revision. Atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. A first write to a missing path may use expected_revision=0; after deletion it advances that path's retained revision generation. Omitting expected_revision accepts the current revision.",
+        "description": "FileWrite contains path/content, optional FILE expected_revision and create_only (default false). With create_only:true, reject an occupied path with FILE_EXISTS while holding the publication lock, preserving its bytes and revision. Otherwise atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. A first write to a missing path may use expected_revision=0; after deletion it advances that path's retained revision generation. Omitting expected_revision accepts the current revision.",
         "operationId": "write_file_api_projects__ident__file_put",
         "parameters": [
           {
@@ -17385,7 +17390,7 @@
                 }
               }
             },
-            "description": "REVISION_CONFLICT or WORKSPACE_PENDING"
+            "description": "FILE_EXISTS, REVISION_CONFLICT or WORKSPACE_PENDING"
           },
           "422": {
             "content": {
