@@ -141,7 +141,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "archived": B, "expected_revision": field("integer", "The PROJECT graph revision, not the node revision.")},
         description="Passed to edit_node with optional project revision. Kernel-managed id/project_id/revision/execution_status/last_run_id/last_run_revision cannot be changed here. Other editable node metadata is extensible."),
     "ResourcePatch": obj({"title": S, "status": S, "data": J,
-        "expected_revision": field("integer", "Optional resource revision; data is merged one level into the existing record.")}),
+        "replace_data": field("boolean", "When true, replace the complete resource data object instead of merging it."),
+        "expected_revision": field("integer", "Optional resource revision; omission uses the current resource revision.")}),
     "RunActionRequest": obj({"request_id": field("string", "Used by retry; other run actions ignore it."),
         "priority": field("integer", "Used by priority, default 0; handler converts with int()."),
         "context_char_budget": field("integer", "resume only; Agent run, integer >= 1000."),
@@ -151,7 +152,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "provider_id": field("string", nullable=True)}, ("project_id",),
         "Task-specific fields are passed to the scheduler/worker. Scientific input schemas depend on the task kind; this is not a closed universal tool schema."),
     "FileEntry": obj({"path": S, "size": I, "modified": N, "is_dir": B}, ("path", "size", "modified", "is_dir")),
-    "FileList": obj({"files": array(ref("FileEntry"))}, ("files",)),
+    "FileList": obj({"files": array(ref("FileEntry")), "has_more": B,
+                      "next_cursor": field("string", nullable=True)}, ("files", "has_more", "next_cursor")),
+    "FileExistenceRequest": obj({"paths": array(S)}, ("paths",)),
+    "FileExistenceResult": obj({"existing": STRINGS, "directories": STRINGS}, ("existing", "directories")),
     "FileRead": obj({"path": S, "content": S, "revision": I, "origin": S}, ("path", "content", "revision", "origin")),
     "FileWritten": obj({"path": S, "revision": I, "origin": S}, ("path", "revision", "origin")),
     "FilePath": obj({"path": S}, ("path",)),
@@ -322,7 +326,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "PaperFigureRequest": obj({"expected_revision": I, "figure_id": S, "anchor_text": S,
         "caption": S, "span": S}, ("expected_revision", "figure_id", "anchor_text")),
     "PaperLayoutRequest": obj({"expected_revision": I, "request_id": field("string", nullable=True), "template": S, "layout": J}, ("expected_revision",)),
-    "PaperExportRequest": obj({"expected_revision": I, "format": field("string", "pdf returns the current compiled PDF; other/omitted values return a source ZIP.")}),
+    "PaperExportRequest": obj({"expected_revision": I, "format": field("string", "pdf returns the current compiled PDF; other/omitted values return a source ZIP."), "source": S, "bibtex": S}),
     "PaperCheck": obj({"issues": array(J), "writing_profile": J, "coverage": S, "status": S}, ("issues", "writing_profile", "coverage", "status")),
     "ProposalApplyRequest": obj({"expected_revision": I, "commands": array(J), "indices": array(I)}),
     "ProposalApplied": obj({"graph": ref("GraphState"), "accepted_indices": array(I)}, ("graph", "accepted_indices")),
@@ -466,7 +470,7 @@ operation("get", "/api/health", "System", "Check API and database health",
 operation("get", "/api/projects", "Projects", "List projects",
     "Return a bare array ordered by updated_at descending. Optional archived filters the rows; limit is capped at 200 and offset is clamped to zero. Pagination is not wrapped in a total/cursor object.", array(ref("Project")))
 operation("post", "/api/projects", "Projects", "Create a project",
-    "Create a project and its main workspace/graph. ProjectCreate supplies the existing Pydantic field limits and defaults. Return the persisted project; successful creation uses HTTP 200.", ref("Project"))
+    "Create a project and its main workspace/graph. When mode is omitted, use the saved default_mode preference, falling back to assisted if unset or invalid; an explicit mode takes precedence. Return the persisted project; successful creation uses HTTP 200.", ref("Project"))
 operation("get", "/api/projects/{ident}", "Projects", "Read a project",
     "Return the project with graph_meta omitted. Read /graph for the editable graph state.", ref("Project"), errors={404: "NOT_FOUND"})
 operation("patch", "/api/projects/{ident}", "Projects", "Edit project settings and goal",
@@ -488,9 +492,9 @@ operation("patch", "/api/nodes/{ident}", "Graph", "Edit a path node",
 operation("get", "/api/nodes/{ident}/context", "Graph", "Inspect a node context snapshot",
     "Build a role-aware preview from current graph/goal/budget, declared input materials and context overrides. Material previews can be truncated; retrievable_materials and omitted describe the full-source lookup opportunities. Capacity is a soft preview hint, not an execution result.", ref("ContextSnapshot"), errors={404: "NOT_FOUND"})
 operation("post", "/api/nodes/{ident}/context/rebuild", "Graph", "Merge context overrides and rebuild",
-    "Merge the extensible body into node.context_overrides, force needs_refresh:false, emit context_changed and return a fresh ContextSnapshot. This endpoint has no expected_revision guard.", ref("ContextSnapshot"), body="JsonObject", errors={404: "NOT_FOUND"})
+    "When expected_revision is supplied, require it to match the current project revision. Merge the remaining extensible body into node.context_overrides, force needs_refresh:false, emit context_changed and return a fresh ContextSnapshot.", ref("ContextSnapshot"), body="JsonObject", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
 operation("post", "/api/nodes/{ident}/run", "Runs", "Enqueue a node execution scope",
-    "Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id.", {"anyOf": [ref("Run"), ref("SelectedRunCollection")]}, errors={400: "Scheduling/input errors", 404: "NOT_FOUND", 409: "Submission/revision conflicts"})
+    "Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id. Provider-backed runs in imported projects with an unavailable archived provider require an explicit provider or workspace-default selection before scheduling.", {"anyOf": [ref("Run"), ref("SelectedRunCollection")]}, errors={400: "Scheduling/input errors", 404: "NOT_FOUND", 409: "Submission/revision conflicts", 422: "PROVIDER_SELECTION_REQUIRED"})
 operation("post", "/api/branches/{ident}/run", "Runs", "Enqueue a branch execution path",
     "Choose the branch root (or first unarchived node) and enqueue its descendants. RunRequest.scope is accepted but the handler uses descendants. Return {runs}; there is no guaranteed run_ids field.", ref("RunCollection"), errors={400: "EMPTY_BRANCH or scheduling/input errors", 404: "NOT_FOUND"})
 operation("get", "/api/branches/compare", "Graph", "Compare branch workspaces",
@@ -503,7 +507,7 @@ operation("post", "/api/runs/{ident}/{action}", "Runs", "Control a saved run",
     "Actions: cancel, pause, resume, retry, skip, priority. retry requires a terminal run and returns a NEW Run. cancel is idempotent for terminal runs. pause accepts queued/waiting/budget_exhausted/running; resume accepts paused/waiting_input/waiting/budget_exhausted plus the documented legacy Agent context failure. skip accepts queued only. priority converts body.priority with int(). Resume can merge Agent budget and context_char_budget (integer >=1000). Return the persisted Run; process actions can fail with 409.", ref("Run"), body="RunActionRequest",
     errors={404: "NOT_FOUND or UNKNOWN_ACTION", 409: "RUN_ACTIVE, INVALID_RUN_STATE or PROCESS_UNAVAILABLE", 422: "INVALID_RUN_KIND, INVALID_CONTEXT_BUDGET or INVALID_AGENT_BUDGET"}, actions=("cancel", "pause", "resume", "retry", "skip", "priority"))
 operation("get", "/api/runs/{ident}/output", "Runs", "Read a byte-cursor output page",
-    "Read stdout.txt at max(offset,0), at most min(limit,1000000) bytes, decode with replacement and return the next byte offset. Optional case-insensitive search filters lines AFTER the cursor advances. A missing output file returns empty text at the requested nonnegative offset.", ref("OutputPage"), errors={404: "NOT_FOUND"}, parameters={"offset": "Byte offset, not line number.", "limit": "Maximum bytes; default 100000, capped at 1000000.", "search": "Case-insensitive literal filter on the already-read lines."})
+    "Read stdout.txt at max(offset,0), at most min(limit,1000000) bytes and return the next byte offset. A trailing multi-byte UTF-8 character cut by the page limit is held back so the next page re-reads it whole; when the page limit is smaller than the next character the read grows by at most three bytes so the cursor still advances; invalid bytes decode with replacement. Optional case-insensitive search filters lines AFTER the cursor advances. A missing output file returns empty text at the requested nonnegative offset.", ref("OutputPage"), errors={404: "NOT_FOUND"}, parameters={"offset": "Byte offset, not line number.", "limit": "Maximum bytes; default 100000, capped at 1000000.", "search": "Case-insensitive literal filter on the already-read lines."})
 operation("get", "/api/projects/{ident}/events", "Events", "Subscribe to project change events",
     "Server-Sent Events, not JSON. Begin with event: connected and data: {}. Persisted events include id: sequence, event: event.type and JSON data: event.data. Reconnect with Last-Event-ID to replay later sequences in batches of 100. If retained history starts after the requested cursor or the cursor exceeds the latest saved event, emit cursor_reset with id: resume_after_sequence and JSON requested_after_sequence, oldest_available_sequence, latest_available_sequence and resume_after_sequence; reread authoritative REST state, then continue from that ID. With no saved events, an ahead cursor resets to checkpoint 0. Invalid/missing cursor starts at zero and can also require this reset. Send a comment heartbeat roughly once per second; the stream ends on disconnect. Headers Cache-Control:no-cache and X-Accel-Buffering:no.", S, media=("text/event-stream",), errors={404: "NOT_FOUND"})
 operation("get", "/api/system", "System", "Read runtime and provider availability",
@@ -531,7 +535,13 @@ for collection, name, response, create_body, patch_body in (
     operation("patch", f"/api/{collection}/{{ident}}", "Configuration", f"Edit an {name}", patch_description,
         ref(response), body=patch_body, errors={404: "NOT_FOUND"})
 operation("post", "/api/providers/{ident}/test", "Configuration", "Test a model with a real request",
-    "Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; success contains status plus extensible ModelClient result fields.", obj({"status": S}, ("status",)), errors={404: "NOT_FOUND", 502: "PROVIDER_CONNECTION_FAILED (retryable)"})
+    "Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; status is the connection outcome, while request_status preserves the ModelClient request state when available. Other ModelClient result fields are extensible.", obj({"status": S, "request_status": field("string", nullable=True)}, ("status",)), errors={404: "NOT_FOUND", 502: "PROVIDER_CONNECTION_FAILED (retryable)"})
+operation("get", "/api/providers/{ident}/references", "Configuration", "Inspect active provider references",
+    "List project, node, Agent, reporting and global-default references, plus the count of preserved historical model requests.", obj({"references": array(JSON), "historical_request_count": I}, ("references", "historical_request_count")), errors={404: "NOT_FOUND"})
+operation("post", "/api/providers/{ident}/retire", "Configuration", "Retire a model provider safely",
+    "Replace or clear every active reference, remove the stored credential, and mark the provider retired while preserving historical model request records. replacement_provider_id may be null to clear references.", JSON, body="JsonObject", errors={404: "NOT_FOUND", 422: "INVALID_REPLACEMENT"})
+operation("post", "/api/providers/{ident}/restore", "Configuration", "Restore a retired model provider",
+    "Mark a retired provider untested so it can be edited and used again. Credentials removed during retirement must be configured again.", ref("Provider"), errors={404: "NOT_FOUND"})
 operation("get", "/api/providers/{ident}/usage", "Configuration", "Read account-wide provider spending",
     "Read configured-rate estimates and reservations across all projects using this provider. requests contains the 100 most recent records; request_count is the full count. Missing limit/remaining/individual estimate values are null, not zero.", ref("ProviderUsage"), errors={404: "NOT_FOUND"})
 operation("get", "/api/providers/{ident}/models", "Configuration", "Read the provider-native model list",
@@ -546,13 +556,15 @@ operation("delete", "/api/shares/{token}", "Sharing", "Revoke a share token",
     "Require an already-valid owner cookie or bearer token even on trusted loopback; the public-prefix middleware shortcut does not authorize revocation. Disable the share and return revoked:true.", obj({"revoked": B}, ("revoked",)), errors={401: "UNAUTHORIZED", 404: "NOT_FOUND"}, owner_only=True)
 
 operation("get", "/api/projects/{ident}/files", "Files", "List project workspace files",
-    "List at most 10000 entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.", ref("FileList"), errors={404: "NOT_FOUND"})
+    "Return a bounded page of eligible workspace entries in depth-first filesystem traversal order. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Cursors are process-local and expire after 10 minutes; on expiration, restart from the first page. Skip symlinks and hidden path components except .forest-bases. Paths are relative to the project root and modified is a filesystem epoch time.", ref("FileList"), errors={404: "NOT_FOUND", 409: "FILE_CURSOR_EXPIRED", 422: "INVALID_FILE_CURSOR"})
+operation("post", "/api/projects/{ident}/files/existing", "Files", "Preflight upload destinations",
+    "Return existing files and directories for supplied relative paths in the project workspace. Accepts at most 1,000 paths per request so multi-file uploads can confirm replacements before publishing any selected file; directories cannot be replaced by file uploads.", ref("FileExistenceResult"), body="FileExistenceRequest", errors={403: "PATH_ESCAPE", 404: "NOT_FOUND", 422: "INVALID_FILE_PATHS"})
 operation("get", "/api/projects/{ident}/file", "Files", "Read an editable text file",
     "Return text, file revision and origin from one snapshot serialized with owner uploads, edits, moves and deletes. Paths are normalized relative to the project root. Binary files need download/preview. The file revision is distinct from project, node and resource revisions. The default revision/origin for executor/import files is 0/executor_or_import.", ref("FileRead"), errors={400: "NOT_FILE", 403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 413: "FILE_TOO_LARGE (>10000000 bytes)", 415: "BINARY_FILE"})
 operation("get", "/api/projects/{ident}/file/preview", "Files", "Read a bounded source-table excerpt",
     "CSV/TSV/Parquet preview: offset 0..10000000, limit 1..500. total describes the complete source table; at most 100 displayed columns, at most 1000 source columns, bounded cell lengths/nesting. Report truncation fields instead of implying the excerpt is complete. File size and Parquet decoded row group limit are 128 MiB. Source changes during read return retryable TABLE_CHANGED.", ref("TablePreview"), errors={400: "NOT_FILE", 403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 409: "TABLE_CHANGED", 413: "TABLE_TOO_LARGE, TABLE_TOO_WIDE or TABLE_ROW_GROUP_TOO_LARGE", 415: "UNSUPPORTED_TABLE_FORMAT", 422: "TABLE_PARSE_FAILED", 503: "PARQUET_ENGINE_UNAVAILABLE"})
 operation("put", "/api/projects/{ident}/file", "Files", "Save an editable text file",
-    "FileWrite contains path/content and optional FILE expected_revision. Atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. A first write to a missing path may use expected_revision=0; after deletion it advances that path's retained revision generation. Omitting expected_revision accepts the current revision.", ref("FileWritten"), errors={403: "PATH_ESCAPE", 404: "NOT_FOUND", 409: "REVISION_CONFLICT or WORKSPACE_PENDING"})
+    "FileWrite contains path/content, optional FILE expected_revision and create_only (default false). With create_only:true, reject an occupied path with FILE_EXISTS while holding the publication lock, preserving its bytes and revision. Otherwise atomically replace file content, increment its revision, synchronize working manuscript files and mark consuming records stale. A first write to a missing path may use expected_revision=0; after deletion it advances that path's retained revision generation. Omitting expected_revision accepts the current revision.", ref("FileWritten"), errors={403: "PATH_ESCAPE", 404: "NOT_FOUND", 409: "FILE_EXISTS, REVISION_CONFLICT or WORKSPACE_PENDING"})
 operation("delete", "/api/projects/{ident}/file", "Files", "Delete a file or directory",
     "Delete the selected file or directory recursively and mark consumers stale; removing the project root is rejected. Advance and retain file revision generations for removed paths so stale editor tokens conflict if a path is recreated. No expected_revision guard.", ref("Deleted"), errors={400: "INVALID_PATH", 403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT"})
 operation("post", "/api/projects/{ident}/file/rename", "Files", "Move or rename a workspace path",
@@ -562,9 +574,9 @@ operation("get", "/api/projects/{ident}/download", "Files", "Read a binary or te
 operation("post", "/api/projects/{ident}/upload", "Files", "Upload a workspace file",
     "multipart/form-data field file; directory is a QUERY parameter, default uploads. Only the uploaded filename basename is used. Publish the file, increment its file revision (including identical-byte replacements), set user_import origin, mark consumers stale and return path/size/origin. Older editor expected_revision values then return REVISION_CONFLICT. Exceeding configured max_upload_mb preserves an existing destination and removes only the temporary file.", ref("FileUpload"), errors={403: "PATH_ESCAPE", 404: "NOT_FOUND", 409: "WORKSPACE_PENDING", 413: "UPLOAD_TOO_LARGE"})
 operation("post", "/api/projects/{ident}/export", "Files", "Export a project backup ZIP",
-    "ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and selected credential/machine fields; large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.", body="ProjectExportRequest", media=("application/zip",), errors={404: "NOT_FOUND"})
+    "ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and machine fields while preserving the nonsecret project provider ID; credentials remain excluded. Large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.", body="ProjectExportRequest", media=("application/zip",), errors={404: "NOT_FOUND"})
 operation("post", "/api/projects/import", "Files", "Import a project backup ZIP",
-    "multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped identifiers; active imported work is interrupted and execution is not replayed.", ref("Project"), errors={400: "INVALID_ARCHIVE, UNSAFE_ARCHIVE or graph validation errors", 413: "UPLOAD_TOO_LARGE or ARCHIVE_TOO_LARGE"})
+    "multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped graph/resource identifiers; preserve its selected provider when that ID exists in the current workspace. If the saved provider is unavailable, mark provider_selection_required and prevent provider-backed runs from silently falling back until the owner edits project settings. Active imported work is interrupted and execution is not replayed.", ref("Project"), errors={400: "INVALID_ARCHIVE, UNSAFE_ARCHIVE or graph validation errors", 413: "UPLOAD_TOO_LARGE or ARCHIVE_TOO_LARGE"})
 
 operation("post", "/api/library/search", "Literature", "Search publication metadata",
     "query is required; source defaults crossref, limit defaults 8 and is capped at 30. Return {results:[provider-specific metadata]}. This does not import results into a project.", ref("LibrarySearchResult"), body="LibrarySearchRequest", errors={502: "LITERATURE_SEARCH_FAILED (retryable)"})
@@ -582,7 +594,7 @@ operation("post", "/api/browser/read", "Literature", "Import a public web-page r
     "Require project_id and url; screenshot is optional (default false). Read the real page, save text/optional screenshot relative paths and a SourcePaper with a page passage. Return the saved RecordItem.", ref("RecordItem"), body="BrowserReadRequest", errors={404: "NOT_FOUND"})
 for path, kind, description in (
     ("/api/research/ideas", "ideas", "Enqueue idea generation; scientific judgments and task-specific options are in the extensible request body."),
-    ("/api/research/suggest-paths", "suggest_paths", "Enqueue path proposals; optional node_id supplies the scheduler node context."),
+    ("/api/research/suggest-paths", "suggest_paths", "Enqueue path proposals. scope=node sends the selected node and its execution ancestors; scope=branch sends only the selected node's branch; scope=project sends the full graph. Node and branch scopes require node_id."),
     ("/api/reviews", "review", "Enqueue scientific review; POST /reviews does not directly create a Review resource record."),
     ("/api/analysis/run", "analysis", "Enqueue an analysis task over declared real inputs; output fields depend on the selected analysis type.")):
     operation("post", path, "Research", f"Enqueue {kind} work", description + " Return Run, not the final scientific output.", ref("Run"), body="QueuedTaskRequest", errors={400: "Scheduling/input errors", 404: "NOT_FOUND"})
@@ -619,7 +631,7 @@ operation("post", "/api/papers/{ident}/check", "Manuscripts", "Inspect citations
 operation("post", "/api/papers/{ident}/revise", "Manuscripts", "Enqueue a revision proposal",
     "Resolve paper/project ID, optionally compare PaperDocument revision, capture saved source/revision and pass the extensible body to paper_revise. Return Run. Saved manuscript edits are applied via review acceptance or explicit manual editing.", ref("Run"), body="PaperRevisionRequest", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
 operation("post", "/api/papers/{ident}/export", "Manuscripts", "Export current manuscript PDF or source ZIP",
-    "Resolve an existing paper/project ID. Optional expected_revision compares PaperDocument revision. format=pdf requires an existing compiled PDF of the CURRENT revision; other/omitted values return paper.tex/references.bib/assets ZIP and a current PDF when available. Source ZIP excludes .aux/.blg/.log artifacts.", body="PaperExportRequest", media=("application/zip", "application/pdf"), errors={403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 409: "REVISION_CONFLICT, PDF_UNAVAILABLE or STALE_PDF"})
+    "Resolve an existing paper/project ID. Optional expected_revision compares PaperDocument revision. For a source ZIP, optional source and bibtex fields export the editor's current draft without saving it. format=pdf requires an existing compiled PDF of the CURRENT revision; source ZIP includes a PDF only when its source matches the saved revision. Source ZIP excludes .aux/.blg/.log artifacts.", body="PaperExportRequest", media=("application/zip", "application/pdf"), errors={403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 409: "REVISION_CONFLICT, PDF_UNAVAILABLE or STALE_PDF"})
 
 RESOURCE_KINDS = ("library", "experiments", "datasets", "ideas", "theories", "claims", "figures", "analyses", "reviews")
 for kind in RESOURCE_KINDS:
@@ -632,7 +644,7 @@ for kind in RESOURCE_KINDS:
     operation("get", f"/api/{kind}/{{ident}}", "Resources", f"Read a {kind} record",
         "Return the persisted resource; data structure depends on the resource kind.", ref(record_type), errors={404: "NOT_FOUND"})
     operation("patch", f"/api/{kind}/{{ident}}", "Resources", f"Edit a {kind} record",
-        "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.", ref(record_type), body="ResourcePatch", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
+        "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale." + (" For figures, changes to render inputs (kind/style/code/code_origin/run_ids/metric/data/caption/purpose/image_prompt/narrative_mode/image_variants/candidates) clear old render outputs and review selection and set needs_review; render and review the new revision before insertion." if kind=="figures" else ""), ref(record_type), body="ResourcePatch", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
     operation("delete", f"/api/{kind}/{{ident}}", "Resources", f"Delete a {kind} record",
         "Delete the metadata record and mark consuming materials stale; this handler does not delete all associated workspace files. Return deleted identifier.", ref("Deleted"), errors={404: "NOT_FOUND"})
 
@@ -666,7 +678,7 @@ operation("get", "/api/projects/{ident}/usage", "Research", "Read project spendi
 operation("get", "/api/runs/{ident}/lineage", "Runs", "Inspect run dependencies and current file freshness",
     "Traverse same-project run dependencies. Available rows include config (without provider_snapshot/env), metrics, files and comparisons between saved workspace and current branch working files. Missing/cross-project dependencies are {id,missing:true}. current describes node revision/result flags, not semantic correctness.", ref("RunLineage"), errors={404: "NOT_FOUND"})
 operation("get", "/api/runs/{ident}/session", "Runs", "Read the saved Agent session",
-    "Return {run_id,status,session}. Missing agent_session.json means session:null. summary=true returns selected session status/totals/active_seconds/wait_for/updated_at/budget_reason plus transcript_count; selected fields can be null. Full session structure is extensible.", ref("RunSession"), errors={404: "NOT_FOUND"})
+    "Return {run_id,status,session}. Missing agent_session.json means session:null. For a cancelled run, the session status is reported as cancelled even if its last checkpoint predates cancellation. summary=true returns selected session status/totals/active_seconds/wait_for/updated_at/budget_reason plus transcript_count; selected fields can be null. Full session structure is extensible.", ref("RunSession"), errors={404: "NOT_FOUND"})
 operation("patch", "/api/runs/{ident}/configuration", "Runs", "Merge editable execution configuration",
     "Shallow-merge task parameters; reject service-managed provider_snapshot/execution_attempt/resolved_inputs/project_goal/repository-source/verification-binding/result identities. Validate supplied repository for eligible run kinds. Scientific changes after execution mark verification unverified. Return config with provider_snapshot/env omitted. No revision guard; unknown editable keys remain extensible.", ref("RunConfiguration"), body="JsonObject", errors={404: "NOT_FOUND", 422: "INVALID_CONFIGURATION or INVALID_REPOSITORY"})
 operation("get", "/api/projects/{ident}/graph/page", "Graph", "Read a node page with incident edges",
@@ -677,7 +689,7 @@ operation("post", "/api/projects/{ident}/writing/review", "Manuscripts", "Propos
     "body.source is text (default empty). Return character offsets and one-based line numbers. replacement:null means an evidence judgment is required; never apply it as empty replacement. This endpoint does not edit a saved paper.", ref("WritingReview"), body="WritingReviewRequest", errors={404: "NOT_FOUND"})
 SCHEMAS["WritingReviewRequest"] = obj({"source": S})
 operation("post", "/api/projects/{ident}/graph/batch", "Graph", "Apply a batch of supported graph edits",
-    "Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.", ref("GraphBatchResult"), body="GraphBatchRequest", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT", 422: "INVALID_COMMANDS or UNSUPPORTED_BATCH_OPERATION"})
+    "Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; one edit_node may update selected node positions atomically with params.positions keyed by target ID. Workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.", ref("GraphBatchResult"), body="GraphBatchRequest", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT", 422: "INVALID_COMMANDS or UNSUPPORTED_BATCH_OPERATION"})
 operation("post", "/api/projects/{ident}/statistics/review", "Experiments", "Enqueue an independent statistics review",
     "Merge the extensible body, force review_scope=statistics and return queued Run. Optional request_id controls scheduler reuse; review findings arrive through saved run/resource output.", ref("Run"), body="JsonObject", errors={404: "NOT_FOUND"})
 operation("post", "/api/projects/{ident}/statistics/paired", "Experiments", "Enqueue paired real-data inference",
@@ -728,8 +740,11 @@ for method,path,summary,response,body in [
     ('post','/api/decisions/{ident}/answer','Accept, edit or reject the reviewed action',ref('DecisionView'),'DecisionAnswer'),
     ('post','/api/research/proposals/{ident}/reject','Reject a proposal with planning feedback',ref('ResourceRecord'),'RejectionRequest'),
 ]:
+    description='Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.'
+    if path=='/api/projects/{ident}/interventions':
+        description += ' The before timestamp cursor accepts before_id to disambiguate records sharing a timestamp; clients can page through all retained history.'
     operation(method,path,'Interventions',summary,
-        'Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.',
+        description,
         response,body=body,errors={404:'Target unavailable',409:'Reviewed revision, request identity, decision or run state conflict'})
 
 WEBSOCKETS = [{
@@ -907,7 +922,7 @@ scheduling, not a synchronous experiment.
 | Graph operation | Target / main `params` fields | Resulting editable operation |
 | --- | --- | --- |
 | `add_node` | Node fields directly or `node:{...}`, optional branch_id/parent_id | Add a node and optional execution parent |
-| `edit_node` | targets: node IDs; fields directly or `patch:{...}`; optional stop_current_run | Deep-merge editable fields, analyze impact, optionally cancel the current run |
+| `edit_node` | targets: node IDs; fields directly or `patch:{...}`; optional stop_current_run; optional `positions:{node_id:{x,y}}` | Deep-merge editable fields, apply per-node layout positions atomically, analyze impact, optionally cancel the current run |
 | `apply_instruction_patch` | targets: node IDs; instructions or old_text/new_text | Replace instructions or one exact matching passage |
 | `delete_node` | targets; strategy subtree/reconnect/visual_only when descendants exist | Remove a subtree, reconnect execution reachability, or remove visual grouping |
 | `add_dependency`, `remove_dependency` | source/target or two targets; relation; add supports input_mapping | Add/remove the specified typed edge |

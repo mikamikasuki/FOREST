@@ -110,3 +110,46 @@ def test_non_public_pdf_imports_keep_existing_behavior(tmp_path, monkeypatch):
     assert "pdf_path" not in doi
     assert (tmp_path / "metadata.json").exists()
     assert (tmp_path / "references.bib").exists()
+
+
+@pytest.mark.parametrize(
+    ("doi_path", "suffix", "expected_doi", "expected_url"),
+    [
+        (
+            "10.1234/control",
+            "?utm_source=forest-check",
+            "10.1234/control",
+            "https://api.crossref.org/works/10.1234%2Fcontrol",
+        ),
+        (
+            "10.1234/control",
+            "#citation",
+            "10.1234/control",
+            "https://api.crossref.org/works/10.1234%2Fcontrol",
+        ),
+        (
+            "10.1234/control;2-P",
+            "?utm_source=forest-check#citation",
+            "10.1234/control;2-P",
+            "https://api.crossref.org/works/10.1234%2Fcontrol%3B2-P",
+        ),
+    ],
+)
+def test_doi_resolver_urls_keep_path_and_ignore_query_fragment(
+    tmp_path, monkeypatch, doi_path, suffix, expected_doi, expected_url
+):
+    requested = []
+
+    class Response:
+        def json(self):
+            return {"message": {"title": ["DOI source"], "DOI": expected_doi}}
+
+    def get(url, *args, **kwargs):
+        requested.append(url)
+        return Response()
+
+    monkeypatch.setattr(sources, "_get", get)
+    record = sources.import_identifier(f"https://doi.org/{doi_path}{suffix}", tmp_path)
+
+    assert record["doi"] == expected_doi
+    assert requested == [expected_url]
