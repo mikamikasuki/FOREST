@@ -446,7 +446,58 @@ function ProjectForm({
   const [allowPaid, setAllowPaid] = useState(
     initial?.budget?.allow_paid || false,
   );
+  const [baseProject, setBaseProject] = useState(initial);
+  const [conflictProject, setConflictProject] = useState<Project | null>(null);
   const [busy, setBusy] = useState(false);
+  const submit = async (base = baseProject, rebase = false) => {
+    const previousBase = baseProject || initial;
+    const values = {
+      name: rebase && name === previousBase?.name ? base?.name ?? name : name,
+      goal: rebase && goal === previousBase?.goal ? base?.goal ?? goal : goal,
+      description:
+        rebase && description === previousBase?.description
+          ? base?.description ?? description
+          : description,
+      providerId:
+        rebase &&
+        providerId === (previousBase?.config?.provider_id || "")
+          ? base?.config?.provider_id ?? ""
+          : providerId,
+      allowPaid:
+        rebase && allowPaid === (previousBase?.budget?.allow_paid || false)
+          ? base?.budget?.allow_paid ?? false
+          : allowPaid,
+    };
+    setBusy(true);
+    const result = await action(async () => {
+      try {
+        return await api<Project>(
+          initial ? `/projects/${initial.id}` : "/projects",
+          initial ? "PATCH" : "POST",
+          {
+            name: values.name,
+            goal: values.goal,
+            description: values.description,
+            config: { ...base?.config, provider_id: values.providerId || null },
+            budget: { ...base?.budget, allow_paid: values.allowPaid },
+            ...(base ? { expected_revision: base.revision } : {}),
+          },
+        );
+      } catch (error) {
+        if (initial && (error as any).status === 409) {
+          setConflictProject(await api<Project>(`/projects/${initial.id}`));
+          return undefined;
+        }
+        throw error;
+      }
+    });
+    setBusy(false);
+    if (result) {
+      setBaseProject(result);
+      onSaved(result);
+      onClose();
+    }
+  };
   return (
     <Modal
       title={
@@ -455,30 +506,73 @@ function ProjectForm({
       onClose={onClose}
     >
       <form
-        onSubmit={async (e) => {
+        onSubmit={(e) => {
           e.preventDefault();
-          setBusy(true);
-          const result = await action(() =>
-            api<Project>(
-              initial ? `/projects/${initial.id}` : "/projects",
-              initial ? "PATCH" : "POST",
-              {
-                name,
-                goal,
-                description,
-                config: { ...initial?.config, provider_id: providerId || null },
-                budget: { ...initial?.budget, allow_paid: allowPaid },
-                ...(initial ? { expected_revision: initial.revision } : {}),
-              },
-            ),
-          );
-          setBusy(false);
-          if (result) {
-            onSaved(result);
-            onClose();
-          }
+          void submit();
         }}
       >
+        {conflictProject && (
+          <div className="error-box" role="alert">
+            <div>
+              <strong>
+                {t(
+                  "项目已在其他位置更新。你的草稿仍保留。",
+                  "This project changed elsewhere. Your draft is preserved.",
+                )}
+              </strong>
+              <p>
+                {t(
+                  "请查看当前版本，再选择重新应用草稿或载入当前值。",
+                  "Review the current version, then reapply your draft or load the current values.",
+                )}
+              </p>
+              <details>
+                <summary>
+                  {t(
+                    `当前版本 r${conflictProject.revision}`,
+                    `Current version r${conflictProject.revision}`,
+                  )}
+                </summary>
+                <p>
+                  <strong>{conflictProject.name}</strong>
+                </p>
+                <p>{conflictProject.goal}</p>
+                <p>{conflictProject.description}</p>
+                <p>
+                  {t("允许付费调用", "Paid API calls")}: {" "}
+                  {conflictProject.budget?.allow_paid
+                    ? t("是", "Allowed")
+                    : t("否", "Not allowed")}
+                </p>
+              </details>
+              <div className="inline-actions">
+                <Button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setName(conflictProject.name);
+                    setGoal(conflictProject.goal);
+                    setDescription(conflictProject.description);
+                    setProviderId(conflictProject.config?.provider_id || "");
+                    setAllowPaid(conflictProject.budget?.allow_paid || false);
+                    setBaseProject(conflictProject);
+                    setConflictProject(null);
+                  }}
+                >
+                  {t("载入当前值", "Load current values")}
+                </Button>
+                <Button
+                  type="button"
+                  className="primary"
+                  busy={busy}
+                  onClick={() => void submit(conflictProject, true)}
+                >
+                  {t("保留草稿并重试", "Keep my draft and retry")}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
         <Field label={t("项目名称", "Project name")}>
           <input
             required
@@ -533,7 +627,12 @@ function ProjectForm({
           <Button type="button" onClick={onClose}>
             {t("取消", "Cancel")}
           </Button>
-          <Button className="primary" busy={busy} type="submit">
+          <Button
+            className="primary"
+            busy={busy}
+            disabled={!!conflictProject}
+            type="submit"
+          >
             {initial
               ? t("保存修改", "Save changes")
               : t("创建研究项目", "Create project")}
