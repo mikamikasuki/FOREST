@@ -38,11 +38,36 @@ def _bib_escape(value):
     return str(value or "").replace("\\", "\\textbackslash{}").replace("&", r"\&").replace("%", r"\%").replace("_", r"\_").replace("#", r"\#").replace("{", "").replace("}", "")
 
 
+def _author_names(value):
+    if isinstance(value, (str, dict)):
+        value = [value]
+    elif not isinstance(value, (list, tuple)):
+        value = []
+    names = []
+    for author in value or []:
+        if isinstance(author, str):
+            name = author.strip()
+        elif isinstance(author, dict):
+            name = author.get("name") or " ".join(
+                str(part).strip()
+                for part in (author.get("given"), author.get("family"))
+                if part
+            )
+        else:
+            name = ""
+        if name:
+            names.append(name)
+    return names
+
+
 def bibtex(records: list[dict]) -> str:
     entries = []
     for i, record in enumerate(records):
-        key = record.get("citation_key") or re.sub(r"[^a-zA-Z0-9]", "", (record.get("authors") or ["source"])[0].split()[-1]) + str(record.get("year") or "nd") + str(i)
-        fields = {"title": record.get("title"), "author": " and ".join(record.get("authors", [])), "year": record.get("year"), "doi": record.get("doi"), "url": record.get("url"), "journal": record.get("journal")}
+        authors = _author_names(record.get("authors"))
+        first_author = authors[0] if authors else "source"
+        surname = first_author.split(",", 1)[0].split()[-1]
+        key = record.get("citation_key") or re.sub(r"[^a-zA-Z0-9]", "", surname) + str(record.get("year") or "nd") + str(i)
+        fields = {"title": record.get("title"), "author": " and ".join(authors), "year": record.get("year"), "doi": record.get("doi"), "url": record.get("url"), "journal": record.get("journal")}
         entries.append("@article{" + key + ",\n" + ",\n".join(f"  {k} = {{{_bib_escape(v)}}}" for k, v in fields.items() if v) + "\n}")
     return "\n\n".join(entries)
 
