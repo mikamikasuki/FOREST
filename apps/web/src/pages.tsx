@@ -1934,6 +1934,8 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
   const [instruction, setInstruction] = useState("");
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [revising, setRevising] = useState(false);
+  const revisingRef = useRef(false);
   const [editingRevision, setEditingRevision] = useState<number | undefined>();
   const [template, setTemplate] = useState<PaperTemplate>("article");
   const [layout, setLayout] = useState<PaperLayoutConfig>(
@@ -2193,21 +2195,30 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
           placeholder={t("描述需要修改的内容…", "Describe the revision…")}
         />
         <Button
-          disabled={!instruction.trim() || busy || !paper}
-          onClick={() =>
-            action(
+          busy={revising}
+          disabled={!instruction.trim() || busy || revising || !paper}
+          onClick={() => {
+            if (revisingRef.current) return;
+            revisingRef.current = true;
+            setRevising(true);
+            void action(
               async () => {
-                const revision = dirty ? await save() : editingRevision;
-                await api(`/papers/${id}/revise`, "POST", {
-                  instruction,
-                  expected_revision: revision,
-                });
-                setInstruction("");
-                await reload();
+                try {
+                  const revision = dirty ? await save() : editingRevision;
+                  await api(`/papers/${id}/revise`, "POST", {
+                    instruction,
+                    expected_revision: revision,
+                  });
+                  setInstruction("");
+                  await reload();
+                } finally {
+                  revisingRef.current = false;
+                  setRevising(false);
+                }
               },
               t("论文修订任务已排队", "Paper revision queued"),
-            )
-          }
+            );
+          }}
         >
           <Send size={14} />
           {t("修订", "Revise")}
