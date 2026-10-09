@@ -622,7 +622,7 @@ Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT.
 
 #### `POST /api/projects/import`
 
-multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped identifiers; active imported work is interrupted and execution is not replayed.
+multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped graph/resource identifiers; preserve its selected provider when that ID exists in the current workspace. If the saved provider is unavailable, mark provider_selection_required and prevent provider-backed runs from silently falling back until the owner edits project settings. Active imported work is interrupted and execution is not replayed.
 
 Body: `multipart/form-data`: `Body_import_project_api_projects_import_post`; required.
 
@@ -645,7 +645,7 @@ Known domain failures: `400` NOT_FILE; `403` PATH_ESCAPE; `404` NOT_FOUND or MIS
 
 #### `POST /api/projects/{ident}/export`
 
-ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and selected credential/machine fields; large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.
+ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and machine fields while preserving the nonsecret project provider ID; credentials remain excluded. Large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2263,7 +2263,7 @@ Known domain failures: `400` EMPTY_BRANCH or scheduling/input errors; `404` NOT_
 
 #### `POST /api/nodes/{ident}/run`
 
-Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id.
+Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id. Provider-backed runs in imported projects with an unavailable archived provider require an explicit provider or workspace-default selection before scheduling.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -2273,7 +2273,7 @@ Body: `application/json`: `RunRequest`; required.
 
 Success `200`: `application/json`: `Run or SelectedRunCollection`.
 
-Known domain failures: `400` Scheduling/input errors; `404` NOT_FOUND; `409` Submission/revision conflicts.
+Known domain failures: `400` Scheduling/input errors; `404` NOT_FOUND; `409` Submission/revision conflicts; `422` PROVIDER_SELECTION_REQUIRED.
 
 #### `GET /api/projects/{ident}/runs`
 
