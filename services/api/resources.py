@@ -610,7 +610,10 @@ def browser_read(body:dict=Body(...)):
     for key in ('text_path','screenshot_path'):
         if result.get(key): result[key]=str(Path(result[key]).relative_to(root))
     with Session.begin() as s:
-        r=SourcePaper(project_id=body['project_id'],title=result['title'] or body['url'],data={**result,'source':'public_web_page','passages':[{'page':None,'text':result['text'],'source_url':result['url']}]},status='available'); s.add(r); s.flush(); emit(s,r.project_id,'artifact_available',{'kind':'library','id':r.id}); return asdict(r)
+        r=SourcePaper(project_id=body['project_id'],title=result['title'] or body['url'],data={**result,'source':'public_web_page'},status='available'); s.add(r); s.flush(); emit(s,r.project_id,'artifact_available',{'kind':'library','id':r.id}); saved=asdict(r)
+        saved['data']={**saved['data'],'passages':saved['data'].get('passages',[])[:1],
+                       'passage_count':len(saved['data'].get('passages',[]))}
+        return saved
 
 @router.patch('/api/runs/{ident}/checkpoint')
 def edit_checkpoint(ident:str,body:dict=Body(...)):
