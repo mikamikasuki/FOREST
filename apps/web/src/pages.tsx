@@ -1,5 +1,7 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
+import { updateDefaultProviderDraft } from "./settingsDraft";
+import { hostEditorConfig, hostPayload } from "./connectionPayload";
 import { useState, useEffect, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
@@ -211,21 +213,30 @@ export function LibraryPage() {
   const [webUrl, setWebUrl] = useState("");
   const [webScreenshot, setWebScreenshot] = useState(false);
   const [webResult, setWebResult] = useState<Json | null>(null);
+  const [webImporting, setWebImporting] = useState(false);
+  const webImportLock = useRef(false);
   const [passages, setPassages] = useState<Json | null>(null);
   const [tab, setTab] = useState("abstract");
   const [filter, setFilter] = useState("");
+  const searchRequest = useRef(0);
   const performSearch = async () => {
+    const request = ++searchRequest.current;
+    const query = search;
     setSearching(true);
-    await action(async () => {
-      const r = await api("/library/search", "POST", {
-        query: search,
-        source,
-        limit: 8,
+    setResults([]);
+    setSearched(true);
+    try {
+      await action(async () => {
+        const r = await api("/library/search", "POST", {
+          query,
+          source,
+          limit: 8,
+        });
+        if (request === searchRequest.current) setResults(r.results || []);
       });
-      setResults(r.results || []);
-      setSearched(true);
-    });
-    setSearching(false);
+    } finally {
+      if (request === searchRequest.current) setSearching(false);
+    }
   };
   return (
     <div className="page">
@@ -322,17 +333,26 @@ export function LibraryPage() {
               {t("保存截图", "Capture screenshot")}
             </label>
             <Button
-              disabled={!webUrl.trim()}
+              disabled={!webUrl.trim() || webImporting}
+              busy={webImporting}
               onClick={() =>
                 action(async () => {
-                  setWebResult(
-                    await api("/browser/read", "POST", {
-                      project_id: id,
-                      url: webUrl,
-                      screenshot: webScreenshot,
-                    }),
-                  );
-                  await reload();
+                  if (webImportLock.current) return;
+                  webImportLock.current = true;
+                  setWebImporting(true);
+                  try {
+                    setWebResult(
+                      await api("/browser/read", "POST", {
+                        project_id: id,
+                        url: webUrl,
+                        screenshot: webScreenshot,
+                      }),
+                    );
+                    await reload();
+                  } finally {
+                    webImportLock.current = false;
+                    setWebImporting(false);
+                  }
                 })
               }
             >
@@ -423,6 +443,7 @@ export function LibraryPage() {
         <label className="search-input">
           <Search size={14} />
           <input
+            aria-label={t("筛选已保存文献", "Filter saved papers")}
             placeholder={t("筛选已保存文献", "Filter saved papers")}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -489,6 +510,7 @@ export function LibraryPage() {
       {selected && (
         <Modal wide title={selected.title} onClose={() => setSelected(null)}>
           <Tabs
+            panelId="library-reference-tabs"
             value={tab}
             onChange={setTab}
             items={[
@@ -498,6 +520,12 @@ export function LibraryPage() {
               { id: "passages", label: t("原文定位", "Passages") },
             ]}
           />
+          <div
+            id="library-reference-tabs-panel"
+            role="tabpanel"
+            aria-labelledby={`library-reference-tabs-tab-${tab}`}
+            tabIndex={0}
+          >
           {tab === "abstract" && (
             <div className="paper-detail">
               <p>
@@ -564,6 +592,7 @@ export function LibraryPage() {
               {passages && <JsonView value={passages} />}
             </>
           )}
+          </div>
         </Modal>
       )}
       {editing && (
@@ -1079,6 +1108,10 @@ export function ExperimentsPage() {
   const [editing, setEditing] = useState<RecordItem | null | false>(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [comparison, setComparison] = useState<Json | null>(null);
+  const [launchingExperimentIds, setLaunchingExperimentIds] = useState(
+    () => new Set<string>(),
+  );
+  const launchingExperimentIdsRef = useRef(new Set<string>());
   useEffect(() => {
     const f = () => void reloadRuns();
     window.addEventListener("forest-refresh", f);
@@ -1134,20 +1167,37 @@ export function ExperimentsPage() {
                 />
                 <Button
                   className="primary"
-                  onClick={() =>
-                    action(
+                  busy={launchingExperimentIds.has(e.id)}
+                  disabled={launchingExperimentIds.has(e.id)}
+                  onClick={() => {
+                    if (launchingExperimentIdsRef.current.has(e.id)) return;
+                    launchingExperimentIdsRef.current.add(e.id);
+                    setLaunchingExperimentIds((current) =>
+                      new Set(current).add(e.id),
+                    );
+                    void action(
                       async () => {
-                        await api(`/experiments/${e.id}/launch`, "POST", {
-                          request_id: uid(),
-                        });
-                        await reloadRuns();
+                        try {
+                          await api(`/experiments/${e.id}/launch`, "POST", {
+                            request_id: uid(),
+                          });
+                          await reloadRuns();
+                        } finally {
+                          launchingExperimentIdsRef.current.delete(e.id);
+                          setLaunchingExperimentIds((current) => {
+                            if (!current.has(e.id)) return current;
+                            const next = new Set(current);
+                            next.delete(e.id);
+                            return next;
+                          });
+                        }
                       },
                       t(
                         "实验已加入真实执行队列",
                         "Experiment queued for execution",
                       ),
-                    )
-                  }
+                    );
+                  }}
                 >
                   <Play size={13} />
                   {t("启动实验", "Launch")}
@@ -1268,10 +1318,17 @@ export function DataPage() {
     error,
     reload,
   } = useLoad<Run[]>(`/projects/${id}/runs`, []);
+  useEffect(() => {
+    const refresh = () => void reload();
+    window.addEventListener("forest-refresh", refresh);
+    return () => window.removeEventListener("forest-refresh", refresh);
+  }, [reload]);
   const { data: analyses, reload: reloadAnalyses } = useLoad<RecordItem[]>(
     `/analyses?project_id=${id}`,
     [],
   );
+  const [recomputing, setRecomputing] = useState(false);
+  const recomputingRef = useRef(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [metric, setMetric] = useState("accuracy");
   const [baseline, setBaseline] = useState("");
@@ -1286,7 +1343,13 @@ export function DataPage() {
       ),
     ),
   ];
-  const visible = runs.filter((r) => status === "all" || r.status === status);
+  const visible = runs.filter(
+    (r) =>
+      status === "all" ||
+      (status === "succeeded"
+        ? r.status === "completed" || r.status === "succeeded"
+        : r.status === status),
+  );
   const exportCSV = () => {
     const fields = ["run_id", "kind", "status", ...metrics];
     const cell = (v: any) => `"${String(v ?? "").replaceAll('"', '""')}"`;
@@ -1346,34 +1409,42 @@ export function DataPage() {
             <option value="all">
               {t("全部（含缺失/失败）", "All (including failed)")}
             </option>
-            {["completed", "succeeded", "failed", "running", "queued"].map(
-              (s) => (
-                <option key={s}>{s}</option>
-              ),
-            )}
+            <option value="succeeded">{t("成功", "Succeeded")}</option>
+            {["failed", "running", "queued"].map((s) => (
+              <option key={s}>{s}</option>
+            ))}
           </select>
         </Field>
         <Button
           className="primary"
-          disabled={!runs.length}
-          onClick={() =>
-            action(
+          busy={recomputing}
+          disabled={!runs.length || recomputing}
+          onClick={() => {
+            if (recomputingRef.current) return;
+            recomputingRef.current = true;
+            setRecomputing(true);
+            void action(
               async () => {
-                await api("/analysis/run", "POST", {
-                  project_id: id,
-                  run_ids: selected.length
-                    ? selected
-                    : runs
-                        .filter((r) => Object.keys(r.metrics || {}).length)
-                        .map((r) => r.id),
-                  baseline,
-                  metric,
-                });
-                await reloadAnalyses();
+                try {
+                  await api("/analysis/run", "POST", {
+                    project_id: id,
+                    run_ids: selected.length
+                      ? selected
+                      : runs
+                          .filter((r) => Object.keys(r.metrics || {}).length)
+                          .map((r) => r.id),
+                    baseline,
+                    metric,
+                  });
+                  await reloadAnalyses();
+                } finally {
+                  recomputingRef.current = false;
+                  setRecomputing(false);
+                }
               },
               t("统计分析已排队", "Analysis queued"),
-            )
-          }
+            );
+          }}
         >
           <Play size={14} />
           {t("重新计算统计", "Recompute statistics")}
@@ -1481,11 +1552,23 @@ export function DataPage() {
 }
 export function FiguresPage() {
   const { data: figures, id, error, reload } = useProjectRecords("figures");
-  const { data: runs } = useLoad<Run[]>(`/projects/${id}/runs`, []);
+  const { data: runs, reload: reloadRuns } = useLoad<Run[]>(
+    `/projects/${id}/runs`,
+    [],
+  );
   const { t, action } = useUI();
   const [selected, setSelected] = useState("");
   const [creating, setCreating] = useState(false);
+  const [figureDirty, setFigureDirty] = useState(false);
   const figure = figures.find((f) => f.id === selected) || figures[0];
+  useEffect(() => {
+    if (!selected && figures.length) setSelected(figures[0].id);
+  }, [figures, selected]);
+  useEffect(() => {
+    const refresh = () => void reloadRuns();
+    window.addEventListener("forest-refresh", refresh);
+    return () => window.removeEventListener("forest-refresh", refresh);
+  }, [reloadRuns]);
   return (
     <div className="page studio-page">
       <PageHeading
@@ -1505,7 +1588,24 @@ export function FiguresPage() {
               <button
                 key={f.id}
                 className={figure?.id === f.id ? "active" : ""}
-                onClick={() => setSelected(f.id)}
+                onClick={() => {
+                  if (figure?.id === f.id) {
+                    if (!selected) setSelected(f.id);
+                    return;
+                  }
+                  if (
+                    figureDirty &&
+                    !confirm(
+                      t(
+                        "放弃未保存的图表修改？",
+                        "Discard unsaved figure changes?",
+                      ),
+                    )
+                  )
+                    return;
+                  setFigureDirty(false);
+                  setSelected(f.id);
+                }}
               >
                 <ChartNoAxesCombined size={15} />
                 <span>Fig. {i + 1}</span>
@@ -1521,6 +1621,7 @@ export function FiguresPage() {
               projectId={id!}
               runs={runs}
               reload={reload}
+              onDirtyChange={setFigureDirty}
             />
           )}
         </>
@@ -1569,11 +1670,13 @@ function FigureEditor({
   projectId,
   runs,
   reload,
+  onDirtyChange,
 }: {
   figure: RecordItem;
   projectId: string;
   runs: Run[];
   reload: () => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const { t, action } = useUI();
   const [style, setStyle] = useState<Json>(figure.data.style || {});
@@ -1597,6 +1700,35 @@ function FigureEditor({
   const start = useRef<{ x: number; y: number } | null>(null);
   const [regionRevision, setRegionRevision] = useState(figure.revision);
   const [editRevision, setEditRevision] = useState(figure.revision);
+  useEffect(() => {
+    const dirty =
+      kind !== (figure.data.kind || "bar") ||
+      JSON.stringify(style) !== JSON.stringify(figure.data.style || {}) ||
+      code !== (figure.data.code || "") ||
+      JSON.stringify(runIds) !== JSON.stringify(figure.data.run_ids || []) ||
+      metric !== (figure.data.metric || "") ||
+      caption !== (figure.data.caption || "") ||
+      dataText !== JSON.stringify(figure.data.data || {}, null, 2) ||
+      purpose !== (figure.data.purpose || "effectiveness") ||
+      imagePrompt !== (figure.data.image_prompt || "") ||
+      instruction.trim() !== "" ||
+      region !== null;
+    onDirtyChange(dirty);
+  }, [
+    figure,
+    kind,
+    style,
+    code,
+    runIds,
+    metric,
+    caption,
+    dataText,
+    purpose,
+    imagePrompt,
+    instruction,
+    region,
+    onDirtyChange,
+  ]);
   const outputs = figure.data.outputs || {};
   const imagePath =
     outputs.svg || outputs.png || figure.data.svg_path || figure.data.png_path;
@@ -1754,6 +1886,7 @@ function FigureEditor({
       </section>
       <aside className="surface figure-properties">
         <Tabs
+          panelId="figure-properties-tabs"
           value={tab}
           onChange={setTab}
           items={[
@@ -1762,6 +1895,13 @@ function FigureEditor({
             { id: "code", label: t("代码", "Code") },
           ]}
         />
+        <div
+          className="tab-panel"
+          id="figure-properties-tabs-panel"
+          role="tabpanel"
+          aria-labelledby={`figure-properties-tabs-tab-${tab}`}
+          tabIndex={0}
+        >
         {tab === "style" && (
           <>
             <Field label={t("图形类型", "Figure type")}>
@@ -1892,6 +2032,7 @@ function FigureEditor({
             <CodeEditor value={code} onChange={setCode} language="python" />
           </div>
         )}
+        </div>
         <div className="inline-actions">
           <Button
             onClick={() =>
@@ -1954,6 +2095,8 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
   const [instruction, setInstruction] = useState("");
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [revising, setRevising] = useState(false);
+  const revisingRef = useRef(false);
   const [editingRevision, setEditingRevision] = useState<number | undefined>();
   const [template, setTemplate] = useState<PaperTemplate>("article");
   const [layout, setLayout] = useState<PaperLayoutConfig>(
@@ -2129,6 +2272,7 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
       <div className="paper-editors">
         <div className="paper-source">
           <Tabs
+            panelId="paper-source-tabs"
             value={tab}
             onChange={setTab}
             items={[
@@ -2137,6 +2281,13 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
               { id: "bindings", label: t("图表与指标绑定", "Bindings") },
             ]}
           />
+          <div
+            className="tab-panel"
+            id="paper-source-tabs-panel"
+            role="tabpanel"
+            aria-labelledby={`paper-source-tabs-tab-${tab}`}
+            tabIndex={0}
+          >
           {tab === "source" ? (
             <CodeEditor
               value={source}
@@ -2158,9 +2309,11 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
           ) : (
             <JsonView value={paper?.data.bindings || []} />
           )}
+          </div>
         </div>
         <div className="paper-preview">
           <Tabs
+            panelId="paper-preview-tabs"
             value={rightTab}
             onChange={setRightTab}
             items={[
@@ -2169,6 +2322,13 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
               { id: "checks", label: t("检查结果", "Checks") },
             ]}
           />
+          <div
+            className="tab-panel"
+            id="paper-preview-tabs-panel"
+            role="tabpanel"
+            aria-labelledby={`paper-preview-tabs-tab-${rightTab}`}
+            tabIndex={0}
+          >
           {rightTab === "pdf" &&
             (paper?.data.pdf_path ? (
               <PDFViewer
@@ -2204,6 +2364,7 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
               ) : null}
             </div>
           )}
+          </div>
         </div>
       </div>
       <div className="paper-instruction">
@@ -2213,21 +2374,30 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
           placeholder={t("描述需要修改的内容…", "Describe the revision…")}
         />
         <Button
-          disabled={!instruction.trim() || busy || !paper}
-          onClick={() =>
-            action(
+          busy={revising}
+          disabled={!instruction.trim() || busy || revising || !paper}
+          onClick={() => {
+            if (revisingRef.current) return;
+            revisingRef.current = true;
+            setRevising(true);
+            void action(
               async () => {
-                const revision = dirty ? await save() : editingRevision;
-                await api(`/papers/${id}/revise`, "POST", {
-                  instruction,
-                  expected_revision: revision,
-                });
-                setInstruction("");
-                await reload();
+                try {
+                  const revision = dirty ? await save() : editingRevision;
+                  await api(`/papers/${id}/revise`, "POST", {
+                    instruction,
+                    expected_revision: revision,
+                  });
+                  setInstruction("");
+                  await reload();
+                } finally {
+                  revisingRef.current = false;
+                  setRevising(false);
+                }
               },
               t("论文修订任务已排队", "Paper revision queued"),
-            )
-          }
+            );
+          }}
         >
           <Send size={14} />
           {t("修订", "Revise")}
@@ -2484,10 +2654,68 @@ function PaperFigureInsertion({
 export function FilesPage() {
   const { id } = useParams();
   const { t, action } = useUI();
-  const { data, error, reload } = useLoad<{ files: Json[] }>(
-    `/projects/${id}/files`,
-    { files: [] },
+  type FilePage = { files: Json[]; has_more: boolean; next_cursor: string | null };
+  const { data, error, reload: reloadFirstPage } = useLoad<FilePage>(
+    `/projects/${id}/files?limit=500`,
+    { files: [], has_more: false, next_cursor: null },
   );
+  const [pageData, setPageData] = useState<{
+    projectId: string;
+    page: FilePage;
+  } | null>(null);
+  const pageRequestGeneration = useRef(0);
+  const activeProjectId = useRef(id);
+  activeProjectId.current = id;
+  const [pageCursor, setPageCursor] = useState<string | null>(null);
+  const [cursorHistory, setCursorHistory] = useState<(string | null)[]>([]);
+  const [changingPage, setChangingPage] = useState(false);
+  const filePage = pageData && pageData.projectId === id ? pageData.page : data;
+  const reload = async () => {
+    setPageData(null);
+    setPageCursor(null);
+    setCursorHistory([]);
+    await reloadFirstPage();
+  };
+  useEffect(() => {
+    pageRequestGeneration.current += 1;
+    setPageData(null);
+    setPageCursor(null);
+    setCursorHistory([]);
+    setChangingPage(false);
+  }, [id]);
+  const changeFilePage = async (direction: "next" | "previous") => {
+    if (changingPage) return;
+    const nextCursor =
+      direction === "next" ? filePage.next_cursor : (cursorHistory.at(-1) ?? null);
+    if (direction === "next" && (!filePage.has_more || !nextCursor)) return;
+    if (direction === "previous" && !cursorHistory.length) return;
+    const requestProjectId = id;
+    const requestGeneration = pageRequestGeneration.current;
+    setChangingPage(true);
+    try {
+      if (direction === "previous" && nextCursor === null) {
+        setPageData(null);
+        setPageCursor(null);
+        setCursorHistory((history) => history.slice(0, -1));
+        return;
+      }
+      const query = `?limit=500${nextCursor ? `&cursor=${encodeURIComponent(nextCursor)}` : ""}`;
+      const nextPage = await api<FilePage>(`/projects/${requestProjectId}/files${query}`);
+      if (
+        pageRequestGeneration.current !== requestGeneration ||
+        activeProjectId.current !== requestProjectId
+      ) return;
+      if (direction === "next") setCursorHistory((history) => [...history, pageCursor]);
+      else setCursorHistory((history) => history.slice(0, -1));
+      setPageCursor(nextCursor);
+      setPageData({ projectId: requestProjectId!, page: nextPage });
+    } finally {
+      if (
+        pageRequestGeneration.current === requestGeneration &&
+        activeProjectId.current === requestProjectId
+      ) setChangingPage(false);
+    }
+  };
   const [path, setPath] = useState("");
   const [content, setContent] = useState("");
   const [original, setOriginal] = useState("");
@@ -2576,9 +2804,24 @@ export function FilesPage() {
         directory: path.split("/").slice(0, -1).join("/"),
       };
     });
-    const existing = new Set(
-      data.files.filter((item) => !item.is_dir).map((item) => item.path),
-    );
+    const existing = new Set<string>();
+    const destinations = [...new Set(selected.map((item) => item.path))];
+    for (let offset = 0; offset < destinations.length; offset += 1000) {
+      const result = await api<{ existing: string[]; directories: string[] }>(
+        `/projects/${id}/files/existing`,
+        "POST",
+        { paths: destinations.slice(offset, offset + 1000) },
+      );
+      if (result.directories.length) {
+        throw new Error(
+          t(
+            `这些上传目标是目录，不能用文件替换：${result.directories.slice(0, 5).join(", ")}`,
+            `These upload destinations are directories and cannot be replaced by files: ${result.directories.slice(0, 5).join(", ")}`,
+          ),
+        );
+      }
+      result.existing.forEach((item) => existing.add(item));
+    }
     const seen = new Set<string>();
     const conflicts = new Set<string>();
     for (const item of selected) {
@@ -2650,13 +2893,14 @@ export function FilesPage() {
           <label className="search-input">
             <Search size={14} />
             <input
+              aria-label={t("查找文件…", "Find files…")}
               placeholder={t("查找文件…", "Find files…")}
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
             />
           </label>
-          <div>
-            {data.files
+          <div className="file-tree-list">
+            {filePage.files
               .filter((f) =>
                 f.path.toLowerCase().includes(filter.toLowerCase()),
               )
@@ -2681,7 +2925,31 @@ export function FilesPage() {
                 </button>
               ))}
           </div>
-          {!data.files.length && <Empty title={t("暂无文件", "No files")} />}
+          {!filePage.files.length && <Empty title={t("暂无文件", "No files")} />}
+          {(cursorHistory.length > 0 || filePage.has_more) && (
+            <div className="file-tree-pagination">
+              <small>
+                {t(
+                  `第 ${cursorHistory.length + 1} 页 · 搜索仅限本页`,
+                  `Page ${cursorHistory.length + 1} · Search covers this page only`,
+                )}
+              </small>
+              <div>
+                <Button
+                  disabled={!cursorHistory.length || changingPage}
+                  onClick={() => void action(() => changeFilePage("previous"))}
+                >
+                  {t("上一页", "Previous")}
+                </Button>
+                <Button
+                  disabled={!filePage.has_more || changingPage}
+                  onClick={() => void action(() => changeFilePage("next"))}
+                >
+                  {changingPage ? t("载入中…", "Loading…") : t("下一页", "Next")}
+                </Button>
+              </div>
+            </div>
+          )}
         </aside>
         <section className="file-editor">
           {path ? (
@@ -2701,15 +2969,19 @@ export function FilesPage() {
                     )}
                     onClick={() => {
                       if (tablePreview) {
-                        void action(async () => {
-                          const result = await api(
-                            `/projects/${id}/file?path=${encodeURIComponent(path)}`,
-                          );
-                          setContent(result.content);
-                          setOriginal(result.content);
-                          setRevision(result.revision);
+                        if (dirty) {
                           setTablePreview(false);
-                        });
+                        } else {
+                          void action(async () => {
+                            const result = await api(
+                              `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+                            );
+                            setContent(result.content);
+                            setOriginal(result.content);
+                            setRevision(result.revision);
+                            setTablePreview(false);
+                          });
+                        }
                       } else setTablePreview(true);
                     }}
                   >
@@ -2974,7 +3246,12 @@ export function SettingsPage() {
   const { data: hosts, reload: reloadHosts } = useLoad<Json[]>("/hosts", []);
   const { data: agents, reload: reloadAgents } = useLoad<Json[]>("/agents", []);
   const { data: system, reload: reloadSystem } = useLoad<Json>("/system", {});
-  const { data: settings, reload: reloadSettings } = useLoad<Json>(
+  const {
+    data: settings,
+    reload: reloadSettings,
+    error: settingsError,
+    loading: settingsLoading,
+  } = useLoad<Json>(
     "/settings",
     {},
   );
@@ -3006,6 +3283,7 @@ export function SettingsPage() {
       <div className="page settings-page">
         <PageHeading title={t("设置", "Settings")} />
         <Tabs
+          panelId="settings-tabs"
           value={tab}
           onChange={setTab}
           items={[
@@ -3016,6 +3294,13 @@ export function SettingsPage() {
             { id: "system", label: t("系统资源", "System resources") },
           ]}
         />
+        <div
+          className="tab-panel"
+          id="settings-tabs-panel"
+          role="tabpanel"
+          aria-labelledby={`settings-tabs-tab-${tab}`}
+          tabIndex={0}
+        >
         <ErrorBox error={error} retry={reload} />
         {["providers", "hosts", "agents"].includes(tab) && (
           <>
@@ -3091,10 +3376,14 @@ export function SettingsPage() {
                     <Button
                       onClick={() =>
                         action(
-                          () =>
-                            api("/settings", "PATCH", {
+                          async () => {
+                            await api("/settings", "PATCH", {
                               default_provider_id: item.id,
-                            }),
+                            });
+                            setSettingsText((current) =>
+                              updateDefaultProviderDraft(current, item.id),
+                            );
+                          },
                           "Default model updated",
                         )
                       }
@@ -3163,7 +3452,15 @@ export function SettingsPage() {
               <Save size={15} />
               {t("保存设置", "Save settings")}
             </Button>
-            <StorageCleanup />
+            <StorageCleanup
+              retentionDays={
+                Number.isSafeInteger(settings.retention_days) &&
+                settings.retention_days >= 0
+                  ? settings.retention_days
+                  : null
+              }
+              settingsLoaded={!settingsLoading && !settingsError}
+            />
           </section>
         )}
         {tab === "system" && (
@@ -3178,6 +3475,7 @@ export function SettingsPage() {
             <JsonView value={system} />
           </section>
         )}
+        </div>
       </div>
       {modal && (
         <ConnectionEditor
@@ -3241,6 +3539,8 @@ function ConnectionEditor({
     JSON.stringify(
       item && resource === "providers"
         ? item.config || {}
+        : item && resource === "hosts"
+          ? hostEditorConfig(item)
         : item
           ? Object.fromEntries(
               Object.entries(item).filter(
@@ -3278,6 +3578,7 @@ function ConnectionEditor({
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
+          const parsedConfig = parseJson(config);
           const body =
             resource === "providers"
               ? {
@@ -3288,7 +3589,7 @@ function ConnectionEditor({
                   allow_paid: paid,
                   ...(key ? { api_key: key } : {}),
                   config: {
-                    ...parseJson(config),
+                    ...parsedConfig,
                     ...(kind !== "ollama" && kind !== "codex_cli"
                       ? {
                           api: apiMode,
@@ -3296,7 +3597,7 @@ function ConnectionEditor({
                           ...(imageModel.trim()
                             ? {
                                 image_generation: {
-                                  ...(parseJson(config).image_generation || {}),
+                                  ...((parsedConfig.image_generation as Json) || {}),
                                   model: imageModel.trim(),
                                   max_request_usd: Number(imageCeiling),
                                 },
@@ -3320,7 +3621,9 @@ function ConnectionEditor({
                       : {}),
                   },
                 }
-              : { name, ...parseJson(config) };
+              : resource === "hosts"
+                ? hostPayload(name, parsedConfig, item?.kind)
+                : { name, ...parsedConfig };
           const r = await action(() =>
             api(
               item ? `/${resource}/${item.id}` : `/${resource}`,
@@ -3609,6 +3912,7 @@ function MeasuredResults({ runs }: { runs: Run[] }) {
         </div>
       </div>
       <Tabs
+        panelId="experiment-results-tabs"
         value={mode}
         onChange={setMode}
         items={[
@@ -3619,6 +3923,12 @@ function MeasuredResults({ runs }: { runs: Run[] }) {
           { id: "seeds", label: t("每次重复", "Per repetition") },
         ]}
       />
+      <div
+        id="experiment-results-tabs-panel"
+        role="tabpanel"
+        aria-labelledby={`experiment-results-tabs-tab-${mode}`}
+        tabIndex={0}
+      >
       <div className="table-scroll">
         <table>
           <thead>
@@ -3670,6 +3980,7 @@ function MeasuredResults({ runs }: { runs: Run[] }) {
             "Mean ± SD across saved repetitions.",
           )}
       </p>
+      </div>
     </section>
   );
 }
@@ -3903,13 +4214,26 @@ function RevisionProposal({
   );
 }
 
-function StorageCleanup() {
+function StorageCleanup({
+  retentionDays,
+  settingsLoaded,
+}: {
+  retentionDays: number | null;
+  settingsLoaded: boolean;
+}) {
   const { t, action } = useUI();
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useState(String(retentionDays ?? ""));
+  const [daysTouched, setDaysTouched] = useState(false);
   const [history, setHistory] = useState(false);
   const [projectId, setProjectId] = useState("");
   const [result, setResult] = useState<Json | null>(null);
   const { data: projects } = useLoad<Json[]>("/projects", []);
+  useEffect(() => {
+    if (!daysTouched) setDays(String(retentionDays ?? ""));
+  }, [daysTouched, retentionDays]);
+  const parsedDays = Number(days);
+  const validDays = /^\d+$/.test(days) && Number.isSafeInteger(parsedDays);
+  const canCleanUp = validDays && (settingsLoaded && retentionDays !== null || daysTouched);
   return (
     <details className="storage-cleanup">
       <summary>{t("存储与历史清理", "Storage & history cleanup")}</summary>
@@ -3938,10 +4262,21 @@ function StorageCleanup() {
             type="number"
             min="0"
             value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
+            onChange={(e) => {
+              setDaysTouched(true);
+              setDays(e.target.value);
+            }}
           />
         </Field>
       </div>
+      {!settingsLoaded && !daysTouched && (
+        <p className="muted" role="status">
+          {t(
+            "设置中的保留天数尚未加载；请先输入并核对天数。",
+            "Saved retention settings are unavailable. Enter and verify the number of days before cleanup.",
+          )}
+        </p>
+      )}
       <label className="checkbox-label">
         <input
           type="checkbox"
@@ -3954,6 +4289,7 @@ function StorageCleanup() {
         )}
       </label>
       <Button
+        disabled={!canCleanUp}
         onClick={() => {
           if (
             confirm(
@@ -3966,7 +4302,7 @@ function StorageCleanup() {
             void action(async () =>
               setResult(
                 await api("/settings/cleanup", "POST", {
-                  days,
+                  days: parsedDays,
                   clear_edit_history: history,
                   ...(projectId ? { project_id: projectId } : {}),
                 }),
