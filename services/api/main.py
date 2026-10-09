@@ -379,9 +379,11 @@ def run_action(ident:str,action:str,body:dict=Body(default={})):
 @app.get('/api/runs/{ident}/output')
 def output(ident:str,offset:int=0,limit:int=100000,search:str=''):
     with Session() as s: r=get(s,TaskRun,ident); p=safe_path(project_dir(r.project_id),r.output_path+'/stdout.txt'); status=r.status
-    text=''; end=max(offset,0)
+    start=max(offset,0); text=''; end=start
     if p.exists():
-        with p.open('rb') as f: f.seek(max(offset,0)); text=f.read(min(limit,1000000)).decode(errors='replace'); end=f.tell()
+        with p.open('rb') as f:
+            f.seek(start); data=f.read(min(limit,1000000))
+            end=start+utf8_page_prefix(data); text=data[:end-start].decode(errors='replace')
     if search: text='\n'.join(l for l in text.splitlines() if search.lower() in l.lower())
     return {'text':text,'offset':end,'status':status}
 @app.get('/api/projects/{ident}/events')
