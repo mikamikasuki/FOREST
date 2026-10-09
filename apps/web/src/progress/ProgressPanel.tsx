@@ -19,7 +19,7 @@ export function ProgressPanel({ projectId }: { projectId: string }) {
   const { snapshot, error } = useProgress(projectId);
   const settings = useLoad<SettingsView | null>(`/projects/${projectId}/reporter-settings`, null);
   const latest = useLoad<Job | null>(`/projects/${projectId}/reports/latest`, null);
-  const providers = useLoad<{ id: string; name: string; model: string }[]>(`/providers`, []);
+  const providers = useLoad<{ id: string; name: string; model: string; status: string }[]>(`/providers`, []);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<SettingsView["settings"] | null>(null);
   const [busy, setBusy] = useState(false);
