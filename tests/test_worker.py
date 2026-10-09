@@ -306,6 +306,66 @@ def test_real_process_survives_client_close_and_api_restart(actual_worker):
     assert (h.output(run) / "result.json").is_file()
 
 
+def test_forked_run_receives_reference_policy_data(actual_worker):
+    h = actual_worker
+    project = h.request("POST", "/api/projects", json={
+        "name": "Forked data reference " + str(uuid.uuid4())[:8],
+        "goal": "Run a forked task with referenced branch data.",
+        "budget": {"max_runs": 5, "seconds": 60, "allow_paid": False},
+    })
+    sentinel = "FOREST_REFERENCE_SENTINEL_067,not scientific data"
+    source_branch = h.request("GET", f"/api/projects/{project['id']}/graph")["branches"][0]
+    source_path = str(Path(source_branch["workspace"]) / "data" / "train.csv")
+    h.request("PUT", f"/api/projects/{project['id']}/file", json={
+        "path": source_path,
+        "content": sentinel,
+        "expected_revision": 0,
+    })
+    file_listing = h.request("GET", f"/api/projects/{project['id']}/files")
+    assert any(file["path"] == source_path for file in file_listing["files"]), file_listing
+    graph = h.request("GET", f"/api/projects/{project['id']}/graph")
+    node_id = str(uuid.uuid4())
+    command = [
+        sys.executable,
+        "-c",
+        "from pathlib import Path; value=Path('data/train.csv').read_text(); "
+        "assert value == " + repr(sentinel) + "; Path('reference_read.txt').write_text(value)",
+    ]
+    created = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": graph["revision"],
+        "operation": "add_node",
+        "targets": [],
+        "params": {
+            "id": node_id,
+            "branch_id": graph["branches"][0]["id"],
+            "type": "experiment",
+            "title": "Read referenced training data",
+            "config": {"kind": "command", "command": command, "timeout": 15},
+        },
+    })
+    graph = created["graph"]
+    forked = h.request("POST", f"/api/projects/{project['id']}/graph/commands", json={
+        "request_id": str(uuid.uuid4()),
+        "expected_revision": graph["revision"],
+        "operation": "fork_branch",
+        "targets": [node_id],
+        "params": {
+            "name": "Data reference candidate",
+            "copy_policy": {"code": True, "data": "reference", "results": False},
+        },
+    })
+    forked_node = next(node for node in forked["graph"]["nodes"] if node.get("forked_from") == node_id)
+    forked_branch = next(branch for branch in forked["graph"]["branches"] if branch["id"] == forked_node["branch_id"])
+    assert forked_branch["input_mapping"]
+    assert not (Path(h.env["FOREST_DATA_DIR"]) / "projects" / project["id"] / forked_branch["workspace"] / "data" / "train.csv").exists()
+
+    run = h.terminal(h.launch(forked_node), timeout=30)
+
+    assert run["status"] == "completed", run
+    assert (h.output(run) / "workspace" / "reference_read.txt").read_text() == sentinel
+
+
 def test_paper_picker_and_api_require_numeric_metrics_from_real_runs(actual_worker):
     h = actual_worker
     project = h.request("POST", "/api/projects", json={
