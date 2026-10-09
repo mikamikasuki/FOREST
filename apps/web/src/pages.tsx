@@ -3071,10 +3071,12 @@ export function SettingsPage() {
                     <Button
                       onClick={() =>
                         action(
-                          () =>
-                            api("/settings", "PATCH", {
+                          async () => {
+                            await api("/settings", "PATCH", {
                               default_provider_id: item.id,
-                            }),
+                            });
+                            await reloadSettings();
+                          },
                           "Default model updated",
                         )
                       }
