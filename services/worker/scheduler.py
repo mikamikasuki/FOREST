@@ -320,9 +320,13 @@ def enqueue(s, project_id, kind, config, request_id=None, node=None, dependencie
     merged = {**config, 'timeout': timeout, 'project_goal': p.goal, 'allow_paid': bool(budget.get('allow_paid', False))}
     from services.interventions.applicability import goal_scope_snapshot
     merged['goal_scope'] = goal_scope_snapshot(s, p, node.id if node else None)
+    from research.agents.policy import publication_scope
     from research.publication.profile import publication_profile
     try:
-        merged['publication_profile'] = publication_profile({**p.config, **config})
+        if publication_scope(config.get('role', 'Researcher'), config, kind):
+            merged['publication_profile'] = publication_profile({**p.config, **config})
+        else:
+            merged.pop('publication_profile', None)
     except (ValueError, TypeError) as exc:
         error('INVALID_PUBLICATION_PROFILE', str(exc), 422)
     if kind == 'paper_generate':
