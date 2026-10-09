@@ -310,6 +310,26 @@ test("the newest CSV text read wins when preview toggles overlap", async ({
   await expect(editor).not.toContainText("older read");
 });
 
+test("a failed CSV text read shows an error with a retry action", async ({
+  page,
+  request,
+}) => {
+  const path = "measurements.csv";
+  const saved = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path, content: "value\nsaved\n", expected_revision: 0 },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.goto(`/projects/${projectId}/files`);
+  await page.locator(".file-tree").getByRole("button", { name: path }).click();
+  await page.route(`**/api/projects/${projectId}/file?path=*`, (route) =>
+    route.fulfill({ status: 503, body: "temporarily unavailable" }),
+  );
+  await page.getByRole("button", { name: "Toggle saved table preview" }).click();
+  await expect(page.locator(".error-box")).toContainText("Service Unavailable");
+  await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+});
+
 for (const scenario of [
   {
     name: "silent success",
