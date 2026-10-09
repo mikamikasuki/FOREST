@@ -600,6 +600,8 @@ def run_agent(run_id, workspace, config):
             from research.kernel import ContextBuilder
             context_overrides = dict(config.get('context_overrides') or {})
             context_overrides.setdefault('max_chars', context_packet_char_budget(config))
+            from services.api.common import attach_context_ideas
+            attach_context_ideas(s,p,graph,context_overrides)
             packet = ContextBuilder(graph, project_dir(p.id)).build(run.node_id, role, context_overrides)
         else:
             packet = {'goal': p.goal, 'instructions': config.get('instructions', config.get('prompt', ''))}
@@ -725,6 +727,8 @@ finish requires {"tool":"finish","arguments":{"summary":"observed outcome","arti
                 fresh_graph = graph_from_db(s, p)
                 if current.node_id:
                     from research.kernel import ContextBuilder
+                    from services.api.common import attach_context_ideas
+                    attach_context_ideas(s,p,fresh_graph,context_overrides)
                     packet = ContextBuilder(fresh_graph, project_dir(p.id)).build(current.node_id, role, context_overrides)
                     # Ordinary node edits are next-run configuration. Explicit
                     # instruction interventions provide the live overlay below.

@@ -68,6 +68,21 @@ def graph_from_db(s,p,*,refresh=False):
     graph['budget']=p.budget
     return graph
 
+def attach_context_ideas(s,p,graph,overrides=None):
+    """Attach only saved idea records explicitly referenced by Agent context."""
+    refs=[ref for node in graph.get('nodes',[]) for ref in node.get('inputs',[])]
+    for ref in (overrides or {}).get('imports',[]):
+        refs.append(ref)
+    for ref in (overrides or {}).get('materials',(overrides or {}).get('add',[])):
+        refs.append(ref)
+    ids={ref.get('id') for ref in refs if isinstance(ref,dict)
+         and ref.get('kind')=='idea' and isinstance(ref.get('id'),str)}
+    if not ids:return graph
+    graph['_context_ideas']={row.id:{'id':row.id,'title':row.title,'revision':row.revision,
+        'status':row.status,'data':row.data} for row in s.scalars(
+            select(Hypothesis).where(Hypothesis.project_id==p.id,Hypothesis.id.in_(ids)))}
+    return graph
+
 def save_graph(s,p,graph):
     p.revision=graph['revision']; p.updated_at=now()
     p.graph_meta={k:v for k,v in graph.items() if k not in ('project_id','revision','nodes','edges','branches')}

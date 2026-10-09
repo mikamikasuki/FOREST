@@ -127,7 +127,7 @@ def adopt(ident:str,body:dict=Body(default={})):
         source_text=json.dumps(idea.data,ensure_ascii=False,indent=2)
         custom=body.get('instructions','')
         if not isinstance(custom,str): error('INVALID_INSTRUCTIONS','Instructions must be text',422)
-        source_input={'kind':'idea','id':idea.id,'project_id':p.id}
+        source_input={'kind':'idea','id':idea.id,'project_id':p.id,'revision':idea.revision}
         common_inputs=[source_input,*inputs]
         duty=('State the falsifiable claim, strongest baseline, decisive unknown, primary metric, meaningful effect threshold, '
               'matched compute/data budget, split/seed policy, mechanism ablation and stopping rule. Choose the cheapest decisive '

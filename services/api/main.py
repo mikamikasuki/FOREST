@@ -286,6 +286,8 @@ def context(ident:str):
     from research.kernel import ContextBuilder
     with Session() as s:
         n=get(s,Node,ident); p=get(s,Project,n.project_id); g=graph_from_db(s,p); g['goal']=p.goal; g['budget']=p.budget
+        from services.api.common import attach_context_ideas
+        attach_context_ideas(s,p,g,n.context_overrides)
         role=n.config.get('role','Researcher')
         agent=s.get(Agent,n.config['agent_id']) if n.config.get('agent_id') else s.scalar(select(Agent).where(Agent.role==role))
         from research.agents.tool_policy import effective_tools

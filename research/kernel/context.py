@@ -124,6 +124,13 @@ class ContextBuilder:
                 append(identifier, "missing", resolved.get("message", "Referenced material is missing."), source=ref, branch_id=ref_branch,
                        priority=priority, available=False, error=resolved.get("error"))
                 return
+            if resolved.get("record"):
+                record = resolved["record"]
+                append(identifier, "idea_reference", {"id": record["id"], "title": record["title"],
+                       "revision": record["revision"], "status": record["status"], "data": record["data"]},
+                       source=ref, branch_id=ref_branch, priority=priority, available=True,
+                       stale=resolved.get("stale", False))
+                return
             if resolved.get("path"):
                 path = Path(resolved["path"])
                 # Limit file reads before decoding; large tables/logs remain addressable by path.
