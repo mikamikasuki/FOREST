@@ -199,7 +199,11 @@ def answer_decision(ident, *, expected_revision, choice, reason='', action=None)
             if {k: v for k, v in row.answer.items() if k != 'executed_attempt_id'} == answer: return asdict(row)
             error('DECISION_CONFLICT', 'This decision has already been answered', 409)
         if expected_revision != project.revision or row.observed_revision != project.revision:
-            error('REVISION_CONFLICT', 'Reviewed controls changed; the old action cannot be approved', 409)
+            row.status = 'stale'
+            row.answer = {'choice': 'stale', 'reason': 'Project controls changed; the old action was discarded'}
+            row.answered_at = now()
+            emit(session, project_id, 'decision_changed', {'decision_id': ident, 'status': 'stale'})
+            return asdict(row)
         if run.status not in ACTIVE or run.resource.get('pending_intervention'):
             error('RUN_STOPPED', 'This run no longer accepts action decisions', 409)
         if choice == 'edit':

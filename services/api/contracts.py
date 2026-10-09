@@ -740,7 +740,7 @@ for method,path,summary,response,body in [
     ('post','/api/decisions/{ident}/answer','Accept, edit or reject the reviewed action',ref('DecisionView'),'DecisionAnswer'),
     ('post','/api/research/proposals/{ident}/reject','Reject a proposal with planning feedback',ref('ResourceRecord'),'RejectionRequest'),
 ]:
-    description='Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.'
+    description='Owner-only durable intent. Reviewed revisions and exact action identities are enforced; a stale action is marked stale and discarded rather than approved. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.'
     if path=='/api/projects/{ident}/interventions':
         description += ' The before timestamp cursor accepts before_id to disambiguate records sharing a timestamp; clients can page through all retained history.'
     operation(method,path,'Interventions',summary,
