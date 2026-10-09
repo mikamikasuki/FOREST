@@ -518,6 +518,12 @@ def install_resource_routes(name,model):
         with Session.begin() as s:
             r=lock_record(s,ident)
             touch_dependents(s,r.project_id,ident)
+            if model is SourcePaper:
+                passages=s.scalars(select(SourcePassage).where(
+                    SourcePassage.project_id==r.project_id
+                ))
+                for passage in passages:
+                    if passage.data.get('paper_id')==ident: s.delete(passage)
             if model is Hypothesis:
                 snapshot={'id':r.id,'title':r.title,'revision':r.revision,'status':r.status,'data':r.data}
                 graph_changed=False
