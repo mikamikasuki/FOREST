@@ -4,7 +4,7 @@ class ProjectCreate(BaseModel):
     name:str=Field(min_length=1,max_length=240)
     description:str=''
     goal:str=''
-    mode:Literal['auto','assisted','manual']='assisted'
+    mode:Literal['auto','assisted','manual']|None=None
     budget:dict=Field(default_factory=lambda:{'allow_paid':False})
     config:dict=Field(default_factory=dict)
 class GraphCommand(BaseModel):
@@ -28,3 +28,4 @@ class FileWrite(BaseModel):
     path:str=Field(min_length=1,max_length=2000)
     content:str=Field(max_length=10_000_000)
     expected_revision:int|None=None
+    create_only:bool=False
