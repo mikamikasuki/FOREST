@@ -452,6 +452,9 @@ def export_paper(ident:str,body:dict=Body(default={})):
                 error('STALE_PDF','Compile the current manuscript revision before exporting its PDF',409)
             return FileResponse(safe_path(root,pdf,True),filename='forest-paper.pdf')
         out=io.BytesIO(); assets={}
+        source=body.get('source',p.data['source'])
+        bibtex=body.get('bibtex',p.data.get('bibtex',''))
+        is_saved_source=source==p.data['source'] and bibtex==p.data.get('bibtex','')
         # Generated LaTeX includes results_macros.tex and figures/... relative
         # to paper.tex, so its source bundle belongs at the ZIP root.
         folders=[]
@@ -465,9 +468,9 @@ def export_paper(ident:str,body:dict=Body(default={})):
                     if relative not in ('paper.tex','references.bib','paper.pdf'):
                         assets[relative]=safe_path(root,str(f.relative_to(root)),True)
         with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
-            z.writestr('paper.tex',p.data['source']); z.writestr('references.bib',p.data.get('bibtex',''))
+            z.writestr('paper.tex',source); z.writestr('references.bib',bibtex)
             for relative,path in sorted(assets.items()): z.write(path,relative)
-            if pdf and p.data.get('compiled_revision')==p.revision and safe_path(root,pdf).exists(): z.write(safe_path(root,pdf),'paper.pdf')
+            if is_saved_source and pdf and p.data.get('compiled_revision')==p.revision and safe_path(root,pdf).exists(): z.write(safe_path(root,pdf),'paper.pdf')
         return Response(out.getvalue(),media_type='application/zip',headers={'Content-Disposition':'attachment; filename="forest-paper-source.zip"'})
 
 # Separate SQL tables for research object types, with uniform revision-aware editing.

@@ -2982,11 +2982,17 @@
       "PaperExportRequest": {
         "additionalProperties": true,
         "properties": {
+          "bibtex": {
+            "type": "string"
+          },
           "expected_revision": {
             "type": "integer"
           },
           "format": {
             "description": "pdf returns the current compiled PDF; other/omitted values return a source ZIP.",
+            "type": "string"
+          },
+          "source": {
             "type": "string"
           }
         },
@@ -15124,7 +15130,7 @@
     },
     "/api/papers/{ident}/export": {
       "post": {
-        "description": "Resolve an existing paper/project ID. Optional expected_revision compares PaperDocument revision. format=pdf requires an existing compiled PDF of the CURRENT revision; other/omitted values return paper.tex/references.bib/assets ZIP and a current PDF when available. Source ZIP excludes .aux/.blg/.log artifacts.",
+        "description": "Resolve an existing paper/project ID. Optional expected_revision compares PaperDocument revision. For a source ZIP, optional source and bibtex fields export the editor's current draft without saving it. format=pdf requires an existing compiled PDF of the CURRENT revision; source ZIP includes a PDF only when its source matches the saved revision. Source ZIP excludes .aux/.blg/.log artifacts.",
         "operationId": "export_paper_api_papers__ident__export_post",
         "parameters": [
           {

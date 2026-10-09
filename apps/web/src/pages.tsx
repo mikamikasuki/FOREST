@@ -2302,7 +2302,12 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
             action(() =>
               download(
                 `/papers/${id}/export`,
-                { request_id: uid() },
+                {
+                  request_id: uid(),
+                  expected_revision: editingRevision,
+                  source,
+                  bibtex,
+                },
                 "paper-source.zip",
               ),
             )
