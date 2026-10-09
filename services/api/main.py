@@ -131,7 +131,11 @@ def edit_project(ident:str,body:dict=Body(...)):
         if body.get('expected_revision',p.revision)!=p.revision: error('REVISION_CONFLICT','Project changed',409)
         observed=p.revision
         for k in ('name','description','goal','current_direction','archived','mode','budget','config'):
-            if k in body: setattr(p,k,body[k])
+            if k in body:
+                value=body[k]
+                if k=='config' and p.config.get('provider_selection_required') and 'provider_id' in value:
+                    value={**value}; value.pop('provider_selection_required',None)
+                setattr(p,k,value)
         if 'mode' in body and p.config.get('controller'):
             p.config={**p.config,'controller':{**p.config['controller'],'autonomous':p.mode=='auto'}}
         if 'budget' in body:

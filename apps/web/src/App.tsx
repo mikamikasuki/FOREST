@@ -173,6 +173,7 @@ export default function App() {
               navigation.map(([path, zh, en, Icon]) => (
                 <NavLink
                   key={path}
+                  aria-label={t(zh, en)}
                   to={demoLink(
                     `/projects/${projectId}/${path}`,
                     location.search,
@@ -930,6 +931,7 @@ function ResearchControls({
     branches: [],
   });
   const [branch, setBranch] = useState("");
+  const [branchTouched, setBranchTouched] = useState(false);
   const [state, setState] = useState<Json | null>(null);
   const [autonomous, setAutonomous] = useState(runMode !== "manual");
   const [readyParallelism, setReadyParallelism] = useState(1);
@@ -946,6 +948,9 @@ function ResearchControls({
     active_runs: [],
   });
   const sessionUnavailable = sessionLoading || !!sessionError;
+  useEffect(() => {
+    if (!branchTouched) setBranch(session.controller?.branch_id || "");
+  }, [branchTouched, session.controller?.branch_id]);
   const [inspectComparisons, setInspectComparisons] = useState(false);
   const comparisons = useLoad<Json>(
     inspectComparisons ? `/projects/${projectId}/research` : null,
@@ -977,7 +982,10 @@ function ResearchControls({
       <select
         aria-label="Research branch"
         value={branch}
-        onChange={(e) => setBranch(e.target.value)}
+        onChange={(e) => {
+          setBranchTouched(true);
+          setBranch(e.target.value);
+        }}
       >
         <option value="">{t("项目全部路线", "All project paths")}</option>
         {graph.branches.map((b: Json) => (

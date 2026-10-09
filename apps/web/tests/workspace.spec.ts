@@ -129,6 +129,355 @@ test("Files folders expand and collapse nested entries", async ({
   );
 });
 
+test("keyboard node movement persists its position", async ({
+  page,
+  request,
+}) => {
+  const graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Keyboard position",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
+  const layoutBatches: Array<{ commands: Array<Record<string, unknown>> }> = [];
+  let releaseLayoutBatch!: () => void;
+  let signalLayoutBatch!: () => void;
+  const layoutBatchStarted = new Promise<void>((resolve) => {
+    signalLayoutBatch = resolve;
+  });
+  const layoutBatchGate = new Promise<void>((resolve) => {
+    releaseLayoutBatch = resolve;
+  });
+  await page.route("**/graph/batch", async (route) => {
+    signalLayoutBatch();
+    await layoutBatchGate;
+    await route.continue();
+  });
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname.endsWith("/graph/batch") &&
+      request.method() === "POST"
+    ) {
+      layoutBatches.push(request.postDataJSON());
+    }
+  });
+  for (let index = 0; index < 6; index++)
+    await page.keyboard.press("ArrowRight");
+  await layoutBatchStarted;
+  await page.getByLabel("Node title").fill("Moved and edited");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  releaseLayoutBatch();
+
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.find((item: { id: string }) => item.id === nodeId)
+        ?.position;
+    })
+    .toEqual({ x: 230, y: 160 });
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.find((item: { id: string }) => item.id === nodeId)
+        ?.title;
+    })
+    .toBe("Moved and edited");
+  expect(layoutBatches.length).toBeLessThan(6);
+  expect(layoutBatches.at(-1)?.commands).toEqual([
+    {
+      operation: "edit_node",
+      targets: [nodeId],
+      params: { positions: { [nodeId]: { x: 230, y: 160 } } },
+    },
+  ]);
+
+  await page.reload();
+  await expect
+    .poll(() =>
+      node.evaluate((element) => (element as HTMLElement).style.transform),
+    )
+    .toBe("translate(230px, 160px)");
+});
+
+test("keyboard position saves recover from a graph revision conflict", async ({
+  page,
+  request,
+}) => {
+  const graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Conflict recovery",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+
+  let conflictSent = false;
+  const batchRevisions: number[] = [];
+  await page.route("**/graph/batch", async (route) => {
+    const payload = route.request().postDataJSON();
+    batchRevisions.push(payload.expected_revision);
+    if (conflictSent) return route.continue();
+    conflictSent = true;
+    const current = await (
+      await request.get(`/api/projects/${projectId}/graph`)
+    ).json();
+    const concurrentNode = await request.post(
+      `/api/projects/${projectId}/graph/commands`,
+      {
+        data: {
+          request_id: crypto.randomUUID(),
+          expected_revision: current.revision,
+          operation: "add_node",
+          targets: [],
+          params: {
+            id: crypto.randomUUID(),
+            branch_id: current.branches[0].id,
+            type: "goal",
+            title: "Concurrent change",
+            position: { x: 520, y: 160 },
+          },
+          run: false,
+        },
+      },
+    );
+    expect(concurrentNode.ok()).toBeTruthy();
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        detail: { code: "REVISION_CONFLICT", message: "Graph changed" },
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
+  await page.keyboard.press("ArrowRight");
+
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.find((item: { id: string }) => item.id === nodeId)
+        ?.position;
+    })
+    .toEqual({ x: 205, y: 160 });
+  expect(batchRevisions).toEqual([1, 2]);
+  await page.reload();
+  await expect
+    .poll(() =>
+      node.evaluate((element) => (element as HTMLElement).style.transform),
+    )
+    .toBe("translate(205px, 160px)");
+});
+
+test("a lost position-save response replays the original command receipt", async ({
+  page,
+  request,
+}) => {
+  let graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Uncertain keyboard position",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+  graph = (await created.json()).graph;
+  const submitted: Array<Record<string, any>> = [];
+  let loseFirstResponse = true;
+  await page.route("**/graph/batch", async (route) => {
+    const payload = route.request().postDataJSON();
+    submitted.push(payload);
+    if (loseFirstResponse) {
+      loseFirstResponse = false;
+      const response = await route.fetch();
+      expect(response.ok()).toBeTruthy();
+      await response.json();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
+  for (let index = 0; index < 6; index++)
+    await page.keyboard.press("ArrowRight");
+
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.find((item: { id: string }) => item.id === nodeId)
+        ?.position;
+    })
+    .toEqual({ x: 230, y: 160 });
+  await expect.poll(() => submitted.length).toBe(2);
+  expect(submitted[1]).toEqual(submitted[0]);
+  const current = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  expect(current.revision).toBe(graph.revision + 1);
+});
+
+test("discard position retries for nodes deleted by a concurrent edit", async ({
+  page,
+  request,
+}) => {
+  const graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Deleted during keyboard move",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+  let batchCount = 0;
+  await page.route("**/graph/batch", async (route) => {
+    batchCount += 1;
+    const current = await (
+      await request.get(`/api/projects/${projectId}/graph`)
+    ).json();
+    const deleted = await request.post(
+      `/api/projects/${projectId}/graph/commands`,
+      {
+        data: {
+          request_id: crypto.randomUUID(),
+          expected_revision: current.revision,
+          operation: "delete_node",
+          targets: [nodeId],
+          params: {},
+          run: false,
+        },
+      },
+    );
+    expect(deleted.ok()).toBeTruthy();
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        detail: { code: "REVISION_CONFLICT", message: "Graph changed" },
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
+  await page.keyboard.press("ArrowRight");
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.some((item: { id: string }) => item.id === nodeId);
+    })
+    .toBe(false);
+
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+z" : "Control+z");
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.some((item: { id: string }) => item.id === nodeId);
+    })
+    .toBe(true);
+  expect(batchCount).toBe(1);
+});
+
 test("a stale editor cannot overwrite a file recreated after deletion", async ({
   page,
   request,
@@ -182,6 +531,144 @@ test("a stale editor cannot overwrite a file recreated after deletion", async ({
     content: "new bytes\n",
     revision: 3,
   });
+});
+
+test("Files page navigates bounded file-list pages", async ({ page }) => {
+  const firstCursor = JSON.stringify({ is_dir: false, path: "alpha.txt" });
+  await page.route(`**/api/projects/${projectId}/files*`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname !== `/api/projects/${projectId}/files`)
+      return route.continue();
+    const cursor = url.searchParams.get("cursor");
+    await route.fulfill({
+      json: cursor
+        ? {
+            files: [
+              { path: "zeta.txt", size: 1, modified: 0, is_dir: false },
+            ],
+            has_more: false,
+            next_cursor: null,
+          }
+        : {
+            files: [
+              { path: "alpha.txt", size: 1, modified: 0, is_dir: false },
+            ],
+            has_more: true,
+            next_cursor: firstCursor,
+          },
+    });
+  });
+
+  await page.goto(`/projects/${projectId}/files`);
+  const tree = page.locator(".file-tree");
+  await expect(tree).toContainText("alpha.txt");
+  await expect(tree).not.toContainText("zeta.txt");
+  await expect(tree.locator(".file-tree-pagination")).toContainText(
+    "Search covers this page only",
+  );
+  await tree
+    .locator(".file-tree-pagination")
+    .getByRole("button", { name: "Next", exact: true })
+    .click();
+  await expect(tree).toContainText("zeta.txt");
+  await expect(tree).not.toContainText("alpha.txt");
+  await expect(tree.locator(".file-tree-pagination")).toContainText("Page 2");
+});
+
+test("Files page discards an in-flight page after switching projects", async ({
+  page,
+  request,
+}) => {
+  const created = await request.post("/api/projects", {
+    data: { name: `Pagination target ${Date.now()}`, goal: "Route race" },
+  });
+  expect(created.ok()).toBeTruthy();
+  const otherProjectId = (await created.json()).id as string;
+  try {
+    await page.route(`**/api/projects/${projectId}/files*`, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.has("cursor")) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await route.fulfill({
+          json: {
+            files: [
+              { path: "stale-project-a.txt", size: 1, modified: 0, is_dir: false },
+            ],
+            has_more: false,
+            next_cursor: null,
+          },
+        });
+      } else {
+        await route.fulfill({
+          json: {
+            files: [
+              { path: "project-a-first.txt", size: 1, modified: 0, is_dir: false },
+            ],
+            has_more: true,
+            next_cursor: "opaque-cursor-for-a",
+          },
+        });
+      }
+    });
+    await page.route(`**/api/projects/${otherProjectId}/files*`, (route) =>
+      route.fulfill({
+        json: {
+          files: [
+            { path: "project-b-file.txt", size: 1, modified: 0, is_dir: false },
+          ],
+          has_more: false,
+          next_cursor: null,
+        },
+      }),
+    );
+
+    await page.goto(`/projects/${projectId}/files`);
+    await page.locator(".file-tree-pagination").getByRole("button", { name: "Next" }).click();
+    await page.evaluate((target) => {
+      window.history.pushState({}, "", target);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, `/projects/${otherProjectId}/files`);
+    const tree = page.locator(".file-tree");
+    await expect(tree).toContainText("project-b-file.txt");
+    await page.waitForTimeout(400);
+    await expect(tree).not.toContainText("stale-project-a.txt");
+  } finally {
+    await request.delete(`/api/projects/${otherProjectId}`);
+  }
+});
+
+test("Files upload preflight detects conflicts outside the visible page", async ({
+  page,
+}) => {
+  let overwrite: string | null = null;
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.route(`**/api/projects/${projectId}/files?limit=500`, (route) =>
+    route.fulfill({
+      json: {
+        files: [
+          { path: "visible.txt", size: 1, modified: 0, is_dir: false },
+        ],
+        has_more: false,
+        next_cursor: null,
+      },
+    }),
+  );
+  await page.route(`**/api/projects/${projectId}/files/existing`, (route) =>
+    route.fulfill({
+      json: { existing: ["uploads/remote.txt"], directories: [] },
+    }),
+  );
+  await page.route(`**/api/projects/${projectId}/upload*`, async (route) => {
+    overwrite = new URL(route.request().url()).searchParams.get("overwrite");
+    await route.fulfill({ json: { path: "uploads/remote.txt", size: 3 } });
+  });
+  await page.goto(`/projects/${projectId}/files`);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "remote.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("new"),
+  });
+  await expect.poll(() => overwrite).toBe("true");
 });
 
 for (const scenario of [
