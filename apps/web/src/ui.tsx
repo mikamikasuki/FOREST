@@ -200,6 +200,20 @@ export function Field({
     </label>
   );
 }
+export function focusTrapTarget(
+  focusable: HTMLElement[],
+  active: Element | null,
+  shiftKey: boolean,
+) {
+  if (!focusable.length) return null;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const currentIndex = focusable.findIndex((element) => element === active);
+  if (currentIndex < 0) return shiftKey ? last : first;
+  if (shiftKey && currentIndex === 0) return last;
+  if (!shiftKey && currentIndex === focusable.length - 1) return first;
+  return null;
+}
 export function Modal({
   title,
   children,
@@ -211,13 +225,63 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const getFocusable = () =>
+      Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], area[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), summary, iframe, audio[controls], video[controls], [tabindex]:not([tabindex="-1"]), [contenteditable]:not([contenteditable="false"])',
+        ),
+      ).filter(
+        (element) =>
+          element.tabIndex >= 0 &&
+          !element.closest('[hidden], [aria-hidden="true"]') &&
+          window.getComputedStyle(element).visibility !== "hidden" &&
+          element.getClientRects().length > 0,
+      );
+    if (!dialog.contains(document.activeElement)) {
+      (getFocusable()[0] || dialog).focus();
+    }
     const handle = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      const dialogs = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[role="dialog"][aria-modal="true"]',
+        ),
+      );
+      if (dialogs[dialogs.length - 1] !== dialog) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const focusable = getFocusable();
+      if (!focusable.length) {
+        e.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const target = focusTrapTarget(focusable, document.activeElement, e.shiftKey);
+      if (target) {
+        e.preventDefault();
+        target.focus();
+      }
     };
-    window.addEventListener("keydown", handle);
-    return () => window.removeEventListener("keydown", handle);
-  }, [onClose]);
+    document.addEventListener("keydown", handle, true);
+    return () => {
+      document.removeEventListener("keydown", handle, true);
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, []);
   return (
     <div
       className="modal-shade"
@@ -226,10 +290,12 @@ export function Modal({
       }}
     >
       <section
+        ref={dialogRef}
         className={`modal ${wide ? "wide" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
       >
         <header>
           <h2>{title}</h2>
