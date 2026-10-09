@@ -1529,7 +1529,11 @@ export function FiguresPage() {
   const { t, action } = useUI();
   const [selected, setSelected] = useState("");
   const [creating, setCreating] = useState(false);
+  const [figureDirty, setFigureDirty] = useState(false);
   const figure = figures.find((f) => f.id === selected) || figures[0];
+  useEffect(() => {
+    if (!selected && figures.length) setSelected(figures[0].id);
+  }, [figures, selected]);
   useEffect(() => {
     const refresh = () => void reloadRuns();
     window.addEventListener("forest-refresh", refresh);
@@ -1554,7 +1558,24 @@ export function FiguresPage() {
               <button
                 key={f.id}
                 className={figure?.id === f.id ? "active" : ""}
-                onClick={() => setSelected(f.id)}
+                onClick={() => {
+                  if (figure?.id === f.id) {
+                    if (!selected) setSelected(f.id);
+                    return;
+                  }
+                  if (
+                    figureDirty &&
+                    !confirm(
+                      t(
+                        "放弃未保存的图表修改？",
+                        "Discard unsaved figure changes?",
+                      ),
+                    )
+                  )
+                    return;
+                  setFigureDirty(false);
+                  setSelected(f.id);
+                }}
               >
                 <ChartNoAxesCombined size={15} />
                 <span>Fig. {i + 1}</span>
@@ -1570,6 +1591,7 @@ export function FiguresPage() {
               projectId={id!}
               runs={runs}
               reload={reload}
+              onDirtyChange={setFigureDirty}
             />
           )}
         </>
@@ -1618,11 +1640,13 @@ function FigureEditor({
   projectId,
   runs,
   reload,
+  onDirtyChange,
 }: {
   figure: RecordItem;
   projectId: string;
   runs: Run[];
   reload: () => Promise<void>;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const { t, action } = useUI();
   const [style, setStyle] = useState<Json>(figure.data.style || {});
@@ -1646,6 +1670,35 @@ function FigureEditor({
   const start = useRef<{ x: number; y: number } | null>(null);
   const [regionRevision, setRegionRevision] = useState(figure.revision);
   const [editRevision, setEditRevision] = useState(figure.revision);
+  useEffect(() => {
+    const dirty =
+      kind !== (figure.data.kind || "bar") ||
+      JSON.stringify(style) !== JSON.stringify(figure.data.style || {}) ||
+      code !== (figure.data.code || "") ||
+      JSON.stringify(runIds) !== JSON.stringify(figure.data.run_ids || []) ||
+      metric !== (figure.data.metric || "") ||
+      caption !== (figure.data.caption || "") ||
+      dataText !== JSON.stringify(figure.data.data || {}, null, 2) ||
+      purpose !== (figure.data.purpose || "effectiveness") ||
+      imagePrompt !== (figure.data.image_prompt || "") ||
+      instruction.trim() !== "" ||
+      region !== null;
+    onDirtyChange(dirty);
+  }, [
+    figure,
+    kind,
+    style,
+    code,
+    runIds,
+    metric,
+    caption,
+    dataText,
+    purpose,
+    imagePrompt,
+    instruction,
+    region,
+    onDirtyChange,
+  ]);
   const outputs = figure.data.outputs || {};
   const imagePath =
     outputs.svg || outputs.png || figure.data.svg_path || figure.data.png_path;
