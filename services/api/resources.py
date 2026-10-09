@@ -490,7 +490,16 @@ def install_resource_routes(name,model):
             r.revision+=1; touch_dependents(s,r.project_id,r.id); return asdict(r)
     def remove(ident:str):
         with Session.begin() as s:
-            r=lock_record(s,ident); touch_dependents(s,r.project_id,ident); s.delete(r); return {'deleted':ident}
+            r=lock_record(s,ident)
+            touch_dependents(s,r.project_id,ident)
+            if model is SourcePaper:
+                passages=s.scalars(select(SourcePassage).where(
+                    SourcePassage.project_id==r.project_id
+                ))
+                for passage in passages:
+                    if passage.data.get('paper_id')==ident: s.delete(passage)
+            s.delete(r)
+            return {'deleted':ident}
     router.add_api_route('/api/'+name,listing,methods=['GET'],name=name+'_list')
     if name!='reviews': router.add_api_route('/api/'+name,create,methods=['POST'],name=name+'_create')
     router.add_api_route('/api/'+name+'/{ident}',read,methods=['GET'],name=name+'_get')
