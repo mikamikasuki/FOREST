@@ -211,6 +211,8 @@ export function LibraryPage() {
   const [webUrl, setWebUrl] = useState("");
   const [webScreenshot, setWebScreenshot] = useState(false);
   const [webResult, setWebResult] = useState<Json | null>(null);
+  const [webImporting, setWebImporting] = useState(false);
+  const webImportLock = useRef(false);
   const [passages, setPassages] = useState<Json | null>(null);
   const [tab, setTab] = useState("abstract");
   const [filter, setFilter] = useState("");
@@ -329,17 +331,26 @@ export function LibraryPage() {
               {t("保存截图", "Capture screenshot")}
             </label>
             <Button
-              disabled={!webUrl.trim()}
+              disabled={!webUrl.trim() || webImporting}
+              busy={webImporting}
               onClick={() =>
                 action(async () => {
-                  setWebResult(
-                    await api("/browser/read", "POST", {
-                      project_id: id,
-                      url: webUrl,
-                      screenshot: webScreenshot,
-                    }),
-                  );
-                  await reload();
+                  if (webImportLock.current) return;
+                  webImportLock.current = true;
+                  setWebImporting(true);
+                  try {
+                    setWebResult(
+                      await api("/browser/read", "POST", {
+                        project_id: id,
+                        url: webUrl,
+                        screenshot: webScreenshot,
+                      }),
+                    );
+                    await reload();
+                  } finally {
+                    webImportLock.current = false;
+                    setWebImporting(false);
+                  }
                 })
               }
             >
