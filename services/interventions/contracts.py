@@ -73,6 +73,8 @@ class DecisionView(BaseModel):
     created_at: str
     updated_at: str
     resume_error: str | None = None
+    run_status: str | None = None
+    can_resume: bool | None = None
 
 
 class RejectionRequest(Wire):

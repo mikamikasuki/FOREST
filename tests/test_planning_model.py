@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from research.agents.context_store import ContextStore
+from research.agents.budget import BudgetExceeded
 from research.agents.provider import ProviderError, responses_input
 from research.planning.loop import compact_planning_context
 from research.planning.model import context_model_json, planning_model_json
@@ -33,9 +34,9 @@ class ProtocolDriver:
     config = {}
     api = 'responses'
 
-    def __init__(self, root, *, early_submit=False, reject_direct=False, direct_text='{"ok":true}'):
+    def __init__(self, root, *, early_submit=False, reject_direct=False, direct_text='{"ok":true}', repair_text=None, repair_error=None):
         self.root, self.early_submit, self.reject_direct = root, early_submit, reject_direct
-        self.direct_text, self.requests = direct_text, []
+        self.direct_text, self.repair_text, self.repair_error, self.requests = direct_text, repair_text, repair_error, []
 
     def complete(self, messages, json_mode=True, tools=None):
         self.requests.append({'messages': messages, 'tools': tools})
@@ -44,8 +45,11 @@ class ProtocolDriver:
         if self.reject_direct:
             self.reject_direct = False
             raise ProviderError('Explicit request-window rejection', code='context_window_exceeded')
+        if number == 2 and self.repair_error is not None:
+            raise self.repair_error
         if tools is None:
-            return {'text': self.direct_text, 'model': 'offline-protocol-driver', 'usage': {'cost': 0}, 'elapsed': 0}
+            text = self.repair_text if number > 1 and self.repair_text is not None else self.direct_text
+            return {'text': text, 'model': 'offline-protocol-driver', 'usage': {'cost': 0}, 'elapsed': 0}
         session = next((self.root / 'context_sessions').iterdir())
         pending = ContextStore(session).pending()
         if self.early_submit or not pending:
@@ -94,6 +98,82 @@ def test_small_document_keeps_the_original_json_request_and_response(tmp_path):
     assert len(driver.requests) == 1
     assert driver.requests[0] == {'messages': messages, 'tools': None}
     assert json.loads((Path(response['context_session_path']) / 'direct_response.json').read_text())['text'] == '{"ok":true}'
+
+
+def test_invalid_direct_json_gets_one_bounded_repair_request(tmp_path):
+    driver = ProtocolDriver(
+        tmp_path,
+        direct_text='{"commands":[{"operation":"add_node"}]]}',
+        repair_text='{"commands":[{"operation":"add_node"}],"rationale":"repaired"}',
+    )
+    parsed, response = context_model_json(
+        driver,
+        [{'role': 'system', 'content': 'Return a JSON object.'}, {'role': 'user', 'content': 'Suggest one path.'}],
+        tmp_path,
+    )
+    assert parsed == {'commands': [{'operation': 'add_node'}], 'rationale': 'repaired'}
+    assert response['model_requests'] == 2
+    assert response['format_repair_attempts'] == 1
+    assert len(driver.requests) == 2
+    session = Path(response['context_session_path'])
+    assert json.loads((session / 'direct_response.json').read_text())['text'].endswith(']]}')
+    assert json.loads((session / 'direct_repair_response.json').read_text())['text'] == response['text']
+
+
+def test_invalid_direct_json_repair_failure_keeps_both_responses(tmp_path):
+    driver = ProtocolDriver(tmp_path, direct_text='{"commands":[}', repair_text='not json')
+    with pytest.raises(ValueError, match='invalid JSON twice'):
+        context_model_json(
+            driver,
+            [{'role': 'system', 'content': 'Return a JSON object.'}, {'role': 'user', 'content': 'Suggest one path.'}],
+            tmp_path,
+        )
+    session = next((tmp_path / 'context_sessions').iterdir())
+    assert (session / 'direct_response.json').is_file()
+    assert (session / 'direct_repair_response.json').is_file()
+    assert json.loads((session / 'direct_repair_failure.json').read_text())['error']
+
+
+def test_repair_budget_failure_remains_recoverable(tmp_path):
+    driver = ProtocolDriver(
+        tmp_path,
+        direct_text='{"commands":[}',
+        repair_error=BudgetExceeded('request budget exhausted'),
+    )
+
+    with pytest.raises(BudgetExceeded, match='request budget exhausted'):
+        context_model_json(
+            driver,
+            [{'role': 'system', 'content': 'Return a JSON object.'}, {'role': 'user', 'content': 'Suggest one path.'}],
+            tmp_path,
+        )
+
+    session = next((tmp_path / 'context_sessions').iterdir())
+    assert json.loads((session / 'direct_repair_failure.json').read_text())['error'] == 'request budget exhausted'
+
+
+def test_repair_context_rejection_enters_managed_context_recovery(tmp_path):
+    driver = ProtocolDriver(
+        tmp_path,
+        direct_text='{"commands":[}',
+        repair_error=ProviderError(
+            'Repair request exceeded provider context window',
+            code='context_window_exceeded',
+        ),
+    )
+    proposal, response = context_model_json(
+        driver,
+        [{'role': 'system', 'content': 'Return a JSON object.'}, {'role': 'user', 'content': 'Suggest one path.'}],
+        tmp_path,
+    )
+
+    assert proposal['rationale'] == 'Protocol test only'
+    assert response['model_requests'] == len(driver.requests) > 2
+    directory = Path(response['context_session_path'])
+    session = json.loads((directory / 'session.json').read_text())
+    assert session['context_recovery_history'][0]['reason'].startswith('Explicit provider context-window rejection')
+    assert session['failures'][-1]['code'] == 'context_window_exceeded'
+    assert session['model_requests'] == len(driver.requests)
 
 
 def test_unparsed_direct_response_is_available_for_existing_writer_repair(tmp_path):

@@ -131,9 +131,14 @@ def edit_project(ident:str,body:dict=Body(...)):
         if body.get('expected_revision',p.revision)!=p.revision: error('REVISION_CONFLICT','Project changed',409)
         observed=p.revision
         for k in ('name','description','goal','current_direction','archived','mode','budget','config'):
-            if k in body: setattr(p,k,body[k])
-        if 'mode' in body and p.config.get('controller'):
-            p.config={**p.config,'controller':{**p.config['controller'],'autonomous':p.mode=='auto'}}
+            if k in body:
+                value=body[k]
+                if k=='config' and p.config.get('provider_selection_required') and 'provider_id' in value:
+                    value={**value}; value.pop('provider_selection_required',None)
+                setattr(p,k,value)
+        controller=p.config.get('controller')
+        if 'mode' in body and isinstance(controller,dict) and 'autonomous' not in controller:
+            p.config={**p.config,'controller':{**controller,'autonomous':p.mode=='auto'}}
         if 'budget' in body:
             from services.worker.scheduler import reserve_project_time
             for run in s.scalars(select(TaskRun).where(TaskRun.project_id==ident,TaskRun.status.in_(('running','queued','waiting','pausing'))).with_for_update()):
@@ -381,9 +386,16 @@ def run_action(ident:str,action:str,body:dict=Body(default={})):
 @app.get('/api/runs/{ident}/output')
 def output(ident:str,offset:int=0,limit:int=100000,search:str=''):
     with Session() as s: r=get(s,TaskRun,ident); p=safe_path(project_dir(r.project_id),r.output_path+'/stdout.txt'); status=r.status
-    text=''; end=max(offset,0)
+    start=max(offset,0); text=''; end=start
     if p.exists():
-        with p.open('rb') as f: f.seek(max(offset,0)); text=f.read(min(limit,1000000)).decode(errors='replace'); end=f.tell()
+        size=min(limit,1000000)
+        with p.open('rb') as f:
+            f.seek(start); data=f.read(size); prefix=utf8_page_prefix(data)
+            if data and not prefix:
+                # A page limit smaller than the next character must not stall the cursor: read up
+                # to three more bytes so the leading character completes (characters are <=4 bytes).
+                f.seek(start); data=f.read(size+3); prefix=utf8_page_prefix(data)
+            end=start+prefix; text=data[:prefix].decode(errors='replace')
     if search: text='\n'.join(l for l in text.splitlines() if search.lower() in l.lower())
     return {'text':text,'offset':end,'status':status}
 @app.get('/api/projects/{ident}/events')
@@ -498,6 +510,88 @@ def cleanup(body:dict=Body(...)):
 @app.get('/api/providers')
 def providers():
     with Session() as s: return [asdict(p) for p in s.scalars(select(Provider))]
+
+def provider_references(s,ident):
+    refs=[]
+    for project in s.scalars(select(Project)):
+        if (project.config or {}).get('provider_id')==ident:
+            refs.append({'kind':'project','id':project.id,'name':project.name,'location':'project settings'})
+    for node in s.scalars(select(Node)):
+        if (node.config or {}).get('provider_id')==ident:
+            project=s.get(Project,node.project_id)
+            refs.append({'kind':'node','id':node.id,'name':node.title,'location':f"{project.name if project else node.project_id} / node settings"})
+    for agent in s.scalars(select(Agent).where(Agent.provider_id==ident)):
+        refs.append({'kind':'agent','id':agent.id,'name':agent.name,'location':f'Agent role: {agent.role}'})
+    from services.observation.models import ReporterPolicy
+    for policy in s.scalars(select(ReporterPolicy)):
+        if (policy.settings or {}).get('provider_id')==ident:
+            project=s.get(Project,policy.project_id)
+            refs.append({'kind':'reporter','id':policy.project_id,'name':project.name if project else policy.project_id,'location':'reporting settings'})
+    preference=s.get(Preference,'settings')
+    if preference and (preference.value or {}).get('default_provider_id')==ident:
+        refs.append({'kind':'default','id':'settings','name':'Global default','location':'new projects and runs'})
+    history=s.scalar(select(func.count(ModelRequest.id)).where(ModelRequest.provider_id==ident)) or 0
+    return {'references':refs,'historical_request_count':history}
+
+@app.get('/api/providers/{ident}/references')
+def get_provider_references(ident:str):
+    with Session() as s:
+        get(s,Provider,ident)
+        return provider_references(s,ident)
+
+@app.post('/api/providers/{ident}/retire')
+def provider_retire(ident:str,body:dict=Body(default={} )):
+    replacement_id=body.get('replacement_provider_id')
+    credential_ref=None
+    with Session.begin() as s:
+        p=get(s,Provider,ident,for_update=True)
+        replacement=None
+        if replacement_id:
+            if replacement_id==ident: error('INVALID_REPLACEMENT','Choose a different active provider',422)
+            replacement=get(s,Provider,replacement_id)
+            if replacement.status=='retired': error('INVALID_REPLACEMENT','Replacement provider must be active',422)
+        snapshot=provider_references(s,ident)
+        for project in s.scalars(select(Project)):
+            config=dict(project.config or {})
+            if config.get('provider_id')==ident:
+                if replacement: config['provider_id']=replacement.id
+                else: config.pop('provider_id',None)
+                project.config=config
+        for node in s.scalars(select(Node)):
+            config=dict(node.config or {})
+            if config.get('provider_id')==ident:
+                if replacement: config['provider_id']=replacement.id
+                else: config.pop('provider_id',None)
+                node.config=config
+        for agent in s.scalars(select(Agent).where(Agent.provider_id==ident)):
+            agent.provider_id=replacement.id if replacement else None
+        from services.observation.models import ReporterPolicy
+        for policy in s.scalars(select(ReporterPolicy)):
+            settings_value=dict(policy.settings or {})
+            if settings_value.get('provider_id')==ident:
+                if replacement: settings_value['provider_id']=replacement.id
+                else: settings_value.pop('provider_id',None)
+                policy.settings=settings_value
+        preference=s.get(Preference,'settings')
+        if preference and (preference.value or {}).get('default_provider_id')==ident:
+            values=dict(preference.value or {})
+            if replacement: values['default_provider_id']=replacement.id
+            else: values.pop('default_provider_id',None)
+            preference.value=values
+        credential_ref=p.credential_ref
+        p.credential_ref=None
+        p.status='retired'
+        result={'provider':asdict(p),'updated_reference_count':len(snapshot['references']),'historical_request_count':snapshot['historical_request_count']}
+    delete_secret(credential_ref)
+    return result
+
+@app.post('/api/providers/{ident}/restore')
+def provider_restore(ident:str):
+    with Session.begin() as s:
+        p=get(s,Provider,ident,for_update=True)
+        if p.status=='retired': p.status='untested'
+        return asdict(p)
+
 @app.post('/api/providers')
 def provider_create(body:dict=Body(...)):
     if body.get('kind','openai') not in ('ollama','openai','codex_cli'): error('INVALID_PROVIDER','Use ollama, openai-compatible or codex_cli')
@@ -519,7 +613,10 @@ def provider_edit(ident:str,body:dict=Body(...)):
 @app.post('/api/providers/{ident}/test')
 def provider_test(ident:str):
     from research.agents.provider import ModelClient
-    with Session() as s: p=get(s,Provider,ident); d=asdict(p,True)
+    with Session() as s:
+        p=get(s,Provider,ident)
+        if p.status=='retired': error('PROVIDER_RETIRED','Restore this provider before testing it',409)
+        d=asdict(p,True)
     try:
         result=ModelClient(d,read_secret(d.get('credential_ref')),d.get('allow_paid',False)).complete([{'role':'user','content':'Return JSON {"status":"connected"}.'}]); status='connected'
     except Exception as exc: result={'error':str(exc)}; status='failed'
@@ -534,7 +631,10 @@ def provider_usage(ident:str):
 @app.get('/api/providers/{ident}/models')
 def provider_models(ident:str):
     from research.agents.provider import ModelClient
-    with Session() as s: p=asdict(get(s,Provider,ident),True)
+    with Session() as s:
+        provider=get(s,Provider,ident)
+        if provider.status=='retired': error('PROVIDER_RETIRED','Restore this provider before loading its models',409)
+        p=asdict(provider,True)
     return ModelClient(p,read_secret(p.get('credential_ref')),p.get('allow_paid',False)).models()
 @app.get('/api/hosts')
 def hosts():

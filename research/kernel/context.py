@@ -5,7 +5,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from .artifacts import ArtifactResolver
+from .artifacts import ArtifactResolver, safe_path
 from .errors import GraphError
 from .graph import _closure, _index, PROPAGATION
 
@@ -65,7 +65,10 @@ class ContextBuilder:
         max_chars = max(512, int(settings.get("max_chars", 24000)))
         ancestors = _closure(self.graph, [node_id], reverse=True, relations=PROPAGATION)
         excluded_branches = set(settings.get("exclude_branches", []))
-        imported = set(settings.get("import_branches", [])) - excluded_branches
+        branch_inputs = branch.get("input_mapping", [])
+        branch_input_branches = {ref.get("branch_id") for ref in branch_inputs
+                                 if isinstance(ref, dict) and ref.get("branch_id")}
+        imported = (set(settings.get("import_branches", [])) | branch_input_branches) - excluded_branches
         visible_branches = ({node["branch_id"]} | imported) - excluded_branches
         selected = [n for n in self.graph.get("nodes", []) if n["id"] in ancestors and n.get("branch_id") in visible_branches]
         independent = role.lower().replace(" ", "_") in INDEPENDENT_ROLES
@@ -185,6 +188,17 @@ class ContextBuilder:
                 if stale:
                     summaries_stale.append(identifier)
                 append(identifier, "summary", summary.get("text", ""), source=sources, branch_id=bid, priority=40, stale=stale)
+        for index, ref in enumerate(branch_inputs):
+            if isinstance(ref, dict):
+                current_branch = node["branch_id"]
+                destination = ref.get("destination") or ref.get("path")
+                try:
+                    local_path = safe_path(self.resolver.branch_path(current_branch), destination) if isinstance(destination, str) else None
+                except GraphError:
+                    local_path = None
+                effective = ({"path": str(destination), "branch_id": current_branch}
+                             if local_path and local_path.is_file() and not local_path.is_symlink() else ref)
+                file_material(effective, current_branch, f"branch_input:{index}", priority=78)
         # Explicit imported node evidence need not be connected by a canvas edge.
         for ref in settings.get("imports", []):
             if isinstance(ref, dict):
