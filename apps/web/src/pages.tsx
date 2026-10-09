@@ -1,9 +1,10 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
 import { createFileSelectionGuard } from "./fileSelection";
+import { orderFileTreeEntries, visibleFileTreeEntries } from "./files/fileTree";
 import { updateDefaultProviderDraft } from "./settingsDraft";
 import { hostEditorConfig, hostPayload } from "./connectionPayload";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
   Plus,
@@ -707,6 +708,26 @@ export function ResearchPage({ resource }: { resource: string }) {
                     )}
                   </span>
                   <strong>{String(r.data.probability_range)}</strong>
+                </div>
+              )}
+              {Array.isArray(r.data.supporting_source_titles) && (
+                <div className="idea-field">
+                  <span>{t("模型选出的相关来源（引用前请核实）", "Model-selected supporting or motivating sources (verify before citing)")}</span>
+                  {r.data.supporting_source_titles.length ? (
+                    <ul>{r.data.supporting_source_titles.map((title: string, index: number) => <li key={`${title}:${index}`}>{title}</li>)}</ul>
+                  ) : <p>{t("没有检索来源被选为此方向的直接依据。", "No retrieved source was selected as direct support for this direction.")}</p>}
+                </div>
+              )}
+              {Array.isArray(r.data.background_source_titles) && r.data.background_source_titles.length > 0 && (
+                <div className="idea-field">
+                  <span>{t("检索背景（不作为此方向的直接依据）", "Retrieved background (not direct support for this direction)")}</span>
+                  <ul>{r.data.background_source_titles.map((title: string, index: number) => <li key={`${title}:${index}`}>{title}</li>)}</ul>
+                </div>
+              )}
+              {!Array.isArray(r.data.supporting_source_titles) && Array.isArray(r.data.source_titles) && r.data.source_titles.length > 0 && (
+                <div className="idea-field">
+                  <span>{t("旧记录的检索来源池（未归属到此方向）", "Retrieved source pool in this older record (not attributed to this direction)")}</span>
+                  <ul>{r.data.source_titles.map((title: string, index: number) => <li key={`${title}:${index}`}>{title}</li>)}</ul>
                 </div>
               )}
               {Array.isArray(r.data.commands) && (
@@ -2707,6 +2728,9 @@ export function FilesPage() {
   const fileReadGeneration = useRef(0);
   const draftVersion = useRef(0);
   const [filter, setFilter] = useState("");
+  const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [newFile, setNewFile] = useState(false);
   const [newPath, setNewPath] = useState("");
   const [diff, setDiff] = useState(false);
@@ -2717,6 +2741,41 @@ export function FilesPage() {
     | { kind: "missing"; path: string }
     | null
   >(null);
+  const fileDraftKey = (relativePath: string) => `forest-file-draft:${id}:${relativePath}`;
+  const loadTextFile = async (
+    relativePath: string,
+    isStale?: () => boolean,
+  ) => {
+    const saved = await api(`/projects/${id}/file?path=${encodeURIComponent(relativePath)}`);
+    if (isStale?.()) return;
+    const key = fileDraftKey(relativePath);
+    let draft: Json | null = null;
+    try {
+      draft = JSON.parse(sessionStorage.getItem(key) || "null");
+    } catch {
+      sessionStorage.removeItem(key);
+    }
+    if (isStale?.()) return;
+    if (draft && typeof draft.content === "string" && draft.content !== draft.original) {
+      setContent(draft.content);
+      setOriginal(typeof draft.original === "string" ? draft.original : saved.content);
+      setRevision(typeof draft.revision === "number" ? draft.revision : saved.revision);
+      setDirty(true);
+      return;
+    }
+    sessionStorage.removeItem(key);
+    setContent(saved.content);
+    setOriginal(saved.content);
+    setRevision(saved.revision);
+    setDirty(false);
+  };
+  const changeContent = (value: string) => {
+    setContent(value);
+    setDirty(value !== original);
+    const key = fileDraftKey(path);
+    if (value === original) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, JSON.stringify({ content: value, original, revision }));
+  };
   const extension = path.split(".").pop()?.toLowerCase();
   const image = ["png", "jpg", "jpeg", "svg", "webp", "gif"].includes(
     extension || "",
@@ -2724,10 +2783,23 @@ export function FilesPage() {
   const binary = ["parquet", "zip", "pkl", "npy", "npz"].includes(
     extension || "",
   );
+  const orderedFiles = useMemo(
+    () =>
+      orderFileTreeEntries(
+        filePage.files as Array<Json & { path: string; is_dir?: boolean; size: number }>,
+      ),
+    [filePage.files],
+  );
+  const visibleFiles = visibleFileTreeEntries(
+    orderedFiles,
+    filter,
+    collapsedDirectories,
+  );
   const url = `/api/projects/${id}/download?path=${encodeURIComponent(path)}`;
   const open = async (p: string) => {
     if (dirty && !confirm(t("放弃未保存修改？", "Discard unsaved changes?")))
       return;
+    if (dirty && path) sessionStorage.removeItem(fileDraftKey(path));
     const selection = fileSelection.select(p);
     fileReadGeneration.current += 1;
     setPath(p);
@@ -2746,11 +2818,8 @@ export function FilesPage() {
     }
     if (!/\.(pdf|png|jpe?g|svg|webp|gif|parquet|zip|pkl|npy|npz)$/i.test(p)) {
       try {
-        const r = await api(`/projects/${id}/file?path=${encodeURIComponent(p)}`);
+        await loadTextFile(p, () => !fileSelection.isCurrent(selection));
         if (!fileSelection.isCurrent(selection)) return;
-        setContent(r.content);
-        setOriginal(r.content);
-        setRevision(r.revision);
         setLoadedPath(p);
       } catch (error) {
         if (!fileSelection.isCurrent(selection)) return;
@@ -2793,6 +2862,7 @@ export function FilesPage() {
       setOriginal(savedContent);
       setDirty(draftVersion.current !== savedDraftVersion);
       setConflict(null);
+      sessionStorage.removeItem(fileDraftKey(path));
       await reload();
     } catch (e) {
       if ((e as any).status === 409) {
@@ -2820,7 +2890,9 @@ export function FilesPage() {
     const selected = [...files].map((file) => {
       const relativePath = file.webkitRelativePath || file.name;
       const parts = relativePath.split("/");
-      const safeParts = parts.every((part) => part && part !== "." && part !== "..");
+      const safeParts = parts.every(
+        (part) => part && part !== "." && part !== "..",
+      );
       const path = `uploads/${safeParts ? relativePath : file.name}`;
       return {
         file,
@@ -2849,7 +2921,8 @@ export function FilesPage() {
     const seen = new Set<string>();
     const conflicts = new Set<string>();
     for (const item of selected) {
-      if (existing.has(item.path) || seen.has(item.path)) conflicts.add(item.path);
+      if (existing.has(item.path) || seen.has(item.path))
+        conflicts.add(item.path);
       seen.add(item.path);
     }
     if (conflicts.size) {
@@ -2924,30 +2997,39 @@ export function FilesPage() {
             />
           </label>
           <div className="file-tree-list">
-            {filePage.files
-              .filter((f) =>
-                f.path.toLowerCase().includes(filter.toLowerCase()),
-              )
-              .map((f) => (
-                <button
-                  key={f.path}
-                  className={path === f.path ? "active" : ""}
-                  onClick={() => {
-                    if (!f.is_dir) void action(() => open(f.path));
-                  }}
-                  title={f.path}
-                >
-                  {f.is_dir ? <Folder size={15} /> : <File size={14} />}
-                  <span>{f.path}</span>
-                  <small>
-                    {f.is_dir
-                      ? ""
-                      : f.size < 1024
-                        ? `${f.size} B`
-                        : `${(f.size / 1024).toFixed(1)} K`}
-                  </small>
-                </button>
-              ))}
+            {visibleFiles.map((f) => (
+              <button
+                key={f.path}
+                className={`${path === f.path ? "active" : ""}${f.is_dir ? " directory" : ""}`}
+                aria-expanded={
+                  f.is_dir ? !collapsedDirectories.has(f.path) : undefined
+                }
+                style={{
+                  paddingLeft: `${15 + (f.path.split("/").length - 1) * 14}px`,
+                }}
+                onClick={() => {
+                  if (f.is_dir) {
+                    setCollapsedDirectories((current) => {
+                      const next = new Set(current);
+                      if (next.has(f.path)) next.delete(f.path);
+                      else next.add(f.path);
+                      return next;
+                    });
+                  } else void action(() => open(f.path));
+                }}
+                title={f.path}
+              >
+                {f.is_dir ? <Folder size={15} /> : <File size={14} />}
+                <span>{f.path}</span>
+                <small>
+                  {f.is_dir
+                    ? ""
+                    : f.size < 1024
+                      ? `${f.size} B`
+                      : `${(f.size / 1024).toFixed(1)} K`}
+                </small>
+              </button>
+            ))}
           </div>
           {!filePage.files.length && <Empty title={t("暂无文件", "No files")} />}
           {(cursorHistory.length > 0 || filePage.has_more) && (
@@ -3002,17 +3084,17 @@ export function FilesPage() {
                             setLoadedPath("");
                             setLoadError("");
                             try {
-                              const result = await api(
-                                `/projects/${id}/file?path=${encodeURIComponent(path)}`,
+                              await loadTextFile(
+                                path,
+                                () =>
+                                  !fileSelection.isCurrent(selection) ||
+                                  fileReadGeneration.current !== readGeneration,
                               );
                               if (
                                 !fileSelection.isCurrent(selection) ||
                                 fileReadGeneration.current !== readGeneration
                               )
                                 return;
-                              setContent(result.content);
-                              setOriginal(result.content);
-                              setRevision(result.revision);
                               setLoadedPath(path);
                               setTablePreview(false);
                             } catch (error) {
@@ -3167,8 +3249,7 @@ export function FilesPage() {
                       value={content}
                       onChange={(v) => {
                         draftVersion.current += 1;
-                        setContent(v);
-                        setDirty(true);
+                        changeContent(v);
                       }}
                       language={extension}
                     />
@@ -3179,8 +3260,7 @@ export function FilesPage() {
                   value={content}
                   onChange={(v) => {
                     draftVersion.current += 1;
-                    setContent(v);
-                    setDirty(true);
+                    changeContent(v);
                   }}
                   language={
                     extension === "py"
