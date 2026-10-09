@@ -1003,13 +1003,14 @@ Known domain failures: `404` Target unavailable; `409` Reviewed revision, reques
 
 #### `GET /api/projects/{ident}/interventions`
 
-Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path.
+Owner-only durable intent. Reviewed revisions and exact action identities are enforced. Accepted is distinct from applied. Stop effects are reconciled outside graph transactions; uncertain effects remain visible and retryable. Instruction delivery is confirmed by actual prepared request and provider response receipts, not model agreement. Human decisions persist across worker restart and use the ordinary budget-checked resume path. The before timestamp cursor accepts before_id to disambiguate records sharing a timestamp; clients can page through all retained history.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
 | `ident` | path | string | yes |  |
 | `limit` | query | integer | no | Default `50`.  minimum=1, maximum=200. |
 | `before` | query | string or null | no |  |
+| `before_id` | query | string or null | no |  |
 
 Success `200`: `application/json`: `InterventionView[]`.
 
