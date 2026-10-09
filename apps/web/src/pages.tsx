@@ -1,8 +1,9 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
+import { orderFileTreeEntries, visibleFileTreeEntries } from "./files/fileTree";
 import { updateDefaultProviderDraft } from "./settingsDraft";
 import { hostEditorConfig, hostPayload } from "./connectionPayload";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
   Plus,
@@ -2701,6 +2702,9 @@ export function FilesPage() {
   const [original, setOriginal] = useState("");
   const [revision, setRevision] = useState<number | undefined>();
   const [filter, setFilter] = useState("");
+  const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [newFile, setNewFile] = useState(false);
   const [newPath, setNewPath] = useState("");
   const [diff, setDiff] = useState(false);
@@ -2717,6 +2721,18 @@ export function FilesPage() {
   );
   const binary = ["parquet", "zip", "pkl", "npy", "npz"].includes(
     extension || "",
+  );
+  const orderedFiles = useMemo(
+    () =>
+      orderFileTreeEntries(
+        filePage.files as Array<Json & { path: string; is_dir?: boolean; size: number }>,
+      ),
+    [filePage.files],
+  );
+  const visibleFiles = visibleFileTreeEntries(
+    orderedFiles,
+    filter,
+    collapsedDirectories,
   );
   const url = `/api/projects/${id}/download?path=${encodeURIComponent(path)}`;
   const open = async (p: string) => {
@@ -2776,7 +2792,9 @@ export function FilesPage() {
     const selected = [...files].map((file) => {
       const relativePath = file.webkitRelativePath || file.name;
       const parts = relativePath.split("/");
-      const safeParts = parts.every((part) => part && part !== "." && part !== "..");
+      const safeParts = parts.every(
+        (part) => part && part !== "." && part !== "..",
+      );
       const path = `uploads/${safeParts ? relativePath : file.name}`;
       return {
         file,
@@ -2805,7 +2823,8 @@ export function FilesPage() {
     const seen = new Set<string>();
     const conflicts = new Set<string>();
     for (const item of selected) {
-      if (existing.has(item.path) || seen.has(item.path)) conflicts.add(item.path);
+      if (existing.has(item.path) || seen.has(item.path))
+        conflicts.add(item.path);
       seen.add(item.path);
     }
     if (conflicts.size) {
@@ -2880,30 +2899,39 @@ export function FilesPage() {
             />
           </label>
           <div className="file-tree-list">
-            {filePage.files
-              .filter((f) =>
-                f.path.toLowerCase().includes(filter.toLowerCase()),
-              )
-              .map((f) => (
-                <button
-                  key={f.path}
-                  className={path === f.path ? "active" : ""}
-                  onClick={() => {
-                    if (!f.is_dir) void action(() => open(f.path));
-                  }}
-                  title={f.path}
-                >
-                  {f.is_dir ? <Folder size={15} /> : <File size={14} />}
-                  <span>{f.path}</span>
-                  <small>
-                    {f.is_dir
-                      ? ""
-                      : f.size < 1024
-                        ? `${f.size} B`
-                        : `${(f.size / 1024).toFixed(1)} K`}
-                  </small>
-                </button>
-              ))}
+            {visibleFiles.map((f) => (
+              <button
+                key={f.path}
+                className={`${path === f.path ? "active" : ""}${f.is_dir ? " directory" : ""}`}
+                aria-expanded={
+                  f.is_dir ? !collapsedDirectories.has(f.path) : undefined
+                }
+                style={{
+                  paddingLeft: `${15 + (f.path.split("/").length - 1) * 14}px`,
+                }}
+                onClick={() => {
+                  if (f.is_dir) {
+                    setCollapsedDirectories((current) => {
+                      const next = new Set(current);
+                      if (next.has(f.path)) next.delete(f.path);
+                      else next.add(f.path);
+                      return next;
+                    });
+                  } else void action(() => open(f.path));
+                }}
+                title={f.path}
+              >
+                {f.is_dir ? <Folder size={15} /> : <File size={14} />}
+                <span>{f.path}</span>
+                <small>
+                  {f.is_dir
+                    ? ""
+                    : f.size < 1024
+                      ? `${f.size} B`
+                      : `${(f.size / 1024).toFixed(1)} K`}
+                </small>
+              </button>
+            ))}
           </div>
           {!filePage.files.length && <Empty title={t("暂无文件", "No files")} />}
           {(cursorHistory.length > 0 || filePage.has_more) && (
@@ -3002,10 +3030,14 @@ export function FilesPage() {
                     const next = prompt(t("新文件路径", "New file path"), path);
                     if (next && next !== path)
                       void action(async () => {
-                        const renamed = await api(`/projects/${id}/file/rename`, "POST", {
-                          path,
-                          new_path: next,
-                        });
+                        const renamed = await api(
+                          `/projects/${id}/file/rename`,
+                          "POST",
+                          {
+                            path,
+                            new_path: next,
+                          },
+                        );
                         setPath(next);
                         setRevision(renamed.revision);
                         await reload();

@@ -67,6 +67,68 @@ test("queued approved actions do not offer an invalid continuation", async ({
   ).toBeVisible();
 });
 
+test("Files folders expand and collapse nested entries", async ({
+  page,
+  request,
+}) => {
+  const filePath = "records/2026/notes.md";
+  const otherFilePath = "archive/summary.txt";
+  const saved = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path: filePath, content: "Nested file contents\n" },
+  });
+  expect(saved.ok()).toBeTruthy();
+  const otherSaved = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path: otherFilePath, content: "Other directory contents\n" },
+  });
+  expect(otherSaved.ok()).toBeTruthy();
+
+  await page.goto(`/projects/${projectId}/files`);
+  const fileTree = page.locator(".file-tree");
+  const rowLabels = await fileTree.locator("button span").allTextContents();
+  const archiveIndex = rowLabels.indexOf("archive");
+  const recordsIndex = rowLabels.indexOf("records");
+  expect(rowLabels.slice(archiveIndex, archiveIndex + 2)).toEqual([
+    "archive",
+    otherFilePath,
+  ]);
+  expect(rowLabels.slice(recordsIndex, recordsIndex + 3)).toEqual([
+    "records",
+    "records/2026",
+    filePath,
+  ]);
+  const file = fileTree.getByRole("button", { name: filePath });
+  const records = fileTree.getByRole("button", {
+    name: "records",
+    exact: true,
+  });
+  const year = fileTree.getByRole("button", {
+    name: "records/2026",
+    exact: true,
+  });
+  await expect(file).toBeVisible();
+  await expect(records).toHaveAttribute("aria-expanded", "true");
+
+  await records.focus();
+  await page.keyboard.press("Enter");
+  await expect(records).toHaveAttribute("aria-expanded", "false");
+  await expect(file).toBeHidden();
+
+  await records.click();
+  await expect(file).toBeVisible();
+  await year.click();
+  await expect(year).toHaveAttribute("aria-expanded", "false");
+  await expect(file).toBeHidden();
+
+  await fileTree.getByPlaceholder("Find files…").fill("notes.md");
+  await expect(records).toBeVisible();
+  await year.click();
+  await expect(file).toBeVisible();
+  await file.click();
+  await expect(page.locator(".monaco-editor")).toContainText(
+    "Nested file contents",
+  );
+});
+
 test("keyboard node movement persists its position", async ({
   page,
   request,
