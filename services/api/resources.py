@@ -76,7 +76,14 @@ def generate_ideas(body:dict=Body(...)):
     with Session.begin() as s: return asdict(enqueue(s,body['project_id'],'ideas',body,body.get('request_id')))
 @router.post('/api/research/suggest-paths')
 def suggest_paths(body:dict=Body(...)):
-    with Session.begin() as s: return asdict(enqueue(s,body['project_id'],'suggest_paths',body,body.get('request_id'),s.get(Node,body.get('node_id')) if body.get('node_id') else None))
+    scope=body.get('scope','node')
+    if scope not in ('node','branch','project'): error('INVALID_SCOPE','Scope must be node, branch, or project',422)
+    with Session.begin() as s:
+        project=get(s,Project,body['project_id'])
+        node=get(s,Node,body['node_id']) if body.get('node_id') else None
+        if node and node.project_id!=project.id: error('CROSS_PROJECT','Selected node belongs to another project',422)
+        if scope in ('node','branch') and not node: error('NODE_REQUIRED','Select a node to choose node or branch scope',422)
+        return asdict(enqueue(s,project.id,'suggest_paths',body,body.get('request_id'),node))
 @router.post('/api/ideas/{ident}/adopt')
 def adopt(ident:str,body:dict=Body(default={})):
     from copy import deepcopy
@@ -125,9 +132,15 @@ def adopt(ident:str,body:dict=Body(default={})):
         title=body.get('title',idea.title)
         if not isinstance(title,str) or not title.strip() or len(title)>350: error('INVALID_TITLE','Use a title of 1–350 characters',422)
         source_text=json.dumps(idea.data,ensure_ascii=False,indent=2)
+        if isinstance(idea.data.get('supporting_source_ids'),list):
+            provenance_note='Source roles were selected by a model from retrieved metadata/abstracts; verify each source before citing. Background sources are not direct support.'
+        else:
+            provenance_note='This older idea has an unclassified retrieved-source pool. Do not treat its source list as evidence for this direction without checking each item.'
         custom=body.get('instructions','')
         if not isinstance(custom,str): error('INVALID_INSTRUCTIONS','Instructions must be text',422)
-        source_input={'kind':'idea','id':idea.id,'project_id':p.id}
+        source_input={'kind':'idea','id':idea.id,'project_id':p.id,'revision':idea.revision,
+            'snapshot':{'id':idea.id,'title':idea.title,'revision':idea.revision,
+                        'status':idea.status,'data':idea.data}}
         common_inputs=[source_input,*inputs]
         duty=('State the falsifiable claim, strongest baseline, decisive unknown, primary metric, meaningful effect threshold, '
               'matched compute/data budget, split/seed policy, mechanism ablation and stopping rule. Choose the cheapest decisive '
@@ -142,7 +155,7 @@ def adopt(ident:str,body:dict=Body(default={})):
             commands.append({'operation':'add_node','targets':[],'params':params})
         add(hypothesis_id,'hypothesis',title,
             'Develop this adopted idea into a testable protocol. '+duty+' Write hypothesis.md in the run workspace and finish with that actual artifact.\n'
-            +'Owner instructions: '+custom+'\nIdea source material (claims are untested unless supported):\n'+source_text,
+            +'Owner instructions: '+custom+'\n'+provenance_note+'\nIdea source material (claims are untested unless supported):\n'+source_text,
             {'kind':'agent','role':'Researcher'},common_inputs,0)
         protocol={'node_id':hypothesis_id,'path':'hypothesis.md','destination':'hypothesis.md','branch_id':branch_id}
         command=config.get('command')
@@ -484,16 +497,58 @@ def install_resource_routes(name,model):
             # Project -> resource -> dependent records -> event cursor.
             r=lock_record(s,ident)
             if body.get('expected_revision',r.revision)!=r.revision: error('REVISION_CONFLICT','This research object changed',409)
+            invalidated_figure=False
             if 'title' in body: r.title=body['title']
             if 'data' in body:
                 from services.interventions.dependencies import validate_bindings
-                validate_bindings(s,r.project_id,{**r.data,**body['data']})
-                r.data={**r.data,**body['data']}
+                if body.get('replace_data') is True:
+                    validate_bindings(s,r.project_id,body['data'])
+                    updated=body['data']
+                else:
+                    validate_bindings(s,r.project_id,{**r.data,**body['data']})
+                    updated={**r.data,**body['data']}
+                render_inputs=('kind','style','code','code_origin','run_ids','metric','data','caption','purpose','image_prompt','narrative_mode','image_variants','candidates')
+                if name=='figures' and any(updated.get(key)!=r.data.get(key) for key in render_inputs):
+                    for key in ('outputs','svg_path','png_path','pdf_path','jpg_path','jpeg_path','visual_selection'):
+                        updated.pop(key,None)
+                    updated['visual_review_status']='stale'
+                    invalidated_figure=True
+                r.data=updated
             if 'status' in body: r.status=body['status']
+            if invalidated_figure: r.status='needs_review'
             r.revision+=1; touch_dependents(s,r.project_id,r.id); return asdict(r)
     def remove(ident:str):
         with Session.begin() as s:
-            r=lock_record(s,ident); touch_dependents(s,r.project_id,ident); s.delete(r); return {'deleted':ident}
+            r=lock_record(s,ident)
+            touch_dependents(s,r.project_id,ident)
+            if model is SourcePaper:
+                passages=s.scalars(select(SourcePassage).where(
+                    SourcePassage.project_id==r.project_id
+                ))
+                for passage in passages:
+                    if passage.data.get('paper_id')==ident: s.delete(passage)
+            if model is Hypothesis:
+                snapshot={'id':r.id,'title':r.title,'revision':r.revision,'status':r.status,'data':r.data}
+                graph_changed=False
+                for node in s.scalars(select(Node).where(Node.project_id==r.project_id)):
+                    updated=[]
+                    changed=False
+                    for ref in node.inputs or []:
+                        if (isinstance(ref,dict) and ref.get('kind')=='idea' and ref.get('id')==ident
+                                and ref.get('snapshot')!=snapshot):
+                            ref={**ref,'snapshot':snapshot}
+                            changed=True
+                        updated.append(ref)
+                    if changed:
+                        node.inputs=updated
+                        node.revision+=1
+                        graph_changed=True
+                if graph_changed:
+                    project=s.get(Project,r.project_id)
+                    project.revision+=1
+                    emit(s,project.id,'project_changed',{'revision':project.revision})
+            s.delete(r)
+            return {'deleted':ident}
     router.add_api_route('/api/'+name,listing,methods=['GET'],name=name+'_list')
     if name!='reviews': router.add_api_route('/api/'+name,create,methods=['POST'],name=name+'_create')
     router.add_api_route('/api/'+name+'/{ident}',read,methods=['GET'],name=name+'_get')

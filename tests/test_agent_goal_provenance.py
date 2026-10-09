@@ -99,6 +99,11 @@ def probe(directory, mode):
 @pytest.mark.parametrize('mode', ['normal', 'queued_edit', 'continuation', 'continuation_unchanged'])
 def test_actual_worker_retains_consumed_goal_context_across_edit_resume_and_api_restart(tmp_path, mode):
     report, run, captures = probe(tmp_path, mode)
+    assert 'publication_profile' not in run['config']
+    for request in captures:
+        system = next(message['content'] for message in request['messages'] if message['role'] == 'system')
+        assert 'AUTHORING MODE: MANUSCRIPT' not in system
+        assert 'FULL SUBMISSION CONTRACT' not in system
     contexts = run['metrics']['execution_context']
     assert contexts['history_scope'] == 'authoritative_project_context'
     for request, receipt in zip(captures, contexts['requests'], strict=True):
