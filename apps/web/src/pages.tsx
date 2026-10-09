@@ -1014,7 +1014,7 @@ function ExperimentForm({
   const [command, setCommand] = useState(savedDraft?.command ?? item?.data.command ?? "");
   const [code, setCode] = useState(savedDraft?.code ?? item?.data.code ?? "");
   const [dataset, setDataset] = useState(savedDraft?.dataset ?? item?.data.dataset ?? "");
-  const [seeds, setSeeds] = useState(
+  const [seeds, setSeeds] = useState<string>(
     savedDraft?.seeds ?? (item?.data.seeds || [0, 1, 2]).join(","),
   );
   const [params, setParams] = useState(
@@ -1049,6 +1049,11 @@ function ExperimentForm({
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
+          const parsedSeeds = seeds
+            .split(",")
+            .map((seed) => seed.trim())
+            .filter(Boolean)
+            .map(Number);
           const r = await action(() =>
             api(
               item ? `/experiments/${item.id}` : "/experiments",
@@ -1062,7 +1067,7 @@ function ExperimentForm({
                   command,
                   code,
                   dataset,
-                  seeds: seeds.split(",").map(Number),
+                  seeds: parsedSeeds,
                   parameters: parseJson(params),
                   budget: seconds.trim() ? { seconds: Number(seconds) } : {},
                   timeout: seconds.trim() ? Number(seconds) : null,
