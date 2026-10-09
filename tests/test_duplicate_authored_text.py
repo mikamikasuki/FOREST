@@ -17,7 +17,7 @@ import zipfile
 
 import pytest
 
-from test_api import add_node, create, ok
+from test_api import add_node, command, create, ok
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,6 +38,9 @@ def launch(client, project):
 def case_duplicate_preserves_authored_text_ids(client):
     source = create(client)
     node, run = launch(client, source)
+    instructions = (f'Reproduce the baseline recorded under source project ID {source["id"]} '
+                    f'and source node ID {node["id"]}; keep this instruction verbatim.')
+    ok(command(client, source, 'edit_node', targets=[node['id']], instructions=instructions))
     statement = (f'For provenance, this note names source project ID {source["id"]}, '
                  f'source node ID {node["id"]} and source run ID {run["id"]}; '
                  'preserve this sentence verbatim.')
@@ -60,6 +63,7 @@ def case_duplicate_preserves_authored_text_ids(client):
     assert copied_node['id'] != node['id'] and copied_run['id'] != run['id']
     assert copied_idea['data']['node_id'] == copied_node['id']
     assert copied_idea['data']['run_ids'] == [copied_run['id']]
+    assert copied_node['instructions'] == instructions, copied_node['instructions']
 
 
 def case_duplicate_preserves_manuscript_authored_source(client):
