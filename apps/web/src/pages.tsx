@@ -83,6 +83,7 @@ function RecordEditor({
   item,
   projectId,
   initial = {},
+  preserveDraft = false,
   onClose,
   onSaved,
 }: {
@@ -90,15 +91,39 @@ function RecordEditor({
   item?: RecordItem;
   projectId: string;
   initial?: Json;
+  preserveDraft?: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const { t, action } = useUI();
-  const [title, setTitle] = useState(item?.title || "");
+  const draftKey = `forest:record-draft:${projectId}:${resource}:${item?.id || "new"}`;
+  const [savedDraft] = useState(() => {
+    if (!preserveDraft || typeof window === "undefined") return null;
+    try {
+      return JSON.parse(sessionStorage.getItem(draftKey) || "null");
+    } catch {
+      return null;
+    }
+  });
+  const [title, setTitle] = useState(item?.title ?? savedDraft?.title ?? "");
   const [data, setData] = useState(
-    JSON.stringify(item?.data || initial, null, 2),
+    savedDraft?.data ?? JSON.stringify(item?.data || initial, null, 2),
   );
   const [busy, setBusy] = useState(false);
+  const persistDraft = (nextTitle = title, nextData = data) => {
+    if (!preserveDraft) return;
+    try {
+      sessionStorage.setItem(
+        draftKey,
+        JSON.stringify({ title: nextTitle, data: nextData }),
+      );
+    } catch {
+      // Keep editing available when browser storage is disabled or full.
+    }
+  };
+  useEffect(() => {
+    persistDraft();
+  }, [data, draftKey, preserveDraft, title]);
   return (
     <Modal
       wide
@@ -125,6 +150,13 @@ function RecordEditor({
           );
           setBusy(false);
           if (result) {
+            if (preserveDraft) {
+              try {
+                sessionStorage.removeItem(draftKey);
+              } catch {
+                // Saving still succeeds if browser storage is unavailable.
+              }
+            }
             onSaved();
             onClose();
           }
@@ -135,7 +167,10 @@ function RecordEditor({
             autoFocus
             required
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              persistDraft(e.target.value, data);
+            }}
           />
         </Field>
         <Field label={t("研究内容与配置", "Research content & configuration")}>
@@ -143,7 +178,10 @@ function RecordEditor({
             className="code-input"
             rows={17}
             value={data}
-            onChange={(e) => setData(e.target.value)}
+            onChange={(e) => {
+              setData(e.target.value);
+              persistDraft(title, e.target.value);
+            }}
           />
         </Field>
         <div className="modal-actions">
@@ -718,9 +756,11 @@ export function ResearchPage({ resource }: { resource: string }) {
       )}{" "}
       {editing !== false && (
         <RecordEditor
+          key={editing === null ? "new" : editing.id}
           resource={resource}
           item={editing || undefined}
           projectId={id!}
+          preserveDraft
           initial={{
             hypothesis: "",
             mechanism: "",
