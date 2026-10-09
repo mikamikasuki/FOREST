@@ -622,7 +622,8 @@ def provider_test(ident:str):
     except Exception as exc: result={'error':str(exc)}; status='failed'
     with Session.begin() as s: get(s,Provider,ident).status=status
     if status=='failed': error('PROVIDER_CONNECTION_FAILED',result['error'],502,'Check endpoint, model identifier and credentials.',True)
-    return {'status':status,**result}
+    request_status=result.get('status')
+    return {**result,'status':status,'request_status':request_status}
 @app.get('/api/providers/{ident}/usage')
 def provider_usage(ident:str):
     from research.agents.budget import usage_summary
