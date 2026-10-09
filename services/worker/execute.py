@@ -137,6 +137,27 @@ def model_json(config,prompt,system=''):
     return context_model_json(client,[{'role':'system','content':RESEARCH_POLICY+'\n'+system},{'role':'user','content':prompt}],
                               Path(config['_context_workspace']),char_hint=config.get('context_char_budget',64000))
 
+def path_request_graph(graph,scope,node_id,branch_id):
+    if scope=='project': return graph
+    nodes={item['id']:item for item in graph.get('nodes',[])}
+    if scope=='node':
+        if node_id not in nodes: raise ValueError('Node-scoped path request requires an existing selected node')
+        from research.kernel.graph import _closure, EXECUTION
+        node_ids=_closure(graph,[node_id],reverse=True,relations=EXECUTION)
+    elif scope=='branch':
+        node=nodes.get(node_id)
+        branch_id=(node or {}).get('branch_id') or branch_id
+        if not branch_id: raise ValueError('Branch-scoped path request requires a selected branch')
+        node_ids={ident for ident,item in nodes.items() if item.get('branch_id')==branch_id}
+    else:
+        raise ValueError('Path request scope must be node, branch, or project')
+    scoped={**graph}
+    scoped['nodes']=[item for item in graph.get('nodes',[]) if item['id'] in node_ids]
+    scoped['edges']=[edge for edge in graph.get('edges',[]) if edge.get('source') in node_ids and edge.get('target') in node_ids]
+    branch_ids={item.get('branch_id') for item in scoped['nodes']}
+    scoped['branches']=[item for item in graph.get('branches',[]) if item['id'] in branch_ids]
+    return scoped
+
 def execute(run_id):
     with Session() as s:
         run=get(s,TaskRun,run_id); config=run.config; pid=run.project_id; kind=run.kind; node_id=run.node_id; branch=s.get(Branch,run.branch_id) if run.branch_id else s.scalar(select(Branch).where(Branch.project_id==pid,Branch.is_main==True)); branch_workspace=branch.workspace if branch else '.'
@@ -745,8 +766,12 @@ def execute(run_id):
             emit(s,pid,'artifact_available',{'kind':'ideas','ids':ids})
         return {'ideas':ideas['ideas'],'source_count':len(sources),'usage':response['usage']}
     if kind=='suggest_paths':
-        with Session() as s: p=get(s,Project,pid); graph=graph_from_db(s,p)
-        proposal,response=model_json(config,json.dumps({'prompt':config.get('prompt'),'node_id':node_id,'graph':{k:v for k,v in graph.items() if k!='_history'}},ensure_ascii=False),'Return JSON {"commands":[{"operation":"add_node|fork_branch|edit_node|add_dependency","targets":[],"params":{}}],"rationale":"...","alternatives":[{"purpose":"advance|falsify|repair","experiment":"...","stop_condition":"..."}]}. These are editable proposals, not applied commands.')
+        with Session() as s:
+            p=get(s,Project,pid); graph=graph_from_db(s,p)
+            selected=s.get(Node,node_id) if node_id else None
+            branch_id=selected.branch_id if selected else branch.id if branch else None
+            scoped_graph=path_request_graph(graph,config.get('scope','node'),node_id,branch_id)
+        proposal,response=model_json(config,json.dumps({'prompt':config.get('prompt'),'scope':config.get('scope','node'),'node_id':node_id,'graph':{k:v for k,v in scoped_graph.items() if k!='_history'}},ensure_ascii=False),'Return JSON {"commands":[{"operation":"add_node|fork_branch|edit_node|add_dependency","targets":[],"params":{}}],"rationale":"...","alternatives":[{"purpose":"advance|falsify|repair","experiment":"...","stop_condition":"..."}]}. These are editable proposals, not applied commands.')
         (output/'proposal.json').write_text(json.dumps(proposal,ensure_ascii=False,indent=2))
         with Session.begin() as s:
             r=Hypothesis(project_id=pid,title='Research Path Revision',data={**proposal,'node_id':node_id},status='proposed'); s.add(r); emit(s,pid,'artifact_available',{'kind':'proposal','run_id':run_id})

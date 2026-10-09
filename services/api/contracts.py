@@ -582,7 +582,7 @@ operation("post", "/api/browser/read", "Literature", "Import a public web-page r
     "Require project_id and url; screenshot is optional (default false). Read the real page, save text/optional screenshot relative paths and a SourcePaper with a page passage. Return the saved RecordItem.", ref("RecordItem"), body="BrowserReadRequest", errors={404: "NOT_FOUND"})
 for path, kind, description in (
     ("/api/research/ideas", "ideas", "Enqueue idea generation; scientific judgments and task-specific options are in the extensible request body."),
-    ("/api/research/suggest-paths", "suggest_paths", "Enqueue path proposals; optional node_id supplies the scheduler node context."),
+    ("/api/research/suggest-paths", "suggest_paths", "Enqueue path proposals. scope=node sends the selected node and its execution ancestors; scope=branch sends only the selected node's branch; scope=project sends the full graph. Node and branch scopes require node_id."),
     ("/api/reviews", "review", "Enqueue scientific review; POST /reviews does not directly create a Review resource record."),
     ("/api/analysis/run", "analysis", "Enqueue an analysis task over declared real inputs; output fields depend on the selected analysis type.")):
     operation("post", path, "Research", f"Enqueue {kind} work", description + " Return Run, not the final scientific output.", ref("Run"), body="QueuedTaskRequest", errors={400: "Scheduling/input errors", 404: "NOT_FOUND"})

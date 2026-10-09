@@ -23203,7 +23203,7 @@
     },
     "/api/research/suggest-paths": {
       "post": {
-        "description": "Enqueue path proposals; optional node_id supplies the scheduler node context. Return Run, not the final scientific output.",
+        "description": "Enqueue path proposals. scope=node sends the selected node and its execution ancestors; scope=branch sends only the selected node's branch; scope=project sends the full graph. Node and branch scopes require node_id. Return Run, not the final scientific output.",
         "operationId": "suggest_paths_api_research_suggest_paths_post",
         "requestBody": {
           "content": {

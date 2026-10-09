@@ -1651,7 +1651,7 @@ Known domain failures: `400` EMPTY_SELECTION or graph command errors; `404` NOT_
 
 #### `POST /api/research/suggest-paths`
 
-Enqueue path proposals; optional node_id supplies the scheduler node context. Return Run, not the final scientific output.
+Enqueue path proposals. scope=node sends the selected node and its execution ancestors; scope=branch sends only the selected node's branch; scope=project sends the full graph. Node and branch scopes require node_id. Return Run, not the final scientific output.
 
 Body: `application/json`: `QueuedTaskRequest`; required.
 
