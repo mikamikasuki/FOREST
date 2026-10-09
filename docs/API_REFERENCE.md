@@ -1649,7 +1649,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/projects/{ident}/research/{action}`
 
-Actions start/pause/stop. start sets PLAN/running with optional branch_id/required_artifacts/autonomous/max_cycles and resumes previously paused runs. pause/stop process-control affected active runs after updating controller configuration. Return controller fields plus process_control_errors; HTTP 200 can contain individual process-control errors and must be inspected.
+Actions start/pause/stop. start sets PLAN/running with optional branch_id/required_artifacts/autonomous/max_cycles and resumes previously paused runs. A selected branch must belong to the project and have active status; restore pruned, archived, or disabled branches before starting. pause/stop process-control affected active runs after updating controller configuration. Return controller fields plus process_control_errors; HTTP 200 can contain individual process-control errors and must be inspected.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -1660,7 +1660,7 @@ Body: `application/json`: `ResearchControlRequest`; optional.
 
 Success `200`: `application/json`: `ResearchControl`.
 
-Known domain failures: `404` NOT_FOUND or UNKNOWN_ACTION.
+Known domain failures: `404` NOT_FOUND, UNKNOWN_ACTION, or UNKNOWN_BRANCH; `409` BRANCH_NOT_RUNNABLE.
 
 #### `GET /api/projects/{ident}/usage`
 

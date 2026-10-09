@@ -21248,7 +21248,7 @@
     },
     "/api/projects/{ident}/research/{action}": {
       "post": {
-        "description": "Actions start/pause/stop. start sets PLAN/running with optional branch_id/required_artifacts/autonomous/max_cycles and resumes previously paused runs. pause/stop process-control affected active runs after updating controller configuration. Return controller fields plus process_control_errors; HTTP 200 can contain individual process-control errors and must be inspected.",
+        "description": "Actions start/pause/stop. start sets PLAN/running with optional branch_id/required_artifacts/autonomous/max_cycles and resumes previously paused runs. A selected branch must belong to the project and have active status; restore pruned, archived, or disabled branches before starting. pause/stop process-control affected active runs after updating controller configuration. Return controller fields plus process_control_errors; HTTP 200 can contain individual process-control errors and must be inspected.",
         "operationId": "research_control_api_projects__ident__research__action__post",
         "parameters": [
           {
@@ -21323,7 +21323,17 @@
                 }
               }
             },
-            "description": "NOT_FOUND or UNKNOWN_ACTION"
+            "description": "NOT_FOUND, UNKNOWN_ACTION, or UNKNOWN_BRANCH"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "BRANCH_NOT_RUNNABLE"
           },
           "422": {
             "content": {

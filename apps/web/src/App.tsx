@@ -1075,6 +1075,14 @@ function ResearchControls({
   const [readyParallelism, setReadyParallelism] = useState(1);
   const [metric, setMetric] = useState("");
   const [direction, setDirection] = useState("min");
+  const runnableBranches = (graph.branches || []).filter(
+    (item: Json) => !["pruned", "archived", "disabled"].includes(item.status || "active"),
+  );
+  useEffect(() => {
+    if (branch && !runnableBranches.some((item: Json) => item.id === branch)) {
+      setBranch("");
+    }
+  }, [branch, graph.branches]);
   const {
     data: session,
     loading: sessionLoading,
@@ -1126,7 +1134,7 @@ function ResearchControls({
         }}
       >
         <option value="">{t("项目全部路线", "All project paths")}</option>
-        {graph.branches.map((b: Json) => (
+        {runnableBranches.map((b: Json) => (
           <option key={b.id} value={b.id}>
             {b.name}
           </option>
