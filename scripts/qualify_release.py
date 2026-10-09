@@ -144,11 +144,25 @@ def run_prime(api,args,record,persist):
     if control.get('status') not in ('completed','blocked','budget_exhausted','stopped'):
         record.update(status='running',monitor_timeout=True,controller=control); persist(); return
     runs=api('GET',f'/api/projects/{pid}/runs',params={'limit':500})
-    files=api('GET',f'/api/projects/{pid}/files')['files']; failures=[]; checked=[]
-    for run in runs:
-        if run['kind']!='agent' or run['status']!='completed': continue
-        prefix=run['output_path']+'/workspace/'
-        sources=[f['path'][len(prefix):] for f in files if f['path'].startswith(prefix) and f['path'].endswith('.py') and not f['is_dir']]
+    completed_agents=[run for run in runs if run['kind']=='agent' and run['status']=='completed']
+    source_paths={run['id']:[] for run in completed_agents}
+    prefixes={run['output_path']+'/workspace/':run['id'] for run in completed_agents}
+    cursor=None
+    while True:
+        params={'limit':1000}
+        if cursor: params['cursor']=cursor
+        page=api('GET',f'/api/projects/{pid}/files',params=params)
+        for item in page['files']:
+            if item['is_dir'] or not item['path'].endswith('.py'): continue
+            for prefix,run_id in prefixes.items():
+                if item['path'].startswith(prefix):
+                    source_paths[run_id].append(item['path'][len(prefix):])
+        if not page.get('has_more'): break
+        cursor=page.get('next_cursor')
+        if not cursor: raise RuntimeError('File listing reported more entries without a continuation cursor')
+    failures=[]; checked=[]
+    for run in completed_agents:
+        sources=source_paths[run['id']]
         artifacts,session,receipts,errors=evidence(api,run,['metrics.json','report.md',*sources])
         oracle_errors,review=prime_oracle(artifacts); errors.extend(oracle_errors)
         checked.append({'run_id':run['id'],'errors':errors,'review':review,'receipts':receipts,'usage':session.get('totals',{})})
