@@ -521,8 +521,15 @@ def research_control(ident:str,action:str,body:dict=Body(default={})):
             parallelism=body.get('ready_parallelism',control.get('ready_parallelism',1))
             if type(parallelism) is not int or not 1<=parallelism<=32:
                 error('INVALID_PARALLELISM','ready_parallelism must be an integer from 1 to 32',422)
+            branch_id=body.get('branch_id',control.get('branch_id'))
+            if branch_id:
+                selected_branch=s.get(Branch,branch_id)
+                if selected_branch is None or selected_branch.project_id!=ident:
+                    error('UNKNOWN_BRANCH','Choose a research branch from this project',404)
+                if selected_branch.status!='active':
+                    error('BRANCH_NOT_RUNNABLE','Restore this branch before starting research on it',409)
             affected=control.get('paused_run_ids',[])
-            control={**control,'status':'running','phase':'PLAN','branch_id':body.get('branch_id',control.get('branch_id')),'required_artifacts':body.get('required_artifacts',control.get('required_artifacts',[])), 'autonomous':body.get('autonomous',control.get('autonomous',p.mode=='auto')), 'max_cycles':body.get('max_cycles',control.get('max_cycles')),'ready_parallelism':parallelism}
+            control={**control,'status':'running','phase':'PLAN','branch_id':branch_id,'required_artifacts':body.get('required_artifacts',control.get('required_artifacts',[])), 'autonomous':body.get('autonomous',control.get('autonomous',p.mode=='auto')), 'max_cycles':body.get('max_cycles',control.get('max_cycles')),'ready_parallelism':parallelism}
             control.pop('reason',None);control.pop('paused_run_ids',None)
         elif action in ('pause','stop'):
             from services.worker.scheduler import ACTIVE
