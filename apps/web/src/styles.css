@@ -172,6 +172,8 @@ svg {
   display: flex;
   flex-direction: column;
   padding: 27px 18px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   z-index: 25;
 }
 .brand {
