@@ -251,8 +251,9 @@ class WorkerLoop:
                 if any(d.status!='completed' for d in deps): continue
                 # Check the exact queued inputs after prerequisite runs finish.
                 from services.api.common import graph_from_db
-                from research.kernel import ArtifactResolver
-                resolver=ArtifactResolver(project_dir(r.project_id),graph_from_db(s,p)); bound=[]; missing=[]
+                from research.kernel.artifacts import ArtifactResolver, resolve_branch_references
+                graph=graph_from_db(s,p)
+                resolver=ArtifactResolver(project_dir(r.project_id),graph); bound=[]; branch_bound=[]; missing=[]
                 for reference in r.config.get('input_references',[]):
                     ref={'path':reference} if isinstance(reference,str) else dict(reference)
                     if not ref.get('path') and not ref.get('node_id'): continue
@@ -266,9 +267,11 @@ class WorkerLoop:
                     elif actual.get('path'): bound.append({'source_path':actual['relative_path'],
                         'destination':ref.get('destination') or Path(ref['path']).name,
                         'source_node_id':ref.get('node_id'), 'reference_path':ref.get('path')})
+                branch_bound,branch_missing=resolve_branch_references(project_dir(r.project_id),graph,r.branch_id)
+                missing.extend(branch_missing)
                 if missing:
-                    r.status='waiting_input'; r.resource={**r.resource,'blocked_reason':'input_missing'}; r.error='Required produced files are missing: '+json.dumps(missing,ensure_ascii=False); emit(s,r.project_id,'run_changed',{'run_id':r.id,'status':r.status}); continue
-                r.config={**r.config,'resolved_inputs':bound}
+                    r.status='waiting_input'; r.resource={**r.resource,'blocked_reason':'input_missing'}; r.error='Required input files are missing or unavailable: '+json.dumps(missing,ensure_ascii=False); emit(s,r.project_id,'run_changed',{'run_id':r.id,'status':r.status}); continue
+                r.config={**r.config,'resolved_inputs':bound,'resolved_branch_references':branch_bound}
                 from services.api.verification import dispatch_verification
                 gate=dispatch_verification(s,r,resolved_inputs=bound)
                 if not gate['ready']:

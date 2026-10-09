@@ -137,6 +137,18 @@ def model_json(config,prompt,system=''):
     return context_model_json(client,[{'role':'system','content':RESEARCH_POLICY+'\n'+system},{'role':'user','content':prompt}],
                               Path(config['_context_workspace']),char_hint=config.get('context_char_budget',64000))
 
+def materialize_branch_references(root, workspace, bindings):
+    """Copy branch-level reference files into an isolated task workspace."""
+    for binding in bindings:
+        origin=safe_path(root,binding['source_path'],True)
+        destination=safe_path(workspace,binding['destination'])
+        if destination.is_file():
+            continue
+        if destination.exists():
+            raise ValueError('A branch reference destination is not a file path')
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(origin,destination)
+
 def execute(run_id):
     with Session() as s:
         run=get(s,TaskRun,run_id); config=run.config; pid=run.project_id; kind=run.kind; node_id=run.node_id; branch=s.get(Branch,run.branch_id) if run.branch_id else s.scalar(select(Branch).where(Branch.project_id==pid,Branch.is_main==True)); branch_workspace=branch.workspace if branch else '.'
@@ -154,6 +166,8 @@ def execute(run_id):
         for f in source_workspace.rglob('*'):
             if f.is_file() and not f.is_symlink():
                 target=workspace/f.relative_to(source_workspace); target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(f,target)
+    if config.get('execution_attempt',{}).get('number',1)==1:
+        materialize_branch_references(root,workspace,config.get('resolved_branch_references',[]))
     for binding in (config.get('resolved_inputs',[]) if config.get('execution_attempt',{}).get('number',1)==1 else []):
         origin=safe_path(root,binding['source_path'],True); destination=safe_path(workspace,binding['destination']); destination.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(origin,destination)
     paired_input=None
