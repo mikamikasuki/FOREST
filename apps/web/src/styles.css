@@ -3371,6 +3371,10 @@ td.numeric {
     grid-column: 1/-1;
     margin: -13px -13px 8px;
   }
+  .figure-properties > .tab-panel {
+    grid-column: 1/-1;
+    min-width: 0;
+  }
   .figure-properties > .inline-actions {
     grid-column: 1/-1;
     justify-content: flex-end;
