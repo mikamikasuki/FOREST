@@ -904,22 +904,44 @@ function ExperimentForm({
   item?: RecordItem;
 }) {
   const { t, action } = useUI();
-  const [title, setTitle] = useState(item?.title || "");
-  const [command, setCommand] = useState(item?.data.command || "");
-  const [code, setCode] = useState(item?.data.code || "");
-  const [dataset, setDataset] = useState(item?.data.dataset || "");
-  const [seeds, setSeeds] = useState((item?.data.seeds || [0, 1, 2]).join(","));
+  const draftKey = `forest:experiment-draft:${projectId}:${item?.id || "new"}`;
+  const [savedDraft] = useState(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return JSON.parse(sessionStorage.getItem(draftKey) || "null");
+    } catch {
+      return null;
+    }
+  });
+  const [title, setTitle] = useState(savedDraft?.title ?? item?.title ?? "");
+  const [command, setCommand] = useState(savedDraft?.command ?? item?.data.command ?? "");
+  const [code, setCode] = useState(savedDraft?.code ?? item?.data.code ?? "");
+  const [dataset, setDataset] = useState(savedDraft?.dataset ?? item?.data.dataset ?? "");
+  const [seeds, setSeeds] = useState(
+    savedDraft?.seeds ?? (item?.data.seeds || [0, 1, 2]).join(","),
+  );
   const [params, setParams] = useState(
-    JSON.stringify(item?.data.parameters || {}, null, 2),
+    savedDraft?.params ?? JSON.stringify(item?.data.parameters || {}, null, 2),
   );
   const [seconds, setSeconds] = useState(
-    String(item?.data.timeout ?? item?.data.budget?.seconds ?? ""),
+    String(savedDraft?.seconds ?? item?.data.timeout ?? item?.data.budget?.seconds ?? ""),
   );
-  const [duty, setDuty] = useState(item?.data.duty || "effectiveness");
+  const [duty, setDuty] = useState(savedDraft?.duty ?? item?.data.duty ?? "effectiveness");
   const [executionConfig, setExecutionConfig] = useState<Json>(
-    item?.data || {},
+    savedDraft?.executionConfig ?? item?.data ?? {},
   );
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      sessionStorage.setItem(
+        draftKey,
+        JSON.stringify({ title, command, code, dataset, seeds, params, seconds, duty, executionConfig }),
+      );
+    } catch {
+      // Keep editing available when browser storage is disabled or full.
+    }
+  }, [command, code, dataset, draftKey, duty, executionConfig, params, seconds, seeds, title]);
   return (
     <Modal
       wide
@@ -955,6 +977,11 @@ function ExperimentForm({
           );
           setBusy(false);
           if (r) {
+            try {
+              sessionStorage.removeItem(draftKey);
+            } catch {
+              // Saving still succeeds if browser storage is unavailable.
+            }
             onSaved();
             onClose();
           }
@@ -1231,6 +1258,7 @@ export function ExperimentsPage() {
       )}
       {editing !== false && (
         <ExperimentForm
+          key={editing === null ? "new" : editing.id}
           projectId={id!}
           item={editing || undefined}
           onClose={() => setEditing(false)}
