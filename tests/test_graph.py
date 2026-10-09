@@ -122,9 +122,50 @@ def test_forks_are_independent_with_data_references(tmp_path):
     assert (candidate / "model.py").read_text() == "baseline"
     assert not (candidate / "data" / "train.csv").exists()
     assert fork["input_mapping"][0]["path"] == "data/train.csv"
+    assert fork["input_mapping"][0]["branch_id"] == "main"
+    assert fork["input_mapping"][0]["destination"] == "data/train.csv"
+    fork_node = next(n for n in g["nodes"] if n.get("forked_from") == "a")
+    context = ContextBuilder(g, tmp_path).build(fork_node["id"])
+    assert "1,2" in context["text"]
+    assert "main" in context["imported_branches"]
+    assert ArtifactResolver(tmp_path, g).resolve(fork["input_mapping"][0], fork["id"])["available"]
     (candidate / "model.py").write_text("candidate")
     assert (tmp_path / "model.py").read_text() == "baseline"
     assert (tmp_path / fork["base_workspace"] / "model.py").read_text() == "baseline"
+
+
+def test_nested_fork_keeps_inherited_data_references(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "train.csv").write_text("inherited measurements")
+    first = apply(graph(), tmp_path, "fork_branch", ["a"], name="First")["graph"]
+    first_node = next(n for n in first["nodes"] if n.get("forked_from") == "a")
+    second = apply(first, tmp_path, "fork_branch", [first_node["id"]], name="Second")["graph"]
+    second_branch = second["branches"][-1]
+    second_node = next(n for n in second["nodes"] if n.get("forked_from") == first_node["id"])
+
+    assert second_branch["input_mapping"] == first["branches"][-1]["input_mapping"]
+    assert "inherited measurements" in ContextBuilder(second, tmp_path).build(second_node["id"])["text"]
+
+
+def test_nested_fork_reference_uses_local_file_override(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "train.csv").write_text("original measurements")
+    first = apply(graph(), tmp_path, "fork_branch", ["a"], name="First")["graph"]
+    first_branch = first["branches"][-1]
+    first_node = next(n for n in first["nodes"] if n.get("forked_from") == "a")
+    override = tmp_path / first_branch["workspace"] / "data" / "train.csv"
+    override.parent.mkdir(parents=True)
+    override.write_text("branch-local measurements")
+
+    second = apply(first, tmp_path, "fork_branch", [first_node["id"]], name="Second")["graph"]
+    second_branch = second["branches"][-1]
+    second_node = next(n for n in second["nodes"] if n.get("forked_from") == first_node["id"])
+    reference = second_branch["input_mapping"][0]
+
+    assert reference["branch_id"] == first_branch["id"]
+    context = ContextBuilder(second, tmp_path).build(second_node["id"])["text"]
+    assert "branch-local measurements" in context
+    assert "original measurements" not in context
 
 
 def test_clone_subtree_copies_edges_without_claiming_execution(tmp_path):
@@ -391,6 +432,39 @@ def test_layout_keeps_running_configuration_revision(tmp_path):
     result = apply(g, tmp_path, "edit_node", ["a"], position={"x": 10, "y": 20})
     assert get(result["graph"], "a")["revision"] == 7
     assert result["revision"] == 1
+
+
+def test_batch_layout_updates_more_than_two_hundred_nodes_atomically(tmp_path):
+    g = graph()
+    extra = [node(f"bulk-{index}") for index in range(205)]
+    g["nodes"].extend(extra)
+    positions = {
+        item["id"]: {"x": index * 5 + 1, "y": index * 3 + 1}
+        for index, item in enumerate(extra)
+    }
+    result = apply(
+        g,
+        tmp_path,
+        "edit_node",
+        list(positions),
+        positions=positions,
+    )
+
+    assert result["revision"] == 1
+    assert len(result["impact"]["changed_nodes"]) == 205
+    assert all(
+        get(result["graph"], node_id)["position"] == position
+        for node_id, position in positions.items()
+    )
+    assert all(get(result["graph"], node_id)["revision"] == 0 for node_id in positions)
+
+
+def test_bulk_layout_rejects_missing_or_invalid_node_positions(tmp_path):
+    g = graph()
+    with pytest.raises(GraphError, match="one position for each edited node"):
+        apply(g, tmp_path, "edit_node", ["a", "b"], positions={"a": {"x": 1, "y": 2}})
+    with pytest.raises(GraphError, match="finite numeric"):
+        apply(g, tmp_path, "edit_node", ["a"], positions={"a": {"x": float("nan"), "y": 2}})
 
 
 def test_fork_context_has_selected_inherited_material_not_whole_source(tmp_path):

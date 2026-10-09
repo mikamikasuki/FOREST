@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Routes,
   Route,
@@ -135,7 +135,10 @@ export default function App() {
     const fn = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        setPalette((x) => !x);
+        setPalette((open) => {
+          if (open) setPaletteQuery("");
+          return !open;
+        });
       }
     };
     window.addEventListener("keydown", fn);
@@ -163,7 +166,14 @@ export default function App() {
               FOREST<span className="brand-caption">RESEARCH WORKSPACE</span>
             </span>
           </NavLink>
-          <button className="quick-search" onClick={() => setPalette(true)}>
+          <button
+            className="quick-search"
+            aria-label={t("搜索或跳转", "Search workspace")}
+            onClick={() => {
+              setPaletteQuery("");
+              setPalette(true);
+            }}
+          >
             <Search size={15} />
             <span>{t("搜索或跳转", "Search workspace")}</span>
             <kbd>⌘ K</kbd>
@@ -182,6 +192,7 @@ export default function App() {
               navigation.map(([path, zh, en, Icon]) => (
                 <NavLink
                   key={path}
+                  aria-label={t(zh, en)}
                   to={demoLink(
                     `/projects/${projectId}/${path}`,
                     location.search,
@@ -253,7 +264,13 @@ export default function App() {
         </div>
       )}
       {palette && (
-        <Modal title={t("前往…", "Go to…")} onClose={() => setPalette(false)}>
+        <Modal
+          title={t("前往…", "Go to…")}
+          onClose={() => {
+            setPalette(false);
+            setPaletteQuery("");
+          }}
+        >
           <input
             autoFocus
             placeholder={t("搜索页面或命令", "Search pages or commands")}
@@ -442,7 +459,58 @@ function ProjectForm({
   const [allowPaid, setAllowPaid] = useState(
     initial?.budget?.allow_paid || false,
   );
+  const [baseProject, setBaseProject] = useState(initial);
+  const [conflictProject, setConflictProject] = useState<Project | null>(null);
   const [busy, setBusy] = useState(false);
+  const submit = async (base = baseProject, rebase = false) => {
+    const previousBase = baseProject || initial;
+    const values = {
+      name: rebase && name === previousBase?.name ? base?.name ?? name : name,
+      goal: rebase && goal === previousBase?.goal ? base?.goal ?? goal : goal,
+      description:
+        rebase && description === previousBase?.description
+          ? base?.description ?? description
+          : description,
+      providerId:
+        rebase &&
+        providerId === (previousBase?.config?.provider_id || "")
+          ? base?.config?.provider_id ?? ""
+          : providerId,
+      allowPaid:
+        rebase && allowPaid === (previousBase?.budget?.allow_paid || false)
+          ? base?.budget?.allow_paid ?? false
+          : allowPaid,
+    };
+    setBusy(true);
+    const result = await action(async () => {
+      try {
+        return await api<Project>(
+          initial ? `/projects/${initial.id}` : "/projects",
+          initial ? "PATCH" : "POST",
+          {
+            name: values.name,
+            goal: values.goal,
+            description: values.description,
+            config: { ...base?.config, provider_id: values.providerId || null },
+            budget: { ...base?.budget, allow_paid: values.allowPaid },
+            ...(base ? { expected_revision: base.revision } : {}),
+          },
+        );
+      } catch (error) {
+        if (initial && (error as any).status === 409) {
+          setConflictProject(await api<Project>(`/projects/${initial.id}`));
+          return undefined;
+        }
+        throw error;
+      }
+    });
+    setBusy(false);
+    if (result) {
+      setBaseProject(result);
+      onSaved(result);
+      onClose();
+    }
+  };
   return (
     <Modal
       title={
@@ -451,30 +519,73 @@ function ProjectForm({
       onClose={onClose}
     >
       <form
-        onSubmit={async (e) => {
+        onSubmit={(e) => {
           e.preventDefault();
-          setBusy(true);
-          const result = await action(() =>
-            api<Project>(
-              initial ? `/projects/${initial.id}` : "/projects",
-              initial ? "PATCH" : "POST",
-              {
-                name,
-                goal,
-                description,
-                config: { ...initial?.config, provider_id: providerId || null },
-                budget: { ...initial?.budget, allow_paid: allowPaid },
-                ...(initial ? { expected_revision: initial.revision } : {}),
-              },
-            ),
-          );
-          setBusy(false);
-          if (result) {
-            onSaved(result);
-            onClose();
-          }
+          void submit();
         }}
       >
+        {conflictProject && (
+          <div className="error-box" role="alert">
+            <div>
+              <strong>
+                {t(
+                  "项目已在其他位置更新。你的草稿仍保留。",
+                  "This project changed elsewhere. Your draft is preserved.",
+                )}
+              </strong>
+              <p>
+                {t(
+                  "请查看当前版本，再选择重新应用草稿或载入当前值。",
+                  "Review the current version, then reapply your draft or load the current values.",
+                )}
+              </p>
+              <details>
+                <summary>
+                  {t(
+                    `当前版本 r${conflictProject.revision}`,
+                    `Current version r${conflictProject.revision}`,
+                  )}
+                </summary>
+                <p>
+                  <strong>{conflictProject.name}</strong>
+                </p>
+                <p>{conflictProject.goal}</p>
+                <p>{conflictProject.description}</p>
+                <p>
+                  {t("允许付费调用", "Paid API calls")}: {" "}
+                  {conflictProject.budget?.allow_paid
+                    ? t("是", "Allowed")
+                    : t("否", "Not allowed")}
+                </p>
+              </details>
+              <div className="inline-actions">
+                <Button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setName(conflictProject.name);
+                    setGoal(conflictProject.goal);
+                    setDescription(conflictProject.description);
+                    setProviderId(conflictProject.config?.provider_id || "");
+                    setAllowPaid(conflictProject.budget?.allow_paid || false);
+                    setBaseProject(conflictProject);
+                    setConflictProject(null);
+                  }}
+                >
+                  {t("载入当前值", "Load current values")}
+                </Button>
+                <Button
+                  type="button"
+                  className="primary"
+                  busy={busy}
+                  onClick={() => void submit(conflictProject, true)}
+                >
+                  {t("保留草稿并重试", "Keep my draft and retry")}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
         <Field label={t("项目名称", "Project name")}>
           <input
             required
@@ -510,7 +621,7 @@ function ProjectForm({
             onChange={(e) => setProviderId(e.target.value)}
           >
             <option value="">Workspace default</option>
-            {providers.map((p) => (
+            {providers.filter((p) => p.status !== "retired").map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name} · {p.model}
               </option>
@@ -529,7 +640,12 @@ function ProjectForm({
           <Button type="button" onClick={onClose}>
             {t("取消", "Cancel")}
           </Button>
-          <Button className="primary" busy={busy} type="submit">
+          <Button
+            className="primary"
+            busy={busy}
+            disabled={!!conflictProject}
+            type="submit"
+          >
             {initial
               ? t("保存修改", "Save changes")
               : t("创建研究项目", "Create project")}
@@ -552,12 +668,33 @@ function Projects() {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("recent");
   const [showArchived, setShowArchived] = useState(false);
+  const [duplicating, setDuplicating] = useState<Set<string>>(() => new Set());
+  const duplicateLocks = useRef(new Set<string>());
   const navigate = useNavigate();
+  const duplicateProject = (projectId: string) =>
+    action(async () => {
+      if (duplicateLocks.current.has(projectId)) return;
+      duplicateLocks.current.add(projectId);
+      setDuplicating((current) => new Set(current).add(projectId));
+      try {
+        await api(`/projects/${projectId}/duplicate`, "POST", {});
+        await reload();
+      } finally {
+        duplicateLocks.current.delete(projectId);
+        setDuplicating((current) => {
+          const next = new Set(current);
+          next.delete(projectId);
+          return next;
+        });
+      }
+    });
   const list = projects
     .filter(
       (p) =>
         (showArchived || !p.archived) &&
-        `${p.name} ${p.goal}`.toLowerCase().includes(query.toLowerCase()),
+        `${p.name} ${p.goal} ${p.description}`
+          .toLowerCase()
+          .includes(query.toLowerCase()),
     )
     .sort((a, b) =>
       sort === "name"
@@ -673,12 +810,8 @@ function Projects() {
                     </IconButton>
                     <IconButton
                       label={t("复制", "Duplicate")}
-                      onClick={() =>
-                        action(async () => {
-                          await api(`/projects/${p.id}/duplicate`, "POST", {});
-                          await reload();
-                        })
-                      }
+                      disabled={duplicating.has(p.id)}
+                      onClick={() => duplicateProject(p.id)}
                     >
                       <Copy size={14} />
                     </IconButton>
@@ -762,10 +895,13 @@ function Overview() {
     [],
   );
   useEffect(() => {
-    const refresh = () => void reloadRecent();
+    const refresh = () => {
+      void reload();
+      void reloadRecent();
+    };
     window.addEventListener("forest-refresh", refresh);
     return () => window.removeEventListener("forest-refresh", refresh);
-  }, [reloadRecent]);
+  }, [reload, reloadRecent]);
   const [edit, setEdit] = useState(false);
   const [budget, setBudget] = useState("");
   const [mode, setMode] = useState("assisted");
@@ -922,6 +1058,7 @@ function ResearchControls({
     branches: [],
   });
   const [branch, setBranch] = useState("");
+  const [branchTouched, setBranchTouched] = useState(false);
   const [state, setState] = useState<Json | null>(null);
   const [autonomous, setAutonomous] = useState(runMode !== "manual");
   const [readyParallelism, setReadyParallelism] = useState(1);
@@ -938,6 +1075,9 @@ function ResearchControls({
     active_runs: [],
   });
   const sessionUnavailable = sessionLoading || !!sessionError;
+  useEffect(() => {
+    if (!branchTouched) setBranch(session.controller?.branch_id || "");
+  }, [branchTouched, session.controller?.branch_id]);
   const [inspectComparisons, setInspectComparisons] = useState(false);
   const comparisons = useLoad<Json>(
     inspectComparisons ? `/projects/${projectId}/research` : null,
@@ -969,7 +1109,10 @@ function ResearchControls({
       <select
         aria-label="Research branch"
         value={branch}
-        onChange={(e) => setBranch(e.target.value)}
+        onChange={(e) => {
+          setBranchTouched(true);
+          setBranch(e.target.value);
+        }}
       >
         <option value="">{t("项目全部路线", "All project paths")}</option>
         {graph.branches.map((b: Json) => (
