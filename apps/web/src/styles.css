@@ -1868,6 +1868,23 @@ select[multiple] option {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.run-final-summary {
+  margin: 10px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+}
+.run-final-summary strong {
+  font-size: 11px;
+}
+.run-final-summary p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .focus-editor {
   height: 100%;
   overflow: auto;

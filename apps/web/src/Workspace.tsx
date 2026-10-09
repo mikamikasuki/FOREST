@@ -1781,6 +1781,15 @@ export function RunPanel({
             ))}
         </div>
         {run && <RunEvidence runId={run.id} />}
+        {run?.kind === "agent" &&
+          terminal &&
+          typeof run.metrics?.summary === "string" &&
+          run.metrics.summary.trim() && (
+            <section className="run-final-summary" aria-label={t("最终摘要", "Final summary")}>
+              <strong>{t("最终摘要", "Final summary")}</strong>
+              <p>{run.metrics.summary}</p>
+            </section>
+          )}
         <pre>
           {output ||
             run?.error ||
