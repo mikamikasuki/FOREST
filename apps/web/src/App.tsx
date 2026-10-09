@@ -882,10 +882,13 @@ function Overview() {
     [],
   );
   useEffect(() => {
-    const refresh = () => void reloadRecent();
+    const refresh = () => {
+      void reload();
+      void reloadRecent();
+    };
     window.addEventListener("forest-refresh", refresh);
     return () => window.removeEventListener("forest-refresh", refresh);
-  }, [reloadRecent]);
+  }, [reload, reloadRecent]);
   const [edit, setEdit] = useState(false);
   const [budget, setBudget] = useState("");
   const [mode, setMode] = useState("assisted");
