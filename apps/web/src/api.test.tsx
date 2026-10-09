@@ -4,6 +4,7 @@ import { api, ApiError, download, formatDate, hasCycle } from "./api";
 import { apiUrl, requestApi } from "./apiClient";
 import type { Graph } from "./api";
 import { ErrorBox, Empty, Button } from "./ui";
+import { hostPayload } from "./connectionPayload";
 const graph = (edges: Graph["edges"]): Graph => ({
   project_id: "p",
   revision: 1,
@@ -81,6 +82,24 @@ describe("submission controls", () => {
         </Button>,
       ),
     ).toContain('disabled=""');
+  });
+});
+
+describe("compute host payload", () => {
+  it("nests SSH connection settings in the configuration persisted by the API", () => {
+    const config = {
+      kind: "remote",
+      hostname: "127.0.0.1",
+      username: "codex-test",
+      port: 2222,
+      workdir: "/tmp/forest",
+      allow_shell: true,
+    };
+    expect(hostPayload("Test host", config)).toEqual({
+      name: "Test host",
+      kind: "remote",
+      config,
+    });
   });
 });
 
