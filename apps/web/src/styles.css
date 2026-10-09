@@ -2462,6 +2462,11 @@ td.numeric {
 .figure-properties > .tabs {
   margin: -15px -15px 20px;
 }
+.figure-properties > .tab-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
 .figure-properties .field {
   margin-bottom: 12px;
 }
@@ -2630,6 +2635,14 @@ td.numeric {
 .paper-source > .tabs,
 .paper-preview > .tabs {
   min-height: 40px;
+}
+.paper-source > .tab-panel,
+.paper-preview > .tab-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
 }
 .paper-source > .tabs button,
 .paper-preview > .tabs button {

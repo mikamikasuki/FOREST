@@ -489,6 +489,7 @@ export function LibraryPage() {
       {selected && (
         <Modal wide title={selected.title} onClose={() => setSelected(null)}>
           <Tabs
+            panelId="library-reference-tabs"
             value={tab}
             onChange={setTab}
             items={[
@@ -498,6 +499,12 @@ export function LibraryPage() {
               { id: "passages", label: t("原文定位", "Passages") },
             ]}
           />
+          <div
+            id="library-reference-tabs-panel"
+            role="tabpanel"
+            aria-labelledby={`library-reference-tabs-tab-${tab}`}
+            tabIndex={0}
+          >
           {tab === "abstract" && (
             <div className="paper-detail">
               <p>
@@ -564,6 +571,7 @@ export function LibraryPage() {
               {passages && <JsonView value={passages} />}
             </>
           )}
+          </div>
         </Modal>
       )}
       {editing && (
@@ -1734,6 +1742,7 @@ function FigureEditor({
       </section>
       <aside className="surface figure-properties">
         <Tabs
+          panelId="figure-properties-tabs"
           value={tab}
           onChange={setTab}
           items={[
@@ -1742,6 +1751,13 @@ function FigureEditor({
             { id: "code", label: t("代码", "Code") },
           ]}
         />
+        <div
+          className="tab-panel"
+          id="figure-properties-tabs-panel"
+          role="tabpanel"
+          aria-labelledby={`figure-properties-tabs-tab-${tab}`}
+          tabIndex={0}
+        >
         {tab === "style" && (
           <>
             <Field label={t("图形类型", "Figure type")}>
@@ -1872,6 +1888,7 @@ function FigureEditor({
             <CodeEditor value={code} onChange={setCode} language="python" />
           </div>
         )}
+        </div>
         <div className="inline-actions">
           <Button
             onClick={() =>
@@ -2109,6 +2126,7 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
       <div className="paper-editors">
         <div className="paper-source">
           <Tabs
+            panelId="paper-source-tabs"
             value={tab}
             onChange={setTab}
             items={[
@@ -2117,6 +2135,13 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
               { id: "bindings", label: t("图表与指标绑定", "Bindings") },
             ]}
           />
+          <div
+            className="tab-panel"
+            id="paper-source-tabs-panel"
+            role="tabpanel"
+            aria-labelledby={`paper-source-tabs-tab-${tab}`}
+            tabIndex={0}
+          >
           {tab === "source" ? (
             <CodeEditor
               value={source}
@@ -2138,9 +2163,11 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
           ) : (
             <JsonView value={paper?.data.bindings || []} />
           )}
+          </div>
         </div>
         <div className="paper-preview">
           <Tabs
+            panelId="paper-preview-tabs"
             value={rightTab}
             onChange={setRightTab}
             items={[
@@ -2149,6 +2176,13 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
               { id: "checks", label: t("检查结果", "Checks") },
             ]}
           />
+          <div
+            className="tab-panel"
+            id="paper-preview-tabs-panel"
+            role="tabpanel"
+            aria-labelledby={`paper-preview-tabs-tab-${rightTab}`}
+            tabIndex={0}
+          >
           {rightTab === "pdf" &&
             (paper?.data.pdf_path ? (
               <PDFViewer
@@ -2184,6 +2218,7 @@ export function PaperPage({ embedded = false }: { embedded?: boolean }) {
               ) : null}
             </div>
           )}
+          </div>
         </div>
       </div>
       <div className="paper-instruction">
@@ -2986,6 +3021,7 @@ export function SettingsPage() {
       <div className="page settings-page">
         <PageHeading title={t("设置", "Settings")} />
         <Tabs
+          panelId="settings-tabs"
           value={tab}
           onChange={setTab}
           items={[
@@ -2996,6 +3032,13 @@ export function SettingsPage() {
             { id: "system", label: t("系统资源", "System resources") },
           ]}
         />
+        <div
+          className="tab-panel"
+          id="settings-tabs-panel"
+          role="tabpanel"
+          aria-labelledby={`settings-tabs-tab-${tab}`}
+          tabIndex={0}
+        >
         <ErrorBox error={error} retry={reload} />
         {["providers", "hosts", "agents"].includes(tab) && (
           <>
@@ -3158,6 +3201,7 @@ export function SettingsPage() {
             <JsonView value={system} />
           </section>
         )}
+        </div>
       </div>
       {modal && (
         <ConnectionEditor
@@ -3589,6 +3633,7 @@ function MeasuredResults({ runs }: { runs: Run[] }) {
         </div>
       </div>
       <Tabs
+        panelId="experiment-results-tabs"
         value={mode}
         onChange={setMode}
         items={[
@@ -3599,6 +3644,12 @@ function MeasuredResults({ runs }: { runs: Run[] }) {
           { id: "seeds", label: t("每次重复", "Per repetition") },
         ]}
       />
+      <div
+        id="experiment-results-tabs-panel"
+        role="tabpanel"
+        aria-labelledby={`experiment-results-tabs-tab-${mode}`}
+        tabIndex={0}
+      >
       <div className="table-scroll">
         <table>
           <thead>
@@ -3650,6 +3701,7 @@ function MeasuredResults({ runs }: { runs: Run[] }) {
             "Mean ± SD across saved repetitions.",
           )}
       </p>
+      </div>
     </section>
   );
 }

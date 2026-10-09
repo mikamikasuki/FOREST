@@ -1390,6 +1390,7 @@ function NodeInspector({
         </div>
       </div>
       <Tabs
+        panelId="workspace-node-tabs"
         value={tab}
         onChange={setTab}
         items={[
@@ -1402,7 +1403,13 @@ function NodeInspector({
           ["comments", "意见", "Notes"],
         ].map(([id, zh, en]) => ({ id, label: t(zh, en) }))}
       />
-      <div className="inspector-body">
+      <div
+        className="inspector-body"
+        id="workspace-node-tabs-panel"
+        role="tabpanel"
+        aria-labelledby={`workspace-node-tabs-tab-${tab}`}
+        tabIndex={0}
+      >
         {tab === "instructions" && (
           <>
             <Field label={t("执行指令", "Instructions")}>
