@@ -25,6 +25,11 @@ export function SourceExplorer({ projectId }: { projectId: string }) {
     return () => clearInterval(timer);
   }, [scope, scopes.reload, files.reload]);
   useEffect(() => { setScope(""); setScopeCursor(""); setFileCursor(""); }, [projectId, scopeKind, scopeOwner]);
+  const changeScopePage = (cursor: string) => {
+    setScope("");
+    setFileCursor("");
+    setScopeCursor(cursor);
+  };
   useEffect(() => {
     let live = true; setView(null); setSource(null); setError("");
     if (!encoded) return;
@@ -53,8 +58,8 @@ export function SourceExplorer({ projectId }: { projectId: string }) {
       <input aria-label="Scope owner ID" value={scopeOwner} maxLength={64} placeholder="Optional branch/run ID" onChange={(e) => setScopeOwner(e.target.value)} />
       <select aria-label="Source scope" value={scope} onChange={(e) => { setScope(e.target.value); setFileCursor(""); }}>
       <option value="">Choose scope</option>{scopes.data.items.map((item) => <option key={item.id} value={item.id}>{item.kind} · {item.object_id.slice(0,8)} · {item.coverage} · {item.total} files</option>)}</select>
-      <Button disabled={!scopes.data.next_cursor} onClick={() => setScopeCursor(scopes.data.next_cursor!)}>Next scopes</Button>
-      {scopeCursor && <Button onClick={() => setScopeCursor("")}>First scopes</Button>}
+      <Button disabled={!scopes.data.next_cursor} onClick={() => changeScopePage(scopes.data.next_cursor!)}>Next scopes</Button>
+      {scopeCursor && <Button onClick={() => changeScopePage("")}>First scopes</Button>}
       <Button onClick={() => { void scopes.reload(); void files.reload(); }}>Recheck inventory</Button></div>
     {files.data && <><p>Inventory: {files.data.coverage.coverage} · scan {files.data.coverage.scan_generation} · observed {files.data.coverage.observed_at || "not yet"}. {files.data.coverage.error}</p>
       <ul>{files.data.items.map((file) => <li key={file.id}><NavLink to={sourceLink(file.source)}>{file.path}</NavLink> · {file.state} · generation {file.generation} · {file.parse_state} · {file.attribution}</li>)}</ul>

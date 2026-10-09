@@ -172,6 +172,8 @@ svg {
   display: flex;
   flex-direction: column;
   padding: 27px 18px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   z-index: 25;
 }
 .brand {
@@ -1868,6 +1870,23 @@ select[multiple] option {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.run-final-summary {
+  margin: 10px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+}
+.run-final-summary strong {
+  font-size: 11px;
+}
+.run-final-summary p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .focus-editor {
   height: 100%;
   overflow: auto;
@@ -2462,6 +2481,11 @@ td.numeric {
 .figure-properties > .tabs {
   margin: -15px -15px 20px;
 }
+.figure-properties > .tab-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
 .figure-properties .field {
   margin-bottom: 12px;
 }
@@ -2631,6 +2655,14 @@ td.numeric {
 .paper-preview > .tabs {
   min-height: 40px;
 }
+.paper-source > .tab-panel,
+.paper-preview > .tab-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
 .paper-source > .tabs button,
 .paper-preview > .tabs button {
   font-size: 10px;
@@ -2732,7 +2764,7 @@ td.numeric {
   min-width: 200px;
   max-width: 500px;
   resize: horizontal;
-  overflow: auto;
+  overflow: hidden;
   background: #fbfcf8;
   border-right: 1px solid var(--line);
   display: flex;
@@ -2746,7 +2778,9 @@ td.numeric {
   width: 100%;
   font-size: 10px;
 }
-.file-tree > div:last-child {
+.file-tree-list {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
 }
 .file-tree button {
@@ -2777,6 +2811,27 @@ td.numeric {
 }
 .file-tree button:hover {
   background: #f0f5e8;
+}
+.file-tree-pagination {
+  padding: 9px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.file-tree-pagination > small {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 9px;
+}
+.file-tree-pagination > div {
+  display: flex;
+  gap: 6px;
+}
+.file-tree-pagination .button {
+  flex: 1;
+  justify-content: center;
+  padding: 6px;
+  font-size: 10px;
 }
 .file-editor {
   flex: 1;
@@ -3357,6 +3412,10 @@ td.numeric {
   .figure-properties > .tabs {
     grid-column: 1/-1;
     margin: -13px -13px 8px;
+  }
+  .figure-properties > .tab-panel {
+    grid-column: 1/-1;
+    min-width: 0;
   }
   .figure-properties > .inline-actions {
     grid-column: 1/-1;
@@ -4313,9 +4372,9 @@ td.numeric {
     font-size: 9px;
   }
 }
-/* Keep dense research labels readable in the default light workspace. */
-:root {
-  --muted: #6d7c68;
+/* Keep normal-sized muted text readable in the light theme. */
+:root:not([data-theme="dark"]) {
+  --muted: #687763;
 }
 .sidebar nav a {
   color: #5e7157;

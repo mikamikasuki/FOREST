@@ -185,8 +185,8 @@ def test_intervention_crosses_actual_worker_and_transport_boundaries(tmp_path, c
                 h.request('PATCH', f'/api/nodes/{nid}', json={'expected_revision': graph['revision'], 'instructions': 'Owner changed task'})
                 rejected = h.client.post(f"/api/decisions/{decision['id']}/answer", json={
                     'expected_revision': decision['observed_revision'], 'choice': 'accept', 'resume': True})
-                assert rejected.status_code == 409
-                h.request('POST', f"/api/runs/{run['id']}/resume", json={})
+                assert rejected.status_code == 200
+                assert rejected.json()['status'] == 'stale'
             else:
                 answer = {'expected_revision': decision['observed_revision'], 'choice': 'edit' if case == 'review_edit' else 'reject',
                           'reason': 'Saved owner decision', 'resume': True}

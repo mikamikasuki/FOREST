@@ -116,7 +116,7 @@ def record_effects(session, intervention, actions):
                 'effect_id': effect.id, 'action': 'cancel', 'accepted_at': intervention.accepted_at}}
             if run.status in ('queued', 'waiting_input', 'budget_exhausted') and not run.pid and not run.started_at:
                 finalize_cancelled_run_elapsed(run)
-                run.status = 'cancelled'; run.finished_at = now(); run.error = 'Stopped to apply edits'
+                run.status = 'cancelled'; run.finished_at = now(); run.error = 'Cancelled by owner' if intervention.kind == 'run_control' else 'Stopped to apply edits'
                 from .controls import close_unconsumed
                 close_unconsumed(session, run)
                 interrupt_run_reservations(run.id, session=session)
@@ -348,7 +348,7 @@ def process_effects(*, intervention_id=None, limit=10):
                 emit(session, project_id, 'run_changed', {'run_id': run.id, 'status': run.status})
             else:
                 finalize_cancelled_run_elapsed(run)
-                run.status = 'cancelled'; run.finished_at = now(); run.error = 'Stopped to apply edits'
+                run.status = 'cancelled'; run.finished_at = now(); run.error = 'Cancelled by owner' if get(session, Intervention, intervention).kind == 'run_control' else 'Stopped to apply edits'
                 from .controls import close_unconsumed
                 close_unconsumed(session, run)
                 run.resource = {**{k: v for k, v in run.resource.items() if k != 'pending_intervention'},

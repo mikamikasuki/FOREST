@@ -28,7 +28,15 @@ def read_page(url,output_dir,screenshot=False):
             for chunk in response.iter_bytes():
                 data+=chunk
                 if len(data)>5_000_000: raise ValueError('Public page exceeds 5 MB; import the source PDF instead')
-            parser=TextPage(); parser.feed(data.decode('utf-8',errors='replace')); text='\n'.join(line.strip() for line in ''.join(parser.parts).splitlines() if line.strip())
+            try:
+                encoding = response.encoding or 'utf-8'
+            except LookupError:
+                encoding = 'utf-8'
+            try:
+                html = data.decode(encoding, errors='replace')
+            except LookupError:
+                html = data.decode('utf-8', errors='replace')
+            parser=TextPage(); parser.feed(html); text='\n'.join(line.strip() for line in ''.join(parser.parts).splitlines() if line.strip())
             (target/'page.txt').write_text(text)
             chunk_size=20000
             passages=[{'id':f'page-{index+1}','page':None,'section':f'Page text, part {index+1}',
