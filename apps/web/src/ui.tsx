@@ -6,7 +6,12 @@ import {
   useCallback,
   useRef,
 } from "react";
-import type { ReactNode, ButtonHTMLAttributes, SetStateAction } from "react";
+import type {
+  ReactNode,
+  ButtonHTMLAttributes,
+  SetStateAction,
+  KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import {
   AlertCircle,
   Check,
@@ -26,10 +31,19 @@ export type UIContextType = {
 export const UIContext = createContext<UIContextType>(null!);
 export const useUI = () => useContext(UIContext);
 export function useLoad<T>(path: string | null, initial: T) {
-  const [state, setState] = useState({ path, data: initial, error: "", loading: true });
+  const [state, setState] = useState({
+    path,
+    data: initial,
+    error: "",
+    loading: true,
+  });
   const currentPath = useRef(path);
   const generation = useRef(0);
-  const inFlight = useRef<{ path: string | null; pending: boolean; promise: Promise<void> } | null>(null);
+  const inFlight = useRef<{
+    path: string | null;
+    pending: boolean;
+    promise: Promise<void>;
+  } | null>(null);
   currentPath.current = path;
   const reload = useCallback((): Promise<void> => {
     if (!path) {
@@ -53,7 +67,12 @@ export function useLoad<T>(path: string | null, initial: T) {
             setState({ path, data, error: "", loading: false });
         } catch (e) {
           if (request === generation.current && currentPath.current === path)
-            setState((old) => ({ path, data: old.path === path ? old.data : initial, error: (e as Error).message, loading: false }));
+            setState((old) => ({
+              path,
+              data: old.path === path ? old.data : initial,
+              error: (e as Error).message,
+              loading: false,
+            }));
         }
       } while (active.pending && currentPath.current === path);
       if (inFlight.current === active) inFlight.current = null;
@@ -63,16 +82,35 @@ export function useLoad<T>(path: string | null, initial: T) {
   useEffect(() => {
     currentPath.current = path;
     void reload();
-    return () => { ++generation.current; if (currentPath.current === path) currentPath.current = null; };
+    return () => {
+      ++generation.current;
+      if (currentPath.current === path) currentPath.current = null;
+    };
   }, [reload]);
-  const setData = useCallback((value: SetStateAction<T>) => {
-    ++generation.current;
-    if (inFlight.current?.path === path) inFlight.current.pending = true;
-    setState((old) => ({ ...old, path, data: typeof value === "function"
-      ? (value as (previous: T) => T)(old.path === path ? old.data : initial) : value }));
-  }, [path]);
-  return { data: state.path === path ? state.data : initial, setData,
-    error: state.path === path ? state.error : "", loading: state.path !== path || state.loading, reload };
+  const setData = useCallback(
+    (value: SetStateAction<T>) => {
+      ++generation.current;
+      if (inFlight.current?.path === path) inFlight.current.pending = true;
+      setState((old) => ({
+        ...old,
+        path,
+        data:
+          typeof value === "function"
+            ? (value as (previous: T) => T)(
+                old.path === path ? old.data : initial,
+              )
+            : value,
+      }));
+    },
+    [path],
+  );
+  return {
+    data: state.path === path ? state.data : initial,
+    setData,
+    error: state.path === path ? state.error : "",
+    loading: state.path !== path || state.loading,
+    reload,
+  };
 }
 export function Button({
   children,
@@ -200,6 +238,20 @@ export function Field({
     </label>
   );
 }
+export function focusTrapTarget(
+  focusable: HTMLElement[],
+  active: Element | null,
+  shiftKey: boolean,
+) {
+  if (!focusable.length) return null;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const currentIndex = focusable.findIndex((element) => element === active);
+  if (currentIndex < 0) return shiftKey ? last : first;
+  if (shiftKey && currentIndex === 0) return last;
+  if (!shiftKey && currentIndex === focusable.length - 1) return first;
+  return null;
+}
 export function Modal({
   title,
   children,
@@ -211,13 +263,63 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const getFocusable = () =>
+      Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], area[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), summary, iframe, audio[controls], video[controls], [tabindex]:not([tabindex="-1"]), [contenteditable]:not([contenteditable="false"])',
+        ),
+      ).filter(
+        (element) =>
+          element.tabIndex >= 0 &&
+          !element.closest('[hidden], [aria-hidden="true"]') &&
+          window.getComputedStyle(element).visibility !== "hidden" &&
+          element.getClientRects().length > 0,
+      );
+    if (!dialog.contains(document.activeElement)) {
+      (getFocusable()[0] || dialog).focus();
+    }
     const handle = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      const dialogs = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[role="dialog"][aria-modal="true"]',
+        ),
+      );
+      if (dialogs[dialogs.length - 1] !== dialog) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const focusable = getFocusable();
+      if (!focusable.length) {
+        e.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const target = focusTrapTarget(focusable, document.activeElement, e.shiftKey);
+      if (target) {
+        e.preventDefault();
+        target.focus();
+      }
     };
-    window.addEventListener("keydown", handle);
-    return () => window.removeEventListener("keydown", handle);
-  }, [onClose]);
+    document.addEventListener("keydown", handle, true);
+    return () => {
+      document.removeEventListener("keydown", handle, true);
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, []);
   return (
     <div
       className="modal-shade"
@@ -226,10 +328,12 @@ export function Modal({
       }}
     >
       <section
+        ref={dialogRef}
         className={`modal ${wide ? "wide" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
       >
         <header>
           <h2>{title}</h2>
@@ -245,23 +349,61 @@ export function Modal({
 export function JsonView({ value }: { value: any }) {
   return <pre className="json-view">{JSON.stringify(value, null, 2)}</pre>;
 }
+export function tabTargetForKey(
+  items: { id: string; label: string }[],
+  currentId: string,
+  key: string,
+) {
+  const currentIndex = items.findIndex((item) => item.id === currentId);
+  if (currentIndex < 0 || !items.length) return null;
+  if (key === "ArrowRight") return items[(currentIndex + 1) % items.length].id;
+  if (key === "ArrowLeft")
+    return items[(currentIndex - 1 + items.length) % items.length].id;
+  if (key === "Home") return items[0].id;
+  if (key === "End") return items[items.length - 1].id;
+  return null;
+}
 export function Tabs({
+  panelId,
   items,
   value,
   onChange,
 }: {
+  panelId: string;
   items: { id: string; label: string }[];
   value: string;
   onChange: (s: string) => void;
 }) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const nextId = tabTargetForKey(
+      items,
+      event.currentTarget.dataset.tabId || "",
+      event.key,
+    );
+    if (!nextId) return;
+    event.preventDefault();
+    const nextIndex = items.findIndex((item) => item.id === nextId);
+    onChange(nextId);
+    refs.current[nextIndex]?.focus();
+  };
   return (
     <div className="tabs" role="tablist">
-      {items.map((item) => (
+      {items.map((item, index) => (
         <button
           key={item.id}
+          ref={(element) => {
+            refs.current[index] = element;
+          }}
+          id={`${panelId}-tab-${item.id}`}
+          data-tab-id={item.id}
+          type="button"
           role="tab"
+          aria-controls={`${panelId}-panel`}
           aria-selected={value === item.id}
+          tabIndex={value === item.id ? 0 : -1}
           className={value === item.id ? "active" : ""}
+          onKeyDown={onKeyDown}
           onClick={() => onChange(item.id)}
         >
           {item.label}
