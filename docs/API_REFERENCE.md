@@ -70,7 +70,7 @@ scheduling, not a synchronous experiment.
 | Graph operation | Target / main `params` fields | Resulting editable operation |
 | --- | --- | --- |
 | `add_node` | Node fields directly or `node:{...}`, optional branch_id/parent_id | Add a node and optional execution parent |
-| `edit_node` | targets: node IDs; fields directly or `patch:{...}`; optional stop_current_run | Deep-merge editable fields, analyze impact, optionally cancel the current run |
+| `edit_node` | targets: node IDs; fields directly or `patch:{...}`; optional stop_current_run; optional `positions:{node_id:{x,y}}` | Deep-merge editable fields, apply per-node layout positions atomically, analyze impact, optionally cancel the current run |
 | `apply_instruction_patch` | targets: node IDs; instructions or old_text/new_text | Replace instructions or one exact matching passage |
 | `delete_node` | targets; strategy subtree/reconnect/visual_only when descendants exist | Remove a subtree, reconnect execution reachability, or remove visual grouping |
 | `add_dependency`, `remove_dependency` | source/target or two targets; relation; add supports input_mapping | Add/remove the specified typed edge |
@@ -851,7 +851,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/projects/{ident}/graph/batch`
 
-Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.
+Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; one edit_node may update selected node positions atomically with params.positions keyed by target ID. Workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |

@@ -67,6 +67,355 @@ test("queued approved actions do not offer an invalid continuation", async ({
   ).toBeVisible();
 });
 
+test("keyboard node movement persists its position", async ({
+  page,
+  request,
+}) => {
+  const graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Keyboard position",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
+  const layoutBatches: Array<{ commands: Array<Record<string, unknown>> }> = [];
+  let releaseLayoutBatch!: () => void;
+  let signalLayoutBatch!: () => void;
+  const layoutBatchStarted = new Promise<void>((resolve) => {
+    signalLayoutBatch = resolve;
+  });
+  const layoutBatchGate = new Promise<void>((resolve) => {
+    releaseLayoutBatch = resolve;
+  });
+  await page.route("**/graph/batch", async (route) => {
+    signalLayoutBatch();
+    await layoutBatchGate;
+    await route.continue();
+  });
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname.endsWith("/graph/batch") &&
+      request.method() === "POST"
+    ) {
+      layoutBatches.push(request.postDataJSON());
+    }
+  });
+  for (let index = 0; index < 6; index++)
+    await page.keyboard.press("ArrowRight");
+  await layoutBatchStarted;
+  await page.getByLabel("Node title").fill("Moved and edited");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  releaseLayoutBatch();
+
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.find((item: { id: string }) => item.id === nodeId)
+        ?.position;
+    })
+    .toEqual({ x: 230, y: 160 });
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.find((item: { id: string }) => item.id === nodeId)
+        ?.title;
+    })
+    .toBe("Moved and edited");
+  expect(layoutBatches.length).toBeLessThan(6);
+  expect(layoutBatches.at(-1)?.commands).toEqual([
+    {
+      operation: "edit_node",
+      targets: [nodeId],
+      params: { positions: { [nodeId]: { x: 230, y: 160 } } },
+    },
+  ]);
+
+  await page.reload();
+  await expect
+    .poll(() =>
+      node.evaluate((element) => (element as HTMLElement).style.transform),
+    )
+    .toBe("translate(230px, 160px)");
+});
+
+test("keyboard position saves recover from a graph revision conflict", async ({
+  page,
+  request,
+}) => {
+  const graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Conflict recovery",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+
+  let conflictSent = false;
+  const batchRevisions: number[] = [];
+  await page.route("**/graph/batch", async (route) => {
+    const payload = route.request().postDataJSON();
+    batchRevisions.push(payload.expected_revision);
+    if (conflictSent) return route.continue();
+    conflictSent = true;
+    const current = await (
+      await request.get(`/api/projects/${projectId}/graph`)
+    ).json();
+    const concurrentNode = await request.post(
+      `/api/projects/${projectId}/graph/commands`,
+      {
+        data: {
+          request_id: crypto.randomUUID(),
+          expected_revision: current.revision,
+          operation: "add_node",
+          targets: [],
+          params: {
+            id: crypto.randomUUID(),
+            branch_id: current.branches[0].id,
+            type: "goal",
+            title: "Concurrent change",
+            position: { x: 520, y: 160 },
+          },
+          run: false,
+        },
+      },
+    );
+    expect(concurrentNode.ok()).toBeTruthy();
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        detail: { code: "REVISION_CONFLICT", message: "Graph changed" },
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
+  await page.keyboard.press("ArrowRight");
+
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.find((item: { id: string }) => item.id === nodeId)
+        ?.position;
+    })
+    .toEqual({ x: 205, y: 160 });
+  expect(batchRevisions).toEqual([1, 2]);
+  await page.reload();
+  await expect
+    .poll(() =>
+      node.evaluate((element) => (element as HTMLElement).style.transform),
+    )
+    .toBe("translate(205px, 160px)");
+});
+
+test("a lost position-save response replays the original command receipt", async ({
+  page,
+  request,
+}) => {
+  let graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Uncertain keyboard position",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+  graph = (await created.json()).graph;
+  const submitted: Array<Record<string, any>> = [];
+  let loseFirstResponse = true;
+  await page.route("**/graph/batch", async (route) => {
+    const payload = route.request().postDataJSON();
+    submitted.push(payload);
+    if (loseFirstResponse) {
+      loseFirstResponse = false;
+      const response = await route.fetch();
+      expect(response.ok()).toBeTruthy();
+      await response.json();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
+  for (let index = 0; index < 6; index++)
+    await page.keyboard.press("ArrowRight");
+
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.find((item: { id: string }) => item.id === nodeId)
+        ?.position;
+    })
+    .toEqual({ x: 230, y: 160 });
+  await expect.poll(() => submitted.length).toBe(2);
+  expect(submitted[1]).toEqual(submitted[0]);
+  const current = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  expect(current.revision).toBe(graph.revision + 1);
+});
+
+test("discard position retries for nodes deleted by a concurrent edit", async ({
+  page,
+  request,
+}) => {
+  const graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const nodeId = crypto.randomUUID();
+  const created = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: nodeId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Deleted during keyboard move",
+          position: { x: 200, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(created.ok()).toBeTruthy();
+  let batchCount = 0;
+  await page.route("**/graph/batch", async (route) => {
+    batchCount += 1;
+    const current = await (
+      await request.get(`/api/projects/${projectId}/graph`)
+    ).json();
+    const deleted = await request.post(
+      `/api/projects/${projectId}/graph/commands`,
+      {
+        data: {
+          request_id: crypto.randomUUID(),
+          expected_revision: current.revision,
+          operation: "delete_node",
+          targets: [nodeId],
+          params: {},
+          run: false,
+        },
+      },
+    );
+    expect(deleted.ok()).toBeTruthy();
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        detail: { code: "REVISION_CONFLICT", message: "Graph changed" },
+      }),
+    });
+  });
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const node = page.getByTestId(`rf__node-${nodeId}`);
+  await expect(node).toBeVisible();
+  await node.focus();
+  await page.keyboard.press("Space");
+  await expect(node).toHaveClass(/selected/);
+  await page.keyboard.press("ArrowRight");
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.some((item: { id: string }) => item.id === nodeId);
+    })
+    .toBe(false);
+
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+z" : "Control+z");
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.nodes.some((item: { id: string }) => item.id === nodeId);
+    })
+    .toBe(true);
+  expect(batchCount).toBe(1);
+});
+
 test("a stale editor cannot overwrite a file recreated after deletion", async ({
   page,
   request,
@@ -1100,9 +1449,7 @@ test("Paper full-manuscript picker lists completed runs from this project", asyn
       exact: true,
     })
     .click();
-  await expect(
-    picker.getByRole("checkbox", { name: runLabel }),
-  ).toBeVisible();
+  await expect(picker.getByRole("checkbox", { name: runLabel })).toBeVisible();
   await expect(generate).toBeDisabled();
 });
 
