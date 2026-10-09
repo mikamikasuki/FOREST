@@ -12,6 +12,17 @@ from .models import Intervention, InterventionEffect
 from .application import readback, summarize, kick_effects
 
 
+def resume_available(s, r):
+    if r.resource.get('branch_scheduling_hold'):
+        from services.api.db import Branch
+        branch = s.get(Branch, r.branch_id)
+        if not branch or branch.status != 'active': return False
+    legacy_context_failure = (r.kind == 'agent' and r.status == 'failed' and
+        str(r.error or '').startswith(('Task controls exceed the configured context_char_budget;',
+            'The latest complete native tool exchange exceeds context_char_budget;')))
+    return r.status in ('paused', 'waiting_input', 'waiting', 'budget_exhausted') or legacy_context_failure
+
+
 def prepare_resume(s, project, r, body):
     if r.resource.get('branch_scheduling_hold'):
         from services.api.db import Branch
@@ -21,7 +32,7 @@ def prepare_resume(s, project, r, body):
     legacy_context_failure = (r.kind=='agent' and r.status=='failed' and
         str(r.error or '').startswith(('Task controls exceed the configured context_char_budget;',
             'The latest complete native tool exchange exceeds context_char_budget;')))
-    if r.status not in ('paused','waiting_input','waiting','budget_exhausted') and not legacy_context_failure: error('INVALID_RUN_STATE','Run is not paused or waiting',409)
+    if not resume_available(s, r): error('INVALID_RUN_STATE','Run is not paused or waiting',409)
     requested_timeout,timeout_source=requested_task_timeout(s,r)
     project_budget=project.budget or {}
     other_runs=s.scalars(select(TaskRun).where(TaskRun.project_id==r.project_id,TaskRun.id!=r.id))
