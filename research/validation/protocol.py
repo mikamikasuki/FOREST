@@ -35,7 +35,7 @@ def _text(record, fields, prefix=''):
 
 
 def validate_idea(idea):
-    """Validate mandatory judgments, without assigning the model a probability."""
+    """Validate idea judgments and align the main probability with meaningful improvement."""
     if not isinstance(idea, dict):
         raise ValueError('A research idea must be an object')
     result = deepcopy(idea)
@@ -55,6 +55,7 @@ def validate_idea(idea):
         base[field] = probability_range(base.get(field), 'base_case.' + field)
     if base['probability_meaningful_improvement'][0] > base['probability_any_signal'][1]:
         raise ValueError('A meaningful positive improvement cannot be more probable than any positive signal')
+    result['probability_range'] = list(base['probability_meaningful_improvement'])
     result['probability_interpretation'] = 'Subjective forecast, not a measured frequency or conference acceptance prediction'
     return result
 
