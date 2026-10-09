@@ -2538,11 +2538,17 @@ export function FilesPage() {
     `/projects/${id}/files?limit=500`,
     { files: [], has_more: false, next_cursor: null },
   );
-  const [pageData, setPageData] = useState<FilePage | null>(null);
+  const [pageData, setPageData] = useState<{
+    projectId: string;
+    page: FilePage;
+  } | null>(null);
+  const pageRequestGeneration = useRef(0);
+  const activeProjectId = useRef(id);
+  activeProjectId.current = id;
   const [pageCursor, setPageCursor] = useState<string | null>(null);
   const [cursorHistory, setCursorHistory] = useState<(string | null)[]>([]);
   const [changingPage, setChangingPage] = useState(false);
-  const filePage = pageData || data;
+  const filePage = pageData && pageData.projectId === id ? pageData.page : data;
   const reload = async () => {
     setPageData(null);
     setPageCursor(null);
@@ -2550,9 +2556,11 @@ export function FilesPage() {
     await reloadFirstPage();
   };
   useEffect(() => {
+    pageRequestGeneration.current += 1;
     setPageData(null);
     setPageCursor(null);
     setCursorHistory([]);
+    setChangingPage(false);
   }, [id]);
   const changeFilePage = async (direction: "next" | "previous") => {
     if (changingPage) return;
@@ -2560,6 +2568,8 @@ export function FilesPage() {
       direction === "next" ? filePage.next_cursor : (cursorHistory.at(-1) ?? null);
     if (direction === "next" && (!filePage.has_more || !nextCursor)) return;
     if (direction === "previous" && !cursorHistory.length) return;
+    const requestProjectId = id;
+    const requestGeneration = pageRequestGeneration.current;
     setChangingPage(true);
     try {
       if (direction === "previous" && nextCursor === null) {
@@ -2569,13 +2579,20 @@ export function FilesPage() {
         return;
       }
       const query = `?limit=500${nextCursor ? `&cursor=${encodeURIComponent(nextCursor)}` : ""}`;
-      const nextPage = await api<FilePage>(`/projects/${id}/files${query}`);
+      const nextPage = await api<FilePage>(`/projects/${requestProjectId}/files${query}`);
+      if (
+        pageRequestGeneration.current !== requestGeneration ||
+        activeProjectId.current !== requestProjectId
+      ) return;
       if (direction === "next") setCursorHistory((history) => [...history, pageCursor]);
       else setCursorHistory((history) => history.slice(0, -1));
       setPageCursor(nextCursor);
-      setPageData(nextPage);
+      setPageData({ projectId: requestProjectId!, page: nextPage });
     } finally {
-      setChangingPage(false);
+      if (
+        pageRequestGeneration.current === requestGeneration &&
+        activeProjectId.current === requestProjectId
+      ) setChangingPage(false);
     }
   };
   const [path, setPath] = useState("");
@@ -2666,9 +2683,24 @@ export function FilesPage() {
         directory: path.split("/").slice(0, -1).join("/"),
       };
     });
-    const existing = new Set(
-      filePage.files.filter((item) => !item.is_dir).map((item) => item.path),
-    );
+    const existing = new Set<string>();
+    const destinations = [...new Set(selected.map((item) => item.path))];
+    for (let offset = 0; offset < destinations.length; offset += 1000) {
+      const result = await api<{ existing: string[]; directories: string[] }>(
+        `/projects/${id}/files/existing`,
+        "POST",
+        { paths: destinations.slice(offset, offset + 1000) },
+      );
+      if (result.directories.length) {
+        throw new Error(
+          t(
+            `这些上传目标是目录，不能用文件替换：${result.directories.slice(0, 5).join(", ")}`,
+            `These upload destinations are directories and cannot be replaced by files: ${result.directories.slice(0, 5).join(", ")}`,
+          ),
+        );
+      }
+      result.existing.forEach((item) => existing.add(item));
+    }
     const seen = new Set<string>();
     const conflicts = new Set<string>();
     for (const item of selected) {

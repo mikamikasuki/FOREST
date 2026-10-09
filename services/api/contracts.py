@@ -153,6 +153,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "FileEntry": obj({"path": S, "size": I, "modified": N, "is_dir": B}, ("path", "size", "modified", "is_dir")),
     "FileList": obj({"files": array(ref("FileEntry")), "has_more": B,
                       "next_cursor": field("string", nullable=True)}, ("files", "has_more", "next_cursor")),
+    "FileExistenceRequest": obj({"paths": array(S)}, ("paths",)),
+    "FileExistenceResult": obj({"existing": STRINGS, "directories": STRINGS}, ("existing", "directories")),
     "FileRead": obj({"path": S, "content": S, "revision": I, "origin": S}, ("path", "content", "revision", "origin")),
     "FileWritten": obj({"path": S, "revision": I, "origin": S}, ("path", "revision", "origin")),
     "FilePath": obj({"path": S}, ("path",)),
@@ -547,7 +549,9 @@ operation("delete", "/api/shares/{token}", "Sharing", "Revoke a share token",
     "Require an already-valid owner cookie or bearer token even on trusted loopback; the public-prefix middleware shortcut does not authorize revocation. Disable the share and return revoked:true.", obj({"revoked": B}, ("revoked",)), errors={401: "UNAUTHORIZED", 404: "NOT_FOUND"}, owner_only=True)
 
 operation("get", "/api/projects/{ident}/files", "Files", "List project workspace files",
-    "Return a bounded page of eligible workspace entries. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.", ref("FileList"), errors={404: "NOT_FOUND", 422: "INVALID_FILE_CURSOR"})
+    "Return a bounded page of eligible workspace entries in depth-first filesystem traversal order. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Cursors are process-local and expire after 10 minutes; on expiration, restart from the first page. Skip symlinks and hidden path components except .forest-bases. Paths are relative to the project root and modified is a filesystem epoch time.", ref("FileList"), errors={404: "NOT_FOUND", 409: "FILE_CURSOR_EXPIRED", 422: "INVALID_FILE_CURSOR"})
+operation("post", "/api/projects/{ident}/files/existing", "Files", "Preflight upload destinations",
+    "Return existing files and directories for supplied relative paths in the project workspace. Accepts at most 1,000 paths per request so multi-file uploads can confirm replacements before publishing any selected file; directories cannot be replaced by file uploads.", ref("FileExistenceResult"), body="FileExistenceRequest", errors={403: "PATH_ESCAPE", 404: "NOT_FOUND", 422: "INVALID_FILE_PATHS"})
 operation("get", "/api/projects/{ident}/file", "Files", "Read an editable text file",
     "Return text, file revision and origin from one snapshot serialized with owner uploads, edits, moves and deletes. Paths are normalized relative to the project root. Binary files need download/preview. The file revision is distinct from project, node and resource revisions. The default revision/origin for executor/import files is 0/executor_or_import.", ref("FileRead"), errors={400: "NOT_FILE", 403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 413: "FILE_TOO_LARGE (>10000000 bytes)", 415: "BINARY_FILE"})
 operation("get", "/api/projects/{ident}/file/preview", "Files", "Read a bounded source-table excerpt",

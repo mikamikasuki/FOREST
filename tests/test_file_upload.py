@@ -87,6 +87,80 @@ def case_files_list_includes_entries_after_10000(client):
     assert "generated/file-10000.txt" in paths
 
 
+def case_files_list_streams_a_bounded_page_and_replays_cursors(client):
+    project, root, _ = project_files(client)
+    generated = root / "streamed"
+    generated.mkdir()
+    for index in range(200):
+        (generated / f"file-{index:03}.txt").touch()
+
+    import importlib
+    file_api = importlib.import_module("services.api.files")
+    original_scandir = file_api.os.scandir
+    visited = 0
+
+    class CountedScandir:
+        def __init__(self, directory):
+            self.iterator = original_scandir(directory)
+        def __enter__(self): return self
+        def __exit__(self, *_): self.iterator.close()
+        def __iter__(self): return self
+        def __next__(self):
+            nonlocal visited
+            visited += 1
+            return next(self.iterator)
+
+    file_api.os.scandir = CountedScandir
+    try:
+        first = ok(client.get(f"/api/projects/{project['id']}/files", params={"limit": 5}))
+    finally:
+        file_api.os.scandir = original_scandir
+
+    assert visited < 100, f"first page scanned {visited} entries instead of stopping at its bound"
+    assert len(first["files"]) == 5 and first["has_more"]
+    cursor = first["next_cursor"]
+    second = ok(client.get(f"/api/projects/{project['id']}/files", params={"limit": 5, "cursor": cursor}))
+    replay = ok(client.get(f"/api/projects/{project['id']}/files", params={"limit": 5, "cursor": cursor}))
+    assert second == replay
+    assert set(first["files"][i]["path"] for i in range(5)).isdisjoint(
+        item["path"] for item in second["files"]
+    )
+
+
+def case_upload_preflight_reports_conflicts_outside_the_visible_page(client):
+    project, root, _ = project_files(client)
+    existing = root / "uploads" / "older-page.txt"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("keep")
+    (root / "uploads" / "folder-collision").mkdir()
+    response = ok(client.post(
+        f"/api/projects/{project['id']}/files/existing",
+        json={"paths": [
+            "uploads/older-page.txt",
+            "uploads/folder-collision",
+            "uploads/new.txt",
+        ]},
+    ))
+    assert response == {
+        "existing": ["uploads/older-page.txt"],
+        "directories": ["uploads/folder-collision"],
+    }
+
+
+def case_file_list_cursor_cannot_cross_project_boundaries(client):
+    first_project, root, _ = project_files(client)
+    (root / "visible.txt").write_text("one")
+    other_project, _, _ = project_files(client)
+    first = ok(client.get(f"/api/projects/{first_project['id']}/files", params={"limit": 1}))
+    assert first["has_more"]
+    response = client.get(
+        f"/api/projects/{other_project['id']}/files",
+        params={"limit": 1, "cursor": first["next_cursor"]},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "INVALID_FILE_CURSOR"
+
+
 def case_accepted_overwrite_and_limit_boundary(client):
     project, root, endpoint = project_files(client)
     ok(client.post(endpoint, files={"file": ("same.txt", b"original")}))

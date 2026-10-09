@@ -164,6 +164,102 @@ test("Files page navigates bounded file-list pages", async ({ page }) => {
   await expect(tree.locator(".file-tree-pagination")).toContainText("Page 2");
 });
 
+test("Files page discards an in-flight page after switching projects", async ({
+  page,
+  request,
+}) => {
+  const created = await request.post("/api/projects", {
+    data: { name: `Pagination target ${Date.now()}`, goal: "Route race" },
+  });
+  expect(created.ok()).toBeTruthy();
+  const otherProjectId = (await created.json()).id as string;
+  try {
+    await page.route(`**/api/projects/${projectId}/files*`, async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.has("cursor")) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await route.fulfill({
+          json: {
+            files: [
+              { path: "stale-project-a.txt", size: 1, modified: 0, is_dir: false },
+            ],
+            has_more: false,
+            next_cursor: null,
+          },
+        });
+      } else {
+        await route.fulfill({
+          json: {
+            files: [
+              { path: "project-a-first.txt", size: 1, modified: 0, is_dir: false },
+            ],
+            has_more: true,
+            next_cursor: "opaque-cursor-for-a",
+          },
+        });
+      }
+    });
+    await page.route(`**/api/projects/${otherProjectId}/files*`, (route) =>
+      route.fulfill({
+        json: {
+          files: [
+            { path: "project-b-file.txt", size: 1, modified: 0, is_dir: false },
+          ],
+          has_more: false,
+          next_cursor: null,
+        },
+      }),
+    );
+
+    await page.goto(`/projects/${projectId}/files`);
+    await page.locator(".file-tree-pagination").getByRole("button", { name: "Next" }).click();
+    await page.evaluate((target) => {
+      window.history.pushState({}, "", target);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, `/projects/${otherProjectId}/files`);
+    const tree = page.locator(".file-tree");
+    await expect(tree).toContainText("project-b-file.txt");
+    await page.waitForTimeout(400);
+    await expect(tree).not.toContainText("stale-project-a.txt");
+  } finally {
+    await request.delete(`/api/projects/${otherProjectId}`);
+  }
+});
+
+test("Files upload preflight detects conflicts outside the visible page", async ({
+  page,
+}) => {
+  let overwrite: string | null = null;
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.route(`**/api/projects/${projectId}/files?limit=500`, (route) =>
+    route.fulfill({
+      json: {
+        files: [
+          { path: "visible.txt", size: 1, modified: 0, is_dir: false },
+        ],
+        has_more: false,
+        next_cursor: null,
+      },
+    }),
+  );
+  await page.route(`**/api/projects/${projectId}/files/existing`, (route) =>
+    route.fulfill({
+      json: { existing: ["uploads/remote.txt"], directories: [] },
+    }),
+  );
+  await page.route(`**/api/projects/${projectId}/upload*`, async (route) => {
+    overwrite = new URL(route.request().url()).searchParams.get("overwrite");
+    await route.fulfill({ json: { path: "uploads/remote.txt", size: 3 } });
+  });
+  await page.goto(`/projects/${projectId}/files`);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "remote.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("new"),
+  });
+  await expect.poll(() => overwrite).toBe("true");
+});
+
 for (const scenario of [
   {
     name: "silent success",

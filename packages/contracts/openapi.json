@@ -1437,6 +1437,43 @@
         ],
         "type": "object"
       },
+      "FileExistenceRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "paths"
+        ],
+        "type": "object"
+      },
+      "FileExistenceResult": {
+        "additionalProperties": true,
+        "properties": {
+          "directories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "existing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "existing",
+          "directories"
+        ],
+        "type": "object"
+      },
       "FileList": {
         "additionalProperties": true,
         "properties": {
@@ -17713,7 +17750,7 @@
     },
     "/api/projects/{ident}/files": {
       "get": {
-        "description": "Return a bounded page of eligible workspace entries. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.",
+        "description": "Return a bounded page of eligible workspace entries in depth-first filesystem traversal order. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Cursors are process-local and expire after 10 minutes; on expiration, restart from the first page. Skip symlinks and hidden path components except .forest-bases. Paths are relative to the project root and modified is a filesystem epoch time.",
         "operationId": "files_api_projects__ident__files_get",
         "parameters": [
           {
@@ -17795,6 +17832,16 @@
             },
             "description": "NOT_FOUND"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "FILE_CURSOR_EXPIRED"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -17826,6 +17873,122 @@
           {}
         ],
         "summary": "List project workspace files",
+        "tags": [
+          "Files"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/projects/{ident}/files/existing": {
+      "post": {
+        "description": "Return existing files and directories for supplied relative paths in the project workspace. Accepts at most 1,000 paths per request so multi-file uploads can confirm replacements before publishing any selected file; directories cannot be replaced by file uploads.",
+        "operationId": "existing_files_api_projects__ident__files_existing_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileExistenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileExistenceResult"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "PATH_ESCAPE"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "NOT_FOUND"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INVALID_FILE_PATHS"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Preflight upload destinations",
         "tags": [
           "Files"
         ],
