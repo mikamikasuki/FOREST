@@ -643,7 +643,11 @@ export function ResearchPage({ resource }: { resource: string }) {
         <Loading />
       ) : records.length ? (
         <div className="idea-grid">
-          {records.map((r) => (
+          {records.map((r) => {
+            const meaningfulRange = r.data.base_case?.probability_meaningful_improvement;
+            const hasMeaningfulRange = Array.isArray(meaningfulRange) && meaningfulRange.length === 2;
+            const probabilityRange = hasMeaningfulRange ? meaningfulRange : r.data.probability_range;
+            return (
             <article key={r.id} className="surface idea-card">
               <div className="section-toolbar">
                 <Badge status={r.status} />
@@ -668,15 +672,15 @@ export function ResearchPage({ resource }: { resource: string }) {
                     </div>
                   ),
               )}
-              {r.data.probability_range && (
+              {probabilityRange && (
                 <div className="estimate">
                   <span>
                     {t(
-                      "有意义改进的估计概率",
-                      "Estimated probability of meaningful improvement",
+                      hasMeaningfulRange ? "有意义改进的估计概率" : "估计概率范围（结果未分类）",
+                      hasMeaningfulRange ? "Estimated probability of meaningful improvement" : "Estimated probability range (outcome unspecified)",
                     )}
                   </span>
-                  <strong>{String(r.data.probability_range)}</strong>
+                  <strong>{String(probabilityRange)}</strong>
                 </div>
               )}
               {Array.isArray(r.data.commands) && (
@@ -711,7 +715,8 @@ export function ResearchPage({ resource }: { resource: string }) {
                 </Button>
               </div>
             </article>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <Empty title={t("暂无想法", "No ideas")} />
