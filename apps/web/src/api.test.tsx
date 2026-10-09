@@ -5,6 +5,7 @@ import { apiUrl, requestApi } from "./apiClient";
 import type { Graph } from "./api";
 import { ErrorBox, Empty, Button } from "./ui";
 import { updateDefaultProviderDraft } from "./settingsDraft";
+import { hostEditorConfig, hostPayload } from "./connectionPayload";
 const graph = (edges: Graph["edges"]): Graph => ({
   project_id: "p",
   revision: 1,
@@ -82,6 +83,29 @@ describe("submission controls", () => {
         </Button>,
       ),
     ).toContain('disabled=""');
+  });
+});
+
+describe("compute host payload", () => {
+  it("round-trips SSH settings from a saved host without nesting its config", () => {
+    const item = {
+      id: "host-1",
+      name: "Test host",
+      kind: "remote",
+      config: {
+      hostname: "127.0.0.1",
+      username: "codex-test",
+      port: 2222,
+      workdir: "/tmp/forest",
+      allow_shell: true,
+      },
+    };
+    const config = hostEditorConfig(item);
+    expect(hostPayload(item.name, config, item.kind)).toEqual({
+      name: "Test host",
+      kind: "remote",
+      config: item.config,
+    });
   });
 });
 

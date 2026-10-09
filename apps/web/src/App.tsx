@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Routes,
   Route,
@@ -150,7 +150,11 @@ export default function App() {
               FOREST<span className="brand-caption">RESEARCH WORKSPACE</span>
             </span>
           </NavLink>
-          <button className="quick-search" onClick={() => setPalette(true)}>
+          <button
+            className="quick-search"
+            aria-label={t("搜索或跳转", "Search workspace")}
+            onClick={() => setPalette(true)}
+          >
             <Search size={15} />
             <span>{t("搜索或跳转", "Search workspace")}</span>
             <kbd>⌘ K</kbd>
@@ -169,6 +173,7 @@ export default function App() {
               navigation.map(([path, zh, en, Icon]) => (
                 <NavLink
                   key={path}
+                  aria-label={t(zh, en)}
                   to={demoLink(
                     `/projects/${projectId}/${path}`,
                     location.search,
@@ -539,12 +544,33 @@ function Projects() {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("recent");
   const [showArchived, setShowArchived] = useState(false);
+  const [duplicating, setDuplicating] = useState<Set<string>>(() => new Set());
+  const duplicateLocks = useRef(new Set<string>());
   const navigate = useNavigate();
+  const duplicateProject = (projectId: string) =>
+    action(async () => {
+      if (duplicateLocks.current.has(projectId)) return;
+      duplicateLocks.current.add(projectId);
+      setDuplicating((current) => new Set(current).add(projectId));
+      try {
+        await api(`/projects/${projectId}/duplicate`, "POST", {});
+        await reload();
+      } finally {
+        duplicateLocks.current.delete(projectId);
+        setDuplicating((current) => {
+          const next = new Set(current);
+          next.delete(projectId);
+          return next;
+        });
+      }
+    });
   const list = projects
     .filter(
       (p) =>
         (showArchived || !p.archived) &&
-        `${p.name} ${p.goal}`.toLowerCase().includes(query.toLowerCase()),
+        `${p.name} ${p.goal} ${p.description}`
+          .toLowerCase()
+          .includes(query.toLowerCase()),
     )
     .sort((a, b) =>
       sort === "name"
@@ -660,12 +686,8 @@ function Projects() {
                     </IconButton>
                     <IconButton
                       label={t("复制", "Duplicate")}
-                      onClick={() =>
-                        action(async () => {
-                          await api(`/projects/${p.id}/duplicate`, "POST", {});
-                          await reload();
-                        })
-                      }
+                      disabled={duplicating.has(p.id)}
+                      onClick={() => duplicateProject(p.id)}
                     >
                       <Copy size={14} />
                     </IconButton>
@@ -909,6 +931,7 @@ function ResearchControls({
     branches: [],
   });
   const [branch, setBranch] = useState("");
+  const [branchTouched, setBranchTouched] = useState(false);
   const [state, setState] = useState<Json | null>(null);
   const [autonomous, setAutonomous] = useState(runMode !== "manual");
   const [readyParallelism, setReadyParallelism] = useState(1);
@@ -925,6 +948,9 @@ function ResearchControls({
     active_runs: [],
   });
   const sessionUnavailable = sessionLoading || !!sessionError;
+  useEffect(() => {
+    if (!branchTouched) setBranch(session.controller?.branch_id || "");
+  }, [branchTouched, session.controller?.branch_id]);
   const [inspectComparisons, setInspectComparisons] = useState(false);
   const comparisons = useLoad<Json>(
     inspectComparisons ? `/projects/${projectId}/research` : null,
@@ -956,7 +982,10 @@ function ResearchControls({
       <select
         aria-label="Research branch"
         value={branch}
-        onChange={(e) => setBranch(e.target.value)}
+        onChange={(e) => {
+          setBranchTouched(true);
+          setBranch(e.target.value);
+        }}
       >
         <option value="">{t("项目全部路线", "All project paths")}</option>
         {graph.branches.map((b: Json) => (

@@ -13,7 +13,7 @@ import sys
 import pytest
 
 from research.publication import publication_profile, assess_submission
-from research.agents.policy import RESEARCH_POLICY, ROLES
+from research.agents.policy import RESEARCH_POLICY, ROLES, agent_policy, publication_scope
 from research.agents.defaults import VERSION_FOUR_TOOLS,upgrade_default_tools,TOOLSET_VERSION
 from types import SimpleNamespace
 
@@ -36,7 +36,33 @@ def test_full_submission_is_default_and_budgets_never_shrink_it():
     with pytest.raises(ValueError,match='four'):
         publication_profile({'publication_profile':{'experiment_duties':['effectiveness']}})
     assert {'Literature Scout','Benchmark Curator','Experiment Designer','Baseline Reproducer','Submission Reviewer','Visual Selector','Layout Reviewer'}<=set(ROLES)
-    assert 'anti-defensive' in RESEARCH_POLICY and 'AI-writing declarations' in RESEARCH_POLICY
+    writer_policy=agent_policy('Writer', {}, publication_profile())
+    assert 'AUTHORING MODE: MANUSCRIPT' in writer_policy
+    assert 'Do not add AI-writing' in writer_policy
+    assert 'AUTHORING MODE: MANUSCRIPT' not in RESEARCH_POLICY
+    assert 'FULL SUBMISSION CONTRACT' not in agent_policy('Researcher', {}, publication_profile())
+
+
+def test_agent_policy_only_adds_manuscript_contract_for_authoring_tasks():
+    from research.agents.policy import agent_policy
+
+    researcher=agent_policy('Researcher', {}, publication_profile())
+    writer=agent_policy('Writer', {}, publication_profile())
+    explicit_author=agent_policy('Researcher', {'authoring_mode':'manuscript'}, publication_profile())
+    revision=agent_policy('Researcher', {'authoring_mode':'revision'}, publication_profile())
+
+    assert 'AUTHORING MODE: MANUSCRIPT' not in researcher
+    assert 'FULL SUBMISSION CONTRACT' not in researcher
+    assert 'AUTHORING MODE: MANUSCRIPT' in writer
+    assert 'AUTHORING MODE: MANUSCRIPT' in explicit_author
+    assert 'AUTHORING MODE: MINIMAL REVISION' in revision
+    assert len(researcher) < 18_000
+    assert not publication_scope('Researcher', {}, 'agent')
+    assert publication_scope('Writer', {}, 'agent')
+    assert publication_scope('Researcher', {'authoring_mode': 'manuscript'}, 'agent')
+    assert not publication_scope('Writer', {'authoring_mode': 'none'}, 'agent')
+    assert publication_scope('Researcher', {}, 'paper_generate')
+    assert publication_scope('Researcher', {'publication_profile': 'operational'}, 'agent')
 
 
 def test_old_factory_agents_gain_executable_publication_tools_without_changing_custom_permissions():
@@ -246,6 +272,9 @@ if __name__=='__main__':
         generated_api=client.post(f'/api/papers/{pid}/generate',json=requested)
         generated_api.raise_for_status()
         assert generated_api.json()['kind']=='paper_generate' and generated_api.json()['status']=='queued'
+        with Session() as session:
+            generation_run=session.get(TaskRun,generated_api.json()['id'])
+            assert generation_run.config['publication_profile']['id']=='operational'
         assert client.post(f'/api/papers/{pid}/generate',json=requested).json()['id']==generated_api.json()['id']
         from services.api.db import PaperDocument
         from sqlalchemy import select

@@ -126,11 +126,14 @@ def make_project(s,name,goal='',description='',**kwargs):
     try: validate_permissions(kwargs.get('config', {}))
     except ValueError as exc: error('INVALID_TOOL_POLICY', str(exc), 422)
     preference=s.get(Preference,'settings')
+    if kwargs.get('mode') is None:
+        configured_mode=preference.value.get('default_mode') if preference else None
+        kwargs['mode']=configured_mode if configured_mode in ('auto','assisted','manual') else 'assisted'
     default_provider=preference.value.get('default_provider_id') if preference else None
-    if default_provider:
-        config=dict(kwargs.get('config',{}))
+    config=dict(kwargs.get('config',{}))
+    if default_provider and not config.get('provider_selection_required'):
         if not config.get('provider_id') and s.get(Provider,default_provider): config['provider_id']=default_provider
-        kwargs['config']=config
+    kwargs['config']=config
     p=Project(name=name,goal=goal,description=description,**kwargs); s.add(p); s.flush()
     bid=uid(); workspace=f'branches/{bid}/workspace'; safe_path(project_dir(p.id),workspace).mkdir(parents=True,exist_ok=True)
     s.add(Branch(id=bid,project_id=p.id,name='Main',workspace=workspace,is_main=True))
