@@ -809,7 +809,7 @@ Known domain failures: `404` NOT_FOUND.
 
 #### `POST /api/nodes/{ident}/context/rebuild`
 
-Merge the extensible body into node.context_overrides, force needs_refresh:false, emit context_changed and return a fresh ContextSnapshot. This endpoint has no expected_revision guard.
+When expected_revision is supplied, require it to match the current project revision. Merge the remaining extensible body into node.context_overrides, force needs_refresh:false, emit context_changed and return a fresh ContextSnapshot.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -819,7 +819,7 @@ Body: `application/json`: `JsonObject`; optional.
 
 Success `200`: `application/json`: `ContextSnapshot`.
 
-Known domain failures: `404` NOT_FOUND.
+Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT.
 
 #### `GET /api/projects/{ident}/graph`
 

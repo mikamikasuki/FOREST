@@ -14310,7 +14310,7 @@
     },
     "/api/nodes/{ident}/context/rebuild": {
       "post": {
-        "description": "Merge the extensible body into node.context_overrides, force needs_refresh:false, emit context_changed and return a fresh ContextSnapshot. This endpoint has no expected_revision guard.",
+        "description": "When expected_revision is supplied, require it to match the current project revision. Merge the remaining extensible body into node.context_overrides, force needs_refresh:false, emit context_changed and return a fresh ContextSnapshot.",
         "operationId": "context_rebuild_api_nodes__ident__context_rebuild_post",
         "parameters": [
           {
@@ -14372,6 +14372,16 @@
               }
             },
             "description": "NOT_FOUND"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "REVISION_CONFLICT"
           },
           "422": {
             "content": {

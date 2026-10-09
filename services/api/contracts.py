@@ -488,7 +488,7 @@ operation("patch", "/api/nodes/{ident}", "Graph", "Edit a path node",
 operation("get", "/api/nodes/{ident}/context", "Graph", "Inspect a node context snapshot",
     "Build a role-aware preview from current graph/goal/budget, declared input materials and context overrides. Material previews can be truncated; retrievable_materials and omitted describe the full-source lookup opportunities. Capacity is a soft preview hint, not an execution result.", ref("ContextSnapshot"), errors={404: "NOT_FOUND"})
 operation("post", "/api/nodes/{ident}/context/rebuild", "Graph", "Merge context overrides and rebuild",
-    "Merge the extensible body into node.context_overrides, force needs_refresh:false, emit context_changed and return a fresh ContextSnapshot. This endpoint has no expected_revision guard.", ref("ContextSnapshot"), body="JsonObject", errors={404: "NOT_FOUND"})
+    "When expected_revision is supplied, require it to match the current project revision. Merge the remaining extensible body into node.context_overrides, force needs_refresh:false, emit context_changed and return a fresh ContextSnapshot.", ref("ContextSnapshot"), body="JsonObject", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
 operation("post", "/api/nodes/{ident}/run", "Runs", "Enqueue a node execution scope",
     "Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id.", {"anyOf": [ref("Run"), ref("SelectedRunCollection")]}, errors={400: "Scheduling/input errors", 404: "NOT_FOUND", 409: "Submission/revision conflicts"})
 operation("post", "/api/branches/{ident}/run", "Runs", "Enqueue a branch execution path",
