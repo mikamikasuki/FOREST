@@ -439,6 +439,8 @@ def _validate_inputs(s, node, graph, selected):
                 error('INPUT_UNAVAILABLE', actual.get('message', 'A referenced input is unavailable or has changed'), 409,
                       'Restore the material, update its reference, or run the producing steps.')
         elif ref.get('kind') in ('idea', 'paper', 'dataset', 'run', 'figure', 'analysis') and ref.get('id'):
+            if ref.get('kind') == 'idea' and isinstance(ref.get('snapshot'),dict):
+                continue
             model = {'idea': Hypothesis, 'paper': SourcePaper, 'dataset': DatasetAsset, 'run': TaskRun, 'figure': Figure, 'analysis': Analysis}[ref['kind']]
             record = s.get(model, ref['id'])
             if record is None or record.project_id != node.project_id:

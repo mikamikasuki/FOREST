@@ -138,7 +138,9 @@ def adopt(ident:str,body:dict=Body(default={})):
             provenance_note='This older idea has an unclassified retrieved-source pool. Do not treat its source list as evidence for this direction without checking each item.'
         custom=body.get('instructions','')
         if not isinstance(custom,str): error('INVALID_INSTRUCTIONS','Instructions must be text',422)
-        source_input={'kind':'idea','id':idea.id,'project_id':p.id}
+        source_input={'kind':'idea','id':idea.id,'project_id':p.id,'revision':idea.revision,
+            'snapshot':{'id':idea.id,'title':idea.title,'revision':idea.revision,
+                        'status':idea.status,'data':idea.data}}
         common_inputs=[source_input,*inputs]
         duty=('State the falsifiable claim, strongest baseline, decisive unknown, primary metric, meaningful effect threshold, '
               'matched compute/data budget, split/seed policy, mechanism ablation and stopping rule. Choose the cheapest decisive '
@@ -514,7 +516,30 @@ def install_resource_routes(name,model):
             r.revision+=1; touch_dependents(s,r.project_id,r.id); return asdict(r)
     def remove(ident:str):
         with Session.begin() as s:
-            r=lock_record(s,ident); touch_dependents(s,r.project_id,ident); s.delete(r); return {'deleted':ident}
+            r=lock_record(s,ident)
+            touch_dependents(s,r.project_id,ident)
+            if model is Hypothesis:
+                snapshot={'id':r.id,'title':r.title,'revision':r.revision,'status':r.status,'data':r.data}
+                graph_changed=False
+                for node in s.scalars(select(Node).where(Node.project_id==r.project_id)):
+                    updated=[]
+                    changed=False
+                    for ref in node.inputs or []:
+                        if (isinstance(ref,dict) and ref.get('kind')=='idea' and ref.get('id')==ident
+                                and ref.get('snapshot')!=snapshot):
+                            ref={**ref,'snapshot':snapshot}
+                            changed=True
+                        updated.append(ref)
+                    if changed:
+                        node.inputs=updated
+                        node.revision+=1
+                        graph_changed=True
+                if graph_changed:
+                    project=s.get(Project,r.project_id)
+                    project.revision+=1
+                    emit(s,project.id,'project_changed',{'revision':project.revision})
+            s.delete(r)
+            return {'deleted':ident}
     router.add_api_route('/api/'+name,listing,methods=['GET'],name=name+'_list')
     if name!='reviews': router.add_api_route('/api/'+name,create,methods=['POST'],name=name+'_create')
     router.add_api_route('/api/'+name+'/{ident}',read,methods=['GET'],name=name+'_get')
