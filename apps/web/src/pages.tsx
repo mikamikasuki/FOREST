@@ -2684,6 +2684,11 @@ export function FilesPage() {
     await reloadFirstPage();
   };
   useEffect(() => {
+    const refreshFiles = () => void reload();
+    window.addEventListener("forest-refresh", refreshFiles);
+    return () => window.removeEventListener("forest-refresh", refreshFiles);
+  }, [reload]);
+  useEffect(() => {
     pageRequestGeneration.current += 1;
     setPageData(null);
     setPageCursor(null);
