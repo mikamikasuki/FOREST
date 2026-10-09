@@ -89,7 +89,10 @@ const navigation = [
   ["files", "项目文件", "Files", Folder],
 ] as const;
 export default function App() {
-  const lang = "en";
+  const preferences = useLoad<Json>("/settings", {});
+  const [lang, setLang] = useState<"en" | "zh">(
+    () => localStorage.getItem("forest-language") === "zh" ? "zh" : "en",
+  );
   const [theme, setTheme] = useState(
     localStorage.getItem("forest-theme") || "light",
   );
@@ -106,10 +109,20 @@ export default function App() {
   const location = useLocation();
   const match = location.pathname.match(/\/projects\/([^/]+)/);
   const projectId = match?.[1];
-  const t = useCallback((_zh: string, en: string) => en, [lang]);
+  const t = useCallback((zh: string, en: string) => lang === "zh" ? zh : en, [lang]);
+  useEffect(() => {
+    const savedLanguage = preferences.data.language;
+    if (savedLanguage === "zh" || savedLanguage === "en")
+      setLang(savedLanguage);
+  }, [preferences.data.language]);
+  useEffect(() => {
+    const refresh = () => void preferences.reload();
+    window.addEventListener("forest-settings-changed", refresh);
+    return () => window.removeEventListener("forest-settings-changed", refresh);
+  }, [preferences.reload]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    document.documentElement.lang = "en";
+    document.documentElement.lang = lang;
     localStorage.setItem("forest-theme", theme);
     localStorage.setItem("forest-language", lang);
   }, [theme, lang]);
