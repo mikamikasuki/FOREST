@@ -322,7 +322,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "PaperFigureRequest": obj({"expected_revision": I, "figure_id": S, "anchor_text": S,
         "caption": S, "span": S}, ("expected_revision", "figure_id", "anchor_text")),
     "PaperLayoutRequest": obj({"expected_revision": I, "request_id": field("string", nullable=True), "template": S, "layout": J}, ("expected_revision",)),
-    "PaperExportRequest": obj({"expected_revision": I, "format": field("string", "pdf returns the current compiled PDF; other/omitted values return a source ZIP.")}),
+    "PaperExportRequest": obj({"expected_revision": I, "format": field("string", "pdf returns the current compiled PDF; other/omitted values return a source ZIP."), "source": S, "bibtex": S}),
     "PaperCheck": obj({"issues": array(J), "writing_profile": J, "coverage": S, "status": S}, ("issues", "writing_profile", "coverage", "status")),
     "ProposalApplyRequest": obj({"expected_revision": I, "commands": array(J), "indices": array(I)}),
     "ProposalApplied": obj({"graph": ref("GraphState"), "accepted_indices": array(I)}, ("graph", "accepted_indices")),
@@ -619,7 +619,7 @@ operation("post", "/api/papers/{ident}/check", "Manuscripts", "Inspect citations
 operation("post", "/api/papers/{ident}/revise", "Manuscripts", "Enqueue a revision proposal",
     "Resolve paper/project ID, optionally compare PaperDocument revision, capture saved source/revision and pass the extensible body to paper_revise. Return Run. Saved manuscript edits are applied via review acceptance or explicit manual editing.", ref("Run"), body="PaperRevisionRequest", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
 operation("post", "/api/papers/{ident}/export", "Manuscripts", "Export current manuscript PDF or source ZIP",
-    "Resolve an existing paper/project ID. Optional expected_revision compares PaperDocument revision. format=pdf requires an existing compiled PDF of the CURRENT revision; other/omitted values return paper.tex/references.bib/assets ZIP and a current PDF when available. Source ZIP excludes .aux/.blg/.log artifacts.", body="PaperExportRequest", media=("application/zip", "application/pdf"), errors={403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 409: "REVISION_CONFLICT, PDF_UNAVAILABLE or STALE_PDF"})
+    "Resolve an existing paper/project ID. Optional expected_revision compares PaperDocument revision. For a source ZIP, optional source and bibtex fields export the editor's current draft without saving it. format=pdf requires an existing compiled PDF of the CURRENT revision; source ZIP includes a PDF only when its source matches the saved revision. Source ZIP excludes .aux/.blg/.log artifacts.", body="PaperExportRequest", media=("application/zip", "application/pdf"), errors={403: "PATH_ESCAPE", 404: "NOT_FOUND or MISSING_ARTIFACT", 409: "REVISION_CONFLICT, PDF_UNAVAILABLE or STALE_PDF"})
 
 RESOURCE_KINDS = ("library", "experiments", "datasets", "ideas", "theories", "claims", "figures", "analyses", "reviews")
 for kind in RESOURCE_KINDS:
