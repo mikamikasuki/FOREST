@@ -223,6 +223,46 @@ for (const scenario of [
   });
 }
 
+test("RunPanel shows an Agent final summary alongside its output log", async ({
+  page,
+}) => {
+  const runId = "agent-final-summary-run";
+  await page.route(`**/api/projects/${projectId}/runs?limit=500`, (route) =>
+    route.fulfill({
+      json: [
+        {
+          id: runId,
+          node_id: null,
+          project_id: projectId,
+          branch_id: null,
+          kind: "agent",
+          status: "completed",
+          config: {},
+          node_revision: 0,
+          created_at: new Date().toISOString(),
+          started_at: new Date().toISOString(),
+          finished_at: new Date().toISOString(),
+          exit_code: 0,
+          pid: null,
+          error: null,
+          metrics: { summary: "The Agent's final answer is ready." },
+          output_path: "",
+        },
+      ],
+    }),
+  );
+  await page.route(`**/api/runs/${runId}/output*`, (route) =>
+    route.fulfill({ json: { text: "Tool response trace", offset: 19 } }),
+  );
+  await page.goto(`/projects/${projectId}/workspace`);
+
+  const panel = page.locator(".run-panel");
+  await expect(panel.locator(".run-final-summary")).toContainText(
+    "The Agent's final answer is ready.",
+  );
+  await expect(panel.locator("pre")).toContainText("Tool response trace");
+});
+
 test("graph updates remain stable and persist a node created through the inspector UI", async ({
   page,
   request,
