@@ -4,6 +4,7 @@ import { api, ApiError, download, formatDate, hasCycle } from "./api";
 import { apiUrl, requestApi } from "./apiClient";
 import type { Graph } from "./api";
 import { ErrorBox, Empty, Button } from "./ui";
+import { updateDefaultProviderDraft } from "./settingsDraft";
 const graph = (edges: Graph["edges"]): Graph => ({
   project_id: "p",
   revision: 1,
@@ -88,6 +89,23 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+describe("provider default draft refresh", () => {
+  it("updates only the provider field and keeps unrelated unsaved defaults", () => {
+    const draft = JSON.stringify({ temperature: 0.2, custom_default: "draft" });
+    expect(JSON.parse(updateDefaultProviderDraft(draft, "provider-2"))).toEqual({
+      temperature: 0.2,
+      custom_default: "draft",
+      default_provider_id: "provider-2",
+    });
+  });
+
+  it("preserves an invalid in-progress JSON draft", () => {
+    expect(updateDefaultProviderDraft('{"temperature":', "provider-2")).toBe(
+      '{"temperature":',
+    );
+  });
 });
 
 describe("API transport compatibility", () => {

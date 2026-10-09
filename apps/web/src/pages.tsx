@@ -1,5 +1,6 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
+import { updateDefaultProviderDraft } from "./settingsDraft";
 import { useState, useEffect, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
@@ -3075,7 +3076,9 @@ export function SettingsPage() {
                             await api("/settings", "PATCH", {
                               default_provider_id: item.id,
                             });
-                            await reloadSettings();
+                            setSettingsText((current) =>
+                              updateDefaultProviderDraft(current, item.id),
+                            );
                           },
                           "Default model updated",
                         )
