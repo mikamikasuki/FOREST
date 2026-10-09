@@ -3127,7 +3127,12 @@ export function SettingsPage() {
   const { data: hosts, reload: reloadHosts } = useLoad<Json[]>("/hosts", []);
   const { data: agents, reload: reloadAgents } = useLoad<Json[]>("/agents", []);
   const { data: system, reload: reloadSystem } = useLoad<Json>("/system", {});
-  const { data: settings, reload: reloadSettings } = useLoad<Json>(
+  const {
+    data: settings,
+    reload: reloadSettings,
+    error: settingsError,
+    loading: settingsLoading,
+  } = useLoad<Json>(
     "/settings",
     {},
   );
@@ -3324,7 +3329,15 @@ export function SettingsPage() {
               <Save size={15} />
               {t("保存设置", "Save settings")}
             </Button>
-            <StorageCleanup />
+            <StorageCleanup
+              retentionDays={
+                Number.isSafeInteger(settings.retention_days) &&
+                settings.retention_days >= 0
+                  ? settings.retention_days
+                  : null
+              }
+              settingsLoaded={!settingsLoading && !settingsError}
+            />
           </section>
         )}
         {tab === "system" && (
@@ -4073,13 +4086,26 @@ function RevisionProposal({
   );
 }
 
-function StorageCleanup() {
+function StorageCleanup({
+  retentionDays,
+  settingsLoaded,
+}: {
+  retentionDays: number | null;
+  settingsLoaded: boolean;
+}) {
   const { t, action } = useUI();
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useState(String(retentionDays ?? ""));
+  const [daysTouched, setDaysTouched] = useState(false);
   const [history, setHistory] = useState(false);
   const [projectId, setProjectId] = useState("");
   const [result, setResult] = useState<Json | null>(null);
   const { data: projects } = useLoad<Json[]>("/projects", []);
+  useEffect(() => {
+    if (!daysTouched) setDays(String(retentionDays ?? ""));
+  }, [daysTouched, retentionDays]);
+  const parsedDays = Number(days);
+  const validDays = /^\d+$/.test(days) && Number.isSafeInteger(parsedDays);
+  const canCleanUp = validDays && (settingsLoaded && retentionDays !== null || daysTouched);
   return (
     <details className="storage-cleanup">
       <summary>{t("存储与历史清理", "Storage & history cleanup")}</summary>
@@ -4108,10 +4134,21 @@ function StorageCleanup() {
             type="number"
             min="0"
             value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
+            onChange={(e) => {
+              setDaysTouched(true);
+              setDays(e.target.value);
+            }}
           />
         </Field>
       </div>
+      {!settingsLoaded && !daysTouched && (
+        <p className="muted" role="status">
+          {t(
+            "设置中的保留天数尚未加载；请先输入并核对天数。",
+            "Saved retention settings are unavailable. Enter and verify the number of days before cleanup.",
+          )}
+        </p>
+      )}
       <label className="checkbox-label">
         <input
           type="checkbox"
@@ -4124,6 +4161,7 @@ function StorageCleanup() {
         )}
       </label>
       <Button
+        disabled={!canCleanUp}
         onClick={() => {
           if (
             confirm(
@@ -4136,7 +4174,7 @@ function StorageCleanup() {
             void action(async () =>
               setResult(
                 await api("/settings/cleanup", "POST", {
-                  days,
+                  days: parsedDays,
                   clear_edit_history: history,
                   ...(projectId ? { project_id: projectId } : {}),
                 }),
