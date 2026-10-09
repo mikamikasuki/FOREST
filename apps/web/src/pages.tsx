@@ -2723,7 +2723,10 @@ export function FilesPage() {
     extension || "",
   );
   const orderedFiles = useMemo(
-    () => orderFileTreeEntries(filePage.files),
+    () =>
+      orderFileTreeEntries(
+        filePage.files as Array<Json & { path: string; is_dir?: boolean; size: number }>,
+      ),
     [filePage.files],
   );
   const visibleFiles = visibleFileTreeEntries(
