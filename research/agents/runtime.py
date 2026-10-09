@@ -1,5 +1,6 @@
 """Persistent research sessions and actual, separately supervised tool processes."""
 from __future__ import annotations
+import codecs
 from copy import deepcopy
 import hashlib
 import json
@@ -125,9 +126,17 @@ class ToolRuntime:
                 raise ValueError('offset must be nonnegative and limit between 1 and 1000000 bytes')
             with p.open('rb') as handle:
                 handle.seek(offset)
-                content = handle.read(limit)
-                next_offset = handle.tell()
-            return {'content': content.decode('utf-8', errors='replace'), 'path': args['path'], 'next_offset': next_offset, 'size_bytes': p.stat().st_size, 'exit_code': 0}
+                raw = handle.read(limit)
+            size_bytes = p.stat().st_size
+            decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+            content = decoder.decode(raw)
+            pending, _ = decoder.getstate()
+            next_offset = offset + len(raw)
+            if offset + len(raw) >= size_bytes:
+                content += decoder.decode(b'', final=True)
+            else:
+                next_offset -= len(pending)
+            return {'content': content, 'path': args['path'], 'next_offset': next_offset, 'size_bytes': size_bytes, 'exit_code': 0}
         if name == 'write_file':
             p = safe_path(self.workspace, args['path'])
             p.parent.mkdir(parents=True, exist_ok=True)
