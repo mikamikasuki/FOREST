@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import deque
 from copy import deepcopy
+import math
 from pathlib import Path
 from uuid import uuid4, uuid5, NAMESPACE_URL
 
@@ -360,7 +361,24 @@ class GraphCommandService:
             for parent_id in parent_ids:
                 edge(parent_id, node["id"])
         elif operation in {"edit_node", "apply_instruction_patch"}:
-            patch = params.get("patch", params)
+            patch = deepcopy(params.get("patch", params))
+            positions = params.get("positions") if operation == "edit_node" else None
+            patch.pop("positions", None)
+            if positions is not None:
+                if not isinstance(positions, dict) or set(positions) != set(targets):
+                    raise GraphError("invalid_patch", "Supply one position for each edited node.")
+                for position in positions.values():
+                    if (
+                        not isinstance(position, dict)
+                        or set(position) != {"x", "y"}
+                        or any(
+                            isinstance(position[key], bool)
+                            or not isinstance(position[key], (int, float))
+                            or not math.isfinite(position[key])
+                            for key in ("x", "y")
+                        )
+                    ):
+                        raise GraphError("invalid_patch", "Node positions require finite numeric x and y coordinates.")
             if operation == "apply_instruction_patch":
                 original = require().get("instructions", "")
                 if "instructions" in params:
@@ -377,14 +395,16 @@ class GraphCommandService:
                 raise GraphError("invalid_patch", "Use runtime endpoints to change execution state; identifiers and revision are managed by the kernel.")
             for target in targets:
                 node = require(target)
-                patch = {k:v for k,v in patch.items() if k != 'stop_current_run'}
+                node_patch = {k:v for k,v in patch.items() if k != 'stop_current_run'}
+                if positions is not None:
+                    node_patch["position"] = deepcopy(positions[target])
                 if params.get('stop_current_run') and node.get('execution_status') in {"queued", "running", "pausing", "paused", "waiting", "waiting_input", "budget_exhausted"}:
                     actions.append({'action':'cancel_current_run','node_id':target,'run_id':node.get('last_run_id')})
-                changed_fields = {k for k in patch if patch[k] != node.get(k)}
+                changed_fields = {k for k in node_patch if node_patch[k] != node.get(k)}
                 if not changed_fields:
                     continue
-                category = self._category(node, patch, changed_fields)
-                node.update(_deep_merge(node, patch))
+                category = self._category(node, node_patch, changed_fields)
+                node.update(_deep_merge(node, node_patch))
                 changed(node, category)
                 if node.get("execution_status") in {"queued", "running", "pausing", "paused", "waiting", "waiting_input", "budget_exhausted"} and category not in {"layout", "display"}:
                     node["edited_during_run"] = True
