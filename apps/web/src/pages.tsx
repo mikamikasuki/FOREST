@@ -441,6 +441,7 @@ export function LibraryPage() {
         <label className="search-input">
           <Search size={14} />
           <input
+            aria-label={t("筛选已保存文献", "Filter saved papers")}
             placeholder={t("筛选已保存文献", "Filter saved papers")}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -2698,6 +2699,7 @@ export function FilesPage() {
           <label className="search-input">
             <Search size={14} />
             <input
+              aria-label={t("查找文件…", "Find files…")}
               placeholder={t("查找文件…", "Find files…")}
               value={filter}
               onChange={(e) => setFilter(e.target.value)}

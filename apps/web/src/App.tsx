@@ -150,7 +150,11 @@ export default function App() {
               FOREST<span className="brand-caption">RESEARCH WORKSPACE</span>
             </span>
           </NavLink>
-          <button className="quick-search" onClick={() => setPalette(true)}>
+          <button
+            className="quick-search"
+            aria-label={t("搜索或跳转", "Search workspace")}
+            onClick={() => setPalette(true)}
+          >
             <Search size={15} />
             <span>{t("搜索或跳转", "Search workspace")}</span>
             <kbd>⌘ K</kbd>
