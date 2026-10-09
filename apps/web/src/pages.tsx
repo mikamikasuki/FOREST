@@ -2702,6 +2702,7 @@ export function FilesPage() {
   const [loadedPath, setLoadedPath] = useState("");
   const [loadError, setLoadError] = useState("");
   const fileSelection = useRef(createFileSelectionGuard()).current;
+  const fileReadGeneration = useRef(0);
   const draftVersion = useRef(0);
   const [filter, setFilter] = useState("");
   const [newFile, setNewFile] = useState(false);
@@ -2726,6 +2727,7 @@ export function FilesPage() {
     if (dirty && !confirm(t("放弃未保存修改？", "Discard unsaved changes?")))
       return;
     const selection = fileSelection.select(p);
+    fileReadGeneration.current += 1;
     setPath(p);
     setDiff(false);
     setTablePreview(false);
@@ -3006,11 +3008,11 @@ export function FilesPage() {
                                 fileReadGeneration.current !== readGeneration
                               )
                                 return;
-                            setContent(result.content);
-                            setOriginal(result.content);
-                            setRevision(result.revision);
-                            setLoadedPath(path);
-                            setTablePreview(false);
+                              setContent(result.content);
+                              setOriginal(result.content);
+                              setRevision(result.revision);
+                              setLoadedPath(path);
+                              setTablePreview(false);
                             } catch (error) {
                               if (
                                 fileSelection.isCurrent(selection) &&
