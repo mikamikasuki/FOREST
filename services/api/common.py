@@ -121,6 +121,33 @@ def save_graph(s,p,graph):
         for obj in old.values(): s.delete(obj)
     s.flush()
 
+# Internal locations whose directory names are copied identifiers, not authored text.
+IDENTIFIER_DIRECTORIES=('runs','branches','figures','.forest-bases','.merge-staging')
+
+def remap_identifiers(value,mapping,*,project_id=None,new_project_id=None):
+    """Copy references to remapped identifiers while leaving authored text untouched.
+
+    A string is a reference in exactly two cases: it is itself a copied identifier
+    (node/run/branch/resource ids, edge endpoints, dependency lists) or it names an
+    internal location whose directory is an identifier (``runs/<id>/...``,
+    ``branches/<id>/workspace``). Prose that merely mentions an identifier keeps its
+    original wording, so a copy cannot silently rewrite a provenance note (#126).
+    """
+    if isinstance(value,dict):
+        return {key:remap_identifiers(item,mapping,project_id=project_id,new_project_id=new_project_id) for key,item in value.items()}
+    if isinstance(value,list):
+        return [remap_identifiers(item,mapping,project_id=project_id,new_project_id=new_project_id) for item in value]
+    if not isinstance(value,str):
+        return value
+    if project_id is not None and value==project_id: return new_project_id
+    if value in mapping: return mapping[value]
+    parts=value.split('/')
+    for index in range(1,len(parts)):
+        if parts[index-1] not in IDENTIFIER_DIRECTORIES: continue
+        if project_id is not None and parts[index]==project_id: parts[index]=new_project_id
+        elif parts[index] in mapping: parts[index]=mapping[parts[index]]
+    return '/'.join(parts)
+
 def emit(s,project_id,event_type,data):
     sequence=allocate_event_sequence(s,project_id)
     s.add(Event(project_id=project_id,sequence=sequence,type=event_type,data=data))

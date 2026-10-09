@@ -228,12 +228,7 @@ def duplicate_project(ident:str):
         remember_project(duplicate_id)
         new=make_project(s,p.name+' · Copy',p.goal,p.description,id=duplicate_id,mode=mode,budget=copy.deepcopy(p.budget),config=copy.deepcopy(p.config))
         def remap(value):
-            if isinstance(value,dict): return {k:remap(v) for k,v in value.items()}
-            if isinstance(value,list): return [remap(v) for v in value]
-            if isinstance(value,str):
-                value=value.replace(p.id,new.id)
-                for original,replacement in mapping.items(): value=value.replace(original,replacement)
-            return value
+            return remap_identifiers(value,mapping,project_id=p.id,new_project_id=new.id)
         from services.interventions.history import historical_branches
         graph=historical_branches(remap(graph)); graph['revision']=0
         for node in graph['nodes']:
