@@ -1,6 +1,7 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
 import { createFileSelectionGuard } from "./fileSelection";
+import { hostEditorConfig, hostPayload } from "./connectionPayload";
 import { useState, useEffect, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
@@ -3621,6 +3622,8 @@ function ConnectionEditor({
     JSON.stringify(
       item && resource === "providers"
         ? item.config || {}
+        : item && resource === "hosts"
+          ? hostEditorConfig(item)
         : item
           ? Object.fromEntries(
               Object.entries(item).filter(
@@ -3658,6 +3661,7 @@ function ConnectionEditor({
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);
+          const parsedConfig = parseJson(config);
           const body =
             resource === "providers"
               ? {
@@ -3668,7 +3672,7 @@ function ConnectionEditor({
                   allow_paid: paid,
                   ...(key ? { api_key: key } : {}),
                   config: {
-                    ...parseJson(config),
+                    ...parsedConfig,
                     ...(kind !== "ollama" && kind !== "codex_cli"
                       ? {
                           api: apiMode,
@@ -3676,7 +3680,7 @@ function ConnectionEditor({
                           ...(imageModel.trim()
                             ? {
                                 image_generation: {
-                                  ...(parseJson(config).image_generation || {}),
+                                  ...((parsedConfig.image_generation as Json) || {}),
                                   model: imageModel.trim(),
                                   max_request_usd: Number(imageCeiling),
                                 },
@@ -3700,7 +3704,9 @@ function ConnectionEditor({
                       : {}),
                   },
                 }
-              : { name, ...parseJson(config) };
+              : resource === "hosts"
+                ? hostPayload(name, parsedConfig, item?.kind)
+                : { name, ...parsedConfig };
           const r = await action(() =>
             api(
               item ? `/${resource}/${item.id}` : `/${resource}`,

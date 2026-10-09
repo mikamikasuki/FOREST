@@ -14501,7 +14501,7 @@
     },
     "/api/nodes/{ident}/run": {
       "post": {
-        "description": "Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id.",
+        "description": "Use RunRequest scope/config/request_id. A single scheduled run returns a Run directly; any other count returns {runs,run_ids}. Resolve this union before reading status/id. Provider-backed runs in imported projects with an unavailable archived provider require an explicit provider or workspace-default selection before scheduling.",
         "operationId": "run_node_api_nodes__ident__run_post",
         "parameters": [
           {
@@ -14600,7 +14600,7 @@
                 }
               }
             },
-            "description": "Request validation or documented domain field validation failed."
+            "description": "PROVIDER_SELECTION_REQUIRED"
           },
           "500": {
             "content": {
@@ -15960,7 +15960,7 @@
     },
     "/api/projects/import": {
       "post": {
-        "description": "multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped identifiers; active imported work is interrupted and execution is not replayed.",
+        "description": "multipart/form-data file with forest-project-v1 manifest. Validate graph and archive paths, reject symlinks/path traversal and >500 MiB decompressed archives. Create a new project with remapped graph/resource identifiers; preserve its selected provider when that ID exists in the current workspace. If the saved provider is unavailable, mark provider_selection_required and prevent provider-backed runs from silently falling back until the owner edits project settings. Active imported work is interrupted and execution is not replayed.",
         "operationId": "import_project_api_projects_import_post",
         "requestBody": {
           "content": {
@@ -16927,7 +16927,7 @@
     },
     "/api/projects/{ident}/export": {
       "post": {
-        "description": "ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and selected credential/machine fields; large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.",
+        "description": "ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and machine fields while preserving the nonsecret project provider ID; credentials remain excluded. Large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.",
         "operationId": "export_project_api_projects__ident__export_post",
         "parameters": [
           {
@@ -18116,7 +18116,7 @@
     },
     "/api/projects/{ident}/graph/batch": {
       "post": {
-        "description": "Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.",
+        "description": "Require current PROJECT expected_revision and between 1 and 200 commands per request. Supports add_node/edit_node/add_dependency/remove_dependency/prune_branch/restore_branch/set_main_branch; one edit_node may update selected node positions atomically with params.positions keyed by target ID. Workspace fork/merge and other operations require separate graph commands. Optional request_id shares project command-receipt scope. One undo snapshot is saved; result counts and final graph revision are returned, not the graph itself.",
         "operationId": "graph_batch_api_projects__ident__graph_batch_post",
         "parameters": [
           {

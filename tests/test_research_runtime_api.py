@@ -24,7 +24,13 @@ if __name__=='__main__':
   assert c.post(f'/api/projects/{pid}/graph/batch',json=body).json()==r.json()
   page=c.get(f'/api/projects/{pid}/graph/page?offset=100&limit=40').json();assert len(page['nodes'])==40
   g=c.get(f'/api/projects/{pid}/graph').json();assert len(g['edges'])==199
-  undo=c.post(f'/api/projects/{pid}/graph/commands',json={'request_id':uid(),'expected_revision':g['revision'],'operation':'undo'});assert undo.status_code==200,undo.text;assert len(undo.json()['graph']['nodes'])==0
+  positions={f'n{i}':{'x':i*5,'y':i*3} for i in range(200)}
+  layout=c.post(f'/api/projects/{pid}/graph/batch',json={'request_id':'atomic-layout','expected_revision':g['revision'],'commands':[{'operation':'edit_node','targets':list(positions),'params':{'positions':positions}}]})
+  assert layout.status_code==200,layout.text
+  moved=c.get(f'/api/projects/{pid}/graph').json();assert moved['revision']==g['revision']+1
+  assert {n['id']:n['position'] for n in moved['nodes'] if n['id'] in positions}==positions
+  undo=c.post(f'/api/projects/{pid}/graph/commands',json={'request_id':uid(),'expected_revision':moved['revision'],'operation':'undo'});assert undo.status_code==200,undo.text;assert len(undo.json()['graph']['nodes'])==200
+  undo=c.post(f'/api/projects/{pid}/graph/commands',json={'request_id':uid(),'expected_revision':undo.json()['graph']['revision'],'operation':'undo'});assert undo.status_code==200,undo.text;assert len(undo.json()['graph']['nodes'])==0
   c.post(f'/api/projects/{pid}/research/start',json={'autonomous':True}).raise_for_status()
   with Session() as s:current=s.get(Project,pid).revision
   try: apply_plan(pid,'validation',{'action':'completed','rationale':'No observed scientific outputs','commands':[]},current)
