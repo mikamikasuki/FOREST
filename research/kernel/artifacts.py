@@ -80,6 +80,47 @@ class ArtifactResolver:
         return {**result, "available": True, "size": path.stat().st_size}
 
 
+def resolve_branch_references(project_dir, graph, branch_id):
+    """Resolve inherited branch inputs for one isolated execution workspace."""
+    resolver = ArtifactResolver(project_dir, graph)
+    branch = next((item for item in graph.get("branches", []) if item["id"] == branch_id), None)
+    if branch is None:
+        raise GraphError("missing_branch", f"Branch {branch_id!r} does not exist.", status_code=404)
+    bindings, missing = [], []
+    branch_root = resolver.branch_path(branch_id)
+    for reference in branch.get("input_mapping", []):
+        if not isinstance(reference, dict) or not reference.get("path"):
+            continue
+        destination = reference.get("destination") or reference["path"]
+        if (not isinstance(destination, str) or Path(destination).is_absolute() or
+                not Path(destination).parts or ".." in Path(destination).parts):
+            missing.append(reference)
+            continue
+        try:
+            local = safe_path(branch_root, destination)
+        except GraphError:
+            missing.append(reference)
+            continue
+        local_path = branch_root
+        local_symlink = False
+        for part in Path(destination).parts:
+            local_path = local_path / part
+            local_symlink = local_symlink or local_path.is_symlink()
+        if local.is_file() and not local_symlink:
+            continue
+        resolved = resolver.resolve(reference, branch_id)
+        if not resolved.get("available"):
+            missing.append(reference)
+        elif resolved.get("path"):
+            source_kind = reference.get("source")
+            if source_kind not in {"data", "results", "code"}:
+                top = Path(destination).parts[0]
+                source_kind = "data" if top in DATA_DIRS else "results" if top in RESULT_DIRS else "code"
+            bindings.append({"source_path": resolved["relative_path"], "destination": destination,
+                             "source": source_kind})
+    return bindings, missing
+
+
 def _files(root: Path):
     if not root.is_dir():
         return {}
@@ -164,6 +205,74 @@ class BranchWorkspace:
         source = self._branch(node["branch_id"])
         origin = self.resolver.branch_path(source["id"])
         selected, refs = self._selection(origin, policy)
+        # Preserve references inherited by an earlier fork and make every
+        # reference branch-relative. Workers resolve these paths against their
+        # recorded source branch when they prepare an Agent workspace.
+        inherited = source.get("input_mapping", [])
+        inherited_refs = []
+        maximum = policy.get("max_copy_bytes", 100 * 1024 * 1024)
+        for ref in inherited:
+            if not isinstance(ref, dict):
+                continue
+            value = dict(ref)
+            kind = value.get("source")
+            if kind not in {"data", "results", "code"}:
+                top = Path(value.get("destination") or value.get("path") or "").parts[:1]
+                kind = "data" if top and top[0] in DATA_DIRS else "results" if top and top[0] in RESULT_DIRS else "code"
+            strategy = policy.get(kind, "reference" if kind == "data" else "exclude" if kind == "results" else "copy")
+            if isinstance(strategy, bool):
+                strategy = "copy" if strategy else "exclude"
+            if strategy not in {"copy", "reference", "exclude"}:
+                raise GraphError("copy_policy", f"Unknown {kind} copy policy: {strategy}")
+            if strategy == "exclude":
+                continue
+            path_value = value.get("path")
+            destination = value.get("destination") or path_value
+            if not isinstance(path_value, str) or not isinstance(destination, str):
+                raise GraphError("copy_policy", "Inherited references need a path and destination.")
+            destination_path = Path(destination)
+            if destination_path.is_absolute() or not destination_path.parts or ".." in destination_path.parts:
+                raise GraphError("unsafe_path", "The inherited destination escapes the branch workspace.")
+            if destination in selected:
+                continue
+            if strategy == "copy":
+                resolved = self.resolver.resolve(value, source["id"])
+                if not resolved.get("available") or not resolved.get("path"):
+                    raise GraphError("missing_artifact", "An inherited file cannot be copied because its source is unavailable.")
+                selected[destination] = Path(resolved["path"])
+            else:
+                inherited_refs.append(value)
+        total = sum(path.stat().st_size for path in selected.values())
+        if total > maximum:
+            raise GraphError("copy_budget", f"The selected files total {total} bytes; use references or increase max_copy_bytes.")
+        refs = inherited_refs + refs
+        normalized = []
+        for ref in refs:
+            value = dict(ref)
+            source_branch_id = value.get("branch_id") or source["id"]
+            source_root = self.resolver.branch_path(source_branch_id)
+            path_value = value.get("path")
+            if not path_value:
+                continue
+            if value.get("project_scope"):
+                actual = safe_path(self.project_dir, path_value)
+                containing = []
+                for candidate in self.graph.get("branches", []):
+                    candidate_root = self.resolver.branch_path(candidate["id"])
+                    if actual == candidate_root or candidate_root in actual.parents:
+                        containing.append((len(candidate_root.parts), candidate["id"], candidate_root))
+                if containing:
+                    _, source_branch_id, source_root = max(containing)
+                relative = actual.relative_to(source_root).as_posix()
+            else:
+                relative = str(path_value)
+            value.pop("project_scope", None)
+            value.update(path=relative, branch_id=source_branch_id,
+                         destination=value.get("destination") or relative)
+            normalized.append(value)
+        # A file materialized locally on this branch shadows an inherited
+        # reference with the same destination.
+        refs = list({ref["destination"]: ref for ref in normalized}.values())
         branch_id = branch_id or str(uuid4())
         dest = safe_path(self.project_dir, f"branches/{branch_id}")
         base = safe_path(self.project_dir, f".forest-bases/{branch_id}")
