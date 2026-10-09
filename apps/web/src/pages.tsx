@@ -1,6 +1,6 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
-import { hostPayload } from "./connectionPayload";
+import { hostEditorConfig, hostPayload } from "./connectionPayload";
 import { useState, useEffect, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
@@ -3222,6 +3222,8 @@ function ConnectionEditor({
     JSON.stringify(
       item && resource === "providers"
         ? item.config || {}
+        : item && resource === "hosts"
+          ? hostEditorConfig(item)
         : item
           ? Object.fromEntries(
               Object.entries(item).filter(
@@ -3303,7 +3305,7 @@ function ConnectionEditor({
                   },
                 }
               : resource === "hosts"
-                ? hostPayload(name, parsedConfig)
+                ? hostPayload(name, parsedConfig, item?.kind)
                 : { name, ...parsedConfig };
           const r = await action(() =>
             api(

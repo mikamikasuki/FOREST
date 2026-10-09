@@ -4,7 +4,7 @@ import { api, ApiError, download, formatDate, hasCycle } from "./api";
 import { apiUrl, requestApi } from "./apiClient";
 import type { Graph } from "./api";
 import { ErrorBox, Empty, Button } from "./ui";
-import { hostPayload } from "./connectionPayload";
+import { hostEditorConfig, hostPayload } from "./connectionPayload";
 const graph = (edges: Graph["edges"]): Graph => ({
   project_id: "p",
   revision: 1,
@@ -86,19 +86,24 @@ describe("submission controls", () => {
 });
 
 describe("compute host payload", () => {
-  it("nests SSH connection settings in the configuration persisted by the API", () => {
-    const config = {
+  it("round-trips SSH settings from a saved host without nesting its config", () => {
+    const item = {
+      id: "host-1",
+      name: "Test host",
       kind: "remote",
+      config: {
       hostname: "127.0.0.1",
       username: "codex-test",
       port: 2222,
       workdir: "/tmp/forest",
       allow_shell: true,
+      },
     };
-    expect(hostPayload("Test host", config)).toEqual({
+    const config = hostEditorConfig(item);
+    expect(hostPayload(item.name, config, item.kind)).toEqual({
       name: "Test host",
       kind: "remote",
-      config,
+      config: item.config,
     });
   });
 });
