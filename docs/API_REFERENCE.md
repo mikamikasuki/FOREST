@@ -728,15 +728,17 @@ Known domain failures: `403` PATH_ESCAPE; `404` NOT_FOUND or MISSING_ARTIFACT; `
 
 #### `GET /api/projects/{ident}/files`
 
-List all eligible workspace entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.
+Return a bounded page of eligible workspace entries. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
 | `ident` | path | string | yes |  |
+| `limit` | query | integer | no | Default `500`.  minimum=1, maximum=1000. |
+| `cursor` | query | string or null | no |  |
 
 Success `200`: `application/json`: `FileList`.
 
-Known domain failures: `404` NOT_FOUND.
+Known domain failures: `404` NOT_FOUND; `422` INVALID_FILE_CURSOR.
 
 #### `POST /api/projects/{ident}/upload`
 
@@ -2966,6 +2968,8 @@ Additional properties: extensible JSON.
 | Field | Type | Required | Details |
 | --- | --- | --- | --- |
 | `files` | FileEntry[] | yes |  |
+| `has_more` | boolean | yes |  |
+| `next_cursor` | string or null | yes |  |
 
 Additional properties: extensible JSON.
 

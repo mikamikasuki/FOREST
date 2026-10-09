@@ -1445,10 +1445,21 @@
               "$ref": "#/components/schemas/FileEntry"
             },
             "type": "array"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "files"
+          "files",
+          "has_more",
+          "next_cursor"
         ],
         "type": "object"
       },
@@ -17702,7 +17713,7 @@
     },
     "/api/projects/{ident}/files": {
       "get": {
-        "description": "List all eligible workspace entries. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.",
+        "description": "Return a bounded page of eligible workspace entries. Pass the opaque next_cursor to continue; has_more indicates that entries remain. Skip symlinks and hidden path components except .forest-bases; directories sort first. Paths are relative to the project root and modified is a filesystem epoch time.",
         "operationId": "files_api_projects__ident__files_get",
         "parameters": [
           {
@@ -17712,6 +17723,34 @@
             "schema": {
               "title": "Ident",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           }
         ],
@@ -17764,7 +17803,7 @@
                 }
               }
             },
-            "description": "Request validation or documented domain field validation failed."
+            "description": "INVALID_FILE_CURSOR"
           },
           "500": {
             "content": {

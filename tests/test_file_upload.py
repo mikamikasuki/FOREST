@@ -66,9 +66,24 @@ def case_files_list_includes_entries_after_10000(client):
     for index in range(10_001):
         (generated / f"file-{index:05}.txt").touch()
 
-    response = ok(client.get(f"/api/projects/{project['id']}/files"))
-    paths = {item["path"] for item in response["files"]}
-    assert len(response["files"]) > 10_000
+    cursor = None
+    paths = []
+    page_count = 0
+    while True:
+        response = ok(client.get(f"/api/projects/{project['id']}/files", params={
+            "limit": 1000, **({"cursor": cursor} if cursor else {})
+        }))
+        assert len(response["files"]) <= 1000
+        paths.extend(item["path"] for item in response["files"])
+        page_count += 1
+        if not response["has_more"]:
+            assert response["next_cursor"] is None
+            break
+        assert response["next_cursor"]
+        cursor = response["next_cursor"]
+
+    assert page_count > 10
+    assert len(paths) == len(set(paths))
     assert "generated/file-10000.txt" in paths
 
 

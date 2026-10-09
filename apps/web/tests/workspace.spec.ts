@@ -122,6 +122,48 @@ test("a stale editor cannot overwrite a file recreated after deletion", async ({
   });
 });
 
+test("Files page navigates bounded file-list pages", async ({ page }) => {
+  const firstCursor = JSON.stringify({ is_dir: false, path: "alpha.txt" });
+  await page.route(`**/api/projects/${projectId}/files*`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname !== `/api/projects/${projectId}/files`)
+      return route.continue();
+    const cursor = url.searchParams.get("cursor");
+    await route.fulfill({
+      json: cursor
+        ? {
+            files: [
+              { path: "zeta.txt", size: 1, modified: 0, is_dir: false },
+            ],
+            has_more: false,
+            next_cursor: null,
+          }
+        : {
+            files: [
+              { path: "alpha.txt", size: 1, modified: 0, is_dir: false },
+            ],
+            has_more: true,
+            next_cursor: firstCursor,
+          },
+    });
+  });
+
+  await page.goto(`/projects/${projectId}/files`);
+  const tree = page.locator(".file-tree");
+  await expect(tree).toContainText("alpha.txt");
+  await expect(tree).not.toContainText("zeta.txt");
+  await expect(tree.locator(".file-tree-pagination")).toContainText(
+    "Search covers this page only",
+  );
+  await tree
+    .locator(".file-tree-pagination")
+    .getByRole("button", { name: "Next", exact: true })
+    .click();
+  await expect(tree).toContainText("zeta.txt");
+  await expect(tree).not.toContainText("alpha.txt");
+  await expect(tree.locator(".file-tree-pagination")).toContainText("Page 2");
+});
+
 for (const scenario of [
   {
     name: "silent success",

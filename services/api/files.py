@@ -1,5 +1,6 @@
 import io
 import json
+import heapq
 import lzma
 import shutil
 import sqlite3
@@ -114,12 +115,37 @@ def _publish_file(ident,relative,path,temporary,backup,origin,expected_revision=
             raise
         return {'path':relative,'revision':revision.revision,'origin':origin}
 @router.get('/api/projects/{ident}/files')
-def files(ident:str):
-    root=validate_project(ident); items=[]
-    for p in root.rglob('*'):
-        if p.is_symlink() or any(v.startswith('.') and v!='.forest-bases' for v in p.relative_to(root).parts): continue
-        st=p.stat(); items.append({'path':str(p.relative_to(root)),'size':st.st_size,'modified':st.st_mtime,'is_dir':p.is_dir()})
-    return {'files':sorted(items,key=lambda x:(not x['is_dir'],x['path']))}
+def files(ident:str,limit:int=Query(default=500,ge=1,le=1000),cursor:str|None=None):
+    root=validate_project(ident)
+    after_key=None
+    if cursor is not None:
+        try: value=json.loads(cursor)
+        except (TypeError,ValueError): error('INVALID_FILE_CURSOR','Invalid file-list cursor',422)
+        if (not isinstance(value,dict) or type(value.get('is_dir')) is not bool
+                or not isinstance(value.get('path'),str) or not value['path']):
+            error('INVALID_FILE_CURSOR','Invalid file-list cursor',422)
+        after_key=(not value['is_dir'],value['path'])
+    def candidates():
+        for path in root.rglob('*'):
+            if path.is_symlink() or any(part.startswith('.') and part!='.forest-bases'
+                                         for part in path.relative_to(root).parts):
+                continue
+            is_dir=path.is_dir()
+            relative=str(path.relative_to(root))
+            key=(not is_dir,relative)
+            if after_key is None or key>after_key:
+                yield key,path,is_dir
+    page=heapq.nsmallest(limit+1,candidates(),key=lambda item:item[0])
+    has_more=len(page)>limit
+    page=page[:limit]
+    items=[]
+    for _,path,is_dir in page:
+        stat=path.stat()
+        items.append({'path':str(path.relative_to(root)),'size':stat.st_size,
+                      'modified':stat.st_mtime,'is_dir':is_dir})
+    next_cursor=(json.dumps({'is_dir':items[-1]['is_dir'],'path':items[-1]['path']},separators=(',',':'))
+                 if has_more and items else None)
+    return {'files':items,'has_more':has_more,'next_cursor':next_cursor}
 @router.get('/api/projects/{ident}/file')
 def read_file(ident:str,path:str):
     from services.worker.scheduler import _lock_project
