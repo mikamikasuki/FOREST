@@ -131,6 +131,21 @@ def scenario(case):
             historical=client.get(f'/api/projects/{new_id}/interventions').json()[0]
             assert historical['status']=='superseded' and historical['id']!=instruction['id']
             assert not (workspace/'unapproved.txt').exists()
+    elif case == 'resume_visibility':
+        from services.interventions.models import ActionDecision
+        with Session.begin() as s:
+            run = s.get(TaskRun, rid)
+            run.status = 'queued'
+            decision = ActionDecision(project_id=pid, run_id=rid, action_id=str(uuid.uuid4()),
+                observed_revision=1, proposed={'tool': 'write_file'}, status='accepted',
+                answer={'choice': 'accept'}, answered_at='2026-10-09T00:00:00Z')
+            s.add(decision)
+        queued = client.get(f'/api/projects/{pid}/decisions').json()[0]
+        assert queued['run_status'] == 'queued' and queued['can_resume'] is False
+        with Session.begin() as s:
+            s.get(TaskRun, rid).status = 'waiting_input'
+        waiting = client.get(f'/api/projects/{pid}/decisions').json()[0]
+        assert waiting['run_status'] == 'waiting_input' and waiting['can_resume'] is True
     elif case.startswith('stop_'):
         entry, status = case.split('_')[1:]
         with Session.begin() as s:
@@ -163,7 +178,7 @@ def scenario(case):
     print('PASS', case)
 
 
-CASES = ['rejected_consumption', 'stale_agent', 'tools', 'dependencies', 'layout_dependencies', 'portable_history', *[
+CASES = ['rejected_consumption', 'stale_agent', 'tools', 'dependencies', 'layout_dependencies', 'portable_history', 'resume_visibility', *[
     f'stop_{entry}_{status}' for entry in ('single', 'batch', 'proposal')
     for status in ('queued', 'paused', 'running')]]
 
