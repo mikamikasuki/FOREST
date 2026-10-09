@@ -14,7 +14,12 @@ import {
   ReactFlowProvider,
   useReactFlow,
 } from "@xyflow/react";
-import type { NodeProps, Node as FlowNode, NodeChange } from "@xyflow/react";
+import type {
+  EdgeChange,
+  NodeProps,
+  Node as FlowNode,
+  NodeChange,
+} from "@xyflow/react";
 import {
   Plus,
   Play,
@@ -265,6 +270,7 @@ function WorkspaceInner() {
     [collapsed, id],
   );
   const [flowNodes, setFlowNodes] = useState<FlowNode[]>([]);
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
   const [suggest, setSuggest] = useState("");
   const [scope, setScope] = useState("node");
   const [busy, setBusy] = useState(false);
@@ -324,6 +330,10 @@ function WorkspaceInner() {
     () => executionLinks(graph),
     [graph.nodes, graph.edges],
   );
+  const nodesById = useMemo(
+    () => new Map(graph.nodes.map((item) => [item.id, item])),
+    [graph.nodes],
+  );
   const hidden = useMemo(() => {
     const out = new Set<string>();
     for (const root of collapsed) {
@@ -357,6 +367,7 @@ function WorkspaceInner() {
             x: 300 + (index % 3) * 290,
             y: 100 + Math.floor(index / 3) * 220,
           },
+          deletable: false,
           data: { node: n },
           selected: n.id === selected,
         })),
@@ -410,6 +421,9 @@ function WorkspaceInner() {
     () =>
       linkedEdges.map((e) => ({
         ...e,
+        ariaLabel: `${nodesById.get(e.source)?.title || e.source} ${e.relation.replaceAll("_", " ")} ${nodesById.get(e.target)?.title || e.target}`,
+        selected: selectedEdgeIds.includes(e.id),
+        deletable: !e.implicit,
         type: "smoothstep",
         animated: runs.some(
           (r) => r.node_id === e.target && r.status === "running",
@@ -440,7 +454,7 @@ function WorkspaceInner() {
           color: "#9bad9e",
         },
       })),
-    [linkedEdges, runs],
+    [linkedEdges, nodesById, runs, selectedEdgeIds],
   );
   const onSelectionChange = useCallback(
     ({ nodes }: { nodes: FlowNode[] }) =>
@@ -452,6 +466,73 @@ function WorkspaceInner() {
           : next;
       }),
     [],
+  );
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      const selections = changes.filter((change) => change.type === "select");
+      if (selections.length) {
+        setSelectedEdgeIds((current) => {
+          const next = new Set(current);
+          for (const change of selections) {
+            if (change.type !== "select") continue;
+            if (change.selected) next.add(change.id);
+            else next.delete(change.id);
+          }
+          return [...next];
+        });
+      }
+      const removedEdges = changes.flatMap((change) => {
+        if (change.type !== "remove") return [];
+        const edge = linkedEdges.find((item) => item.id === change.id);
+        return edge && !edge.implicit ? [edge] : [];
+      });
+      if (!removedEdges.length) return;
+      void action(async () => {
+        const projectId = id!;
+        const removedIds = new Set(removedEdges.map((edge) => edge.id));
+        let result: { revision: number };
+        try {
+          result = await api<{ revision: number }>(
+            `/projects/${projectId}/graph/batch`,
+            "POST",
+            {
+              request_id: uid(),
+              expected_revision: graph.revision,
+              commands: removedEdges.map((edge) => ({
+                operation: "remove_dependency",
+                targets: [],
+                params: {
+                  source: edge.source,
+                  target: edge.target,
+                  relation: edge.relation,
+                },
+              })),
+            },
+          );
+        } catch (error) {
+          try {
+            setGraph(await api<Graph>(`/projects/${projectId}/graph`));
+          } catch {
+            // Keep the original mutation error visible.
+          }
+          throw error;
+        }
+        setGraph((current) => ({
+          ...current,
+          revision: result.revision,
+          edges: current.edges.filter((edge) => !removedIds.has(edge.id)),
+        }));
+        setSelectedEdgeIds((current) =>
+          current.filter((edgeId) => !removedIds.has(edgeId)),
+        );
+        try {
+          setGraph(await api<Graph>(`/projects/${projectId}/graph`));
+        } catch {
+          // Keep the committed removal visible until refresh succeeds.
+        }
+      });
+    },
+    [action, api, graph.revision, id, linkedEdges, setGraph],
   );
   const run = async (runScope = "single") => {
     if (!node) return;
@@ -648,6 +729,7 @@ function WorkspaceInner() {
                     onNodesChange={(changes: NodeChange[]) =>
                       setFlowNodes((n) => applyNodeChanges(changes, n))
                     }
+                    onEdgesChange={onEdgesChange}
                     onNodeClick={(_, n) => setSelected(n.id)}
                     onNodeDoubleClick={(_, n) => {
                       setSelected(n.id);
@@ -687,7 +769,7 @@ function WorkspaceInner() {
                         );
                       }
                     }}
-                    deleteKeyCode={null}
+                    deleteKeyCode={["Backspace", "Delete"]}
                   >
                     <Background color="#cbd4cb" gap={24} size={1} />
                     <Controls showInteractive={false} />

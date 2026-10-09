@@ -67,6 +67,98 @@ test("queued approved actions do not offer an invalid continuation", async ({
   ).toBeVisible();
 });
 
+test("Workspace edges expose their relationship and support keyboard deletion", async ({
+  page,
+  request,
+}) => {
+  let graph = await (
+    await request.get(`/api/projects/${projectId}/graph`)
+  ).json();
+  const sourceId = crypto.randomUUID();
+  const source = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: sourceId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Source node",
+          position: { x: 180, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(source.ok()).toBeTruthy();
+  graph = (await source.json()).graph;
+  const targetId = crypto.randomUUID();
+  const target = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_node",
+        targets: [],
+        params: {
+          id: targetId,
+          branch_id: graph.branches[0].id,
+          type: "goal",
+          title: "Target node",
+          position: { x: 520, y: 160 },
+        },
+        run: false,
+      },
+    },
+  );
+  expect(target.ok()).toBeTruthy();
+  graph = (await target.json()).graph;
+  const connected = await request.post(
+    `/api/projects/${projectId}/graph/commands`,
+    {
+      data: {
+        request_id: crypto.randomUUID(),
+        expected_revision: graph.revision,
+        operation: "add_dependency",
+        targets: [],
+        params: { source: sourceId, target: targetId, relation: "depends_on" },
+        run: false,
+      },
+    },
+  );
+  expect(connected.ok()).toBeTruthy();
+  graph = (await connected.json()).graph;
+  const edgeId = graph.edges[0].id as string;
+
+  await page.goto(`/projects/${projectId}/workspace`);
+  const edge = page.getByTestId(`rf__edge-${edgeId}`);
+  await expect(edge).toHaveAttribute(
+    "aria-label",
+    "Source node depends on Target node",
+  );
+  await edge.focus();
+  await page.keyboard.press("Enter");
+  await expect(edge).toHaveClass(/selected/);
+  await page.keyboard.press("Space");
+  await expect(edge).toHaveClass(/selected/);
+  await page.keyboard.press("Delete");
+
+  await expect
+    .poll(async () => {
+      const current = await (
+        await request.get(`/api/projects/${projectId}/graph`)
+      ).json();
+      return current.edges.some((item: { id: string }) => item.id === edgeId);
+    })
+    .toBe(false);
+  await expect(edge).toHaveCount(0);
+});
+
 test("a stale editor cannot overwrite a file recreated after deletion", async ({
   page,
   request,
