@@ -86,9 +86,65 @@ def context_model_json(client, messages, workspace, *, char_hint=48000, material
             direct_failure = error
         else:
             atomic_json(directory / 'direct_response.json', response)
+            if not parse_result:
+                response = {**response, 'model_requests': 1, 'context_session_path': str(directory),
+                            'context_delivery':'direct_full_originals','original_input_characters':message_chars(messages)}
+                return None, response
+            try:
+                proposal = json.loads(response['text'])
+                if not isinstance(proposal, dict):
+                    raise ValueError('The requested result must be a JSON object')
+            except (json.JSONDecodeError, TypeError, ValueError) as format_error:
+                atomic_json(directory / 'direct_format_error.json', {
+                    'error': str(format_error), 'request_id': response.get('request_id'),
+                    'response_id': response.get('response_id'),
+                })
+                repair_messages = [*messages,
+                    {'role': 'assistant', 'content': response['text']},
+                    {'role': 'user', 'content': (
+                        'Your previous response was not a valid JSON object: ' + str(format_error) +
+                        '. Return one corrected JSON object that satisfies the original request. ' +
+                        'Preserve the full proposal and its meaning; output JSON only.'
+                    )},
+                ]
+                try:
+                    repaired = client.complete(repair_messages)
+                except Exception as repair_error:
+                    atomic_json(directory / 'direct_repair_failure.json', {
+                        'error': str(repair_error),
+                        'code': getattr(repair_error, 'code', None),
+                        'request_id': getattr(repair_error, 'request_id', None),
+                    })
+                    raise ValueError(
+                        f'Model returned invalid JSON and the single repair request failed; '
+                        f'original response and diagnostics are saved in {directory}'
+                    ) from repair_error
+                atomic_json(directory / 'direct_repair_response.json', repaired)
+                try:
+                    proposal = json.loads(repaired['text'])
+                    if not isinstance(proposal, dict):
+                        raise ValueError('The repaired result must be a JSON object')
+                except (json.JSONDecodeError, TypeError, ValueError) as repair_format_error:
+                    atomic_json(directory / 'direct_repair_failure.json', {
+                        'error': str(repair_format_error),
+                        'request_id': repaired.get('request_id'),
+                        'response_id': repaired.get('response_id'),
+                    })
+                    raise ValueError(
+                        f'Model returned invalid JSON twice; original and repaired responses '
+                        f'and diagnostics are saved in {directory}'
+                    ) from repair_format_error
+                repaired = {**repaired,
+                    'usage': _usage_total([response, repaired]),
+                    'elapsed': sum(item.get('elapsed', 0) for item in (response, repaired)),
+                    'model_requests': 2, 'format_repair_attempts': 1,
+                    'context_session_path': str(directory),
+                    'context_delivery':'direct_full_originals',
+                    'original_input_characters':message_chars(messages)}
+                return proposal, repaired
             response = {**response, 'model_requests': 1, 'context_session_path': str(directory),
                         'context_delivery':'direct_full_originals','original_input_characters':message_chars(messages)}
-            return json.loads(response['text']) if parse_result else None, response
+            return proposal, response
     store = ContextStore(directory)
     pointers = {name: store.put('material:' + name, content, origin=name)
                 for name, content in (materials or {}).items()}
