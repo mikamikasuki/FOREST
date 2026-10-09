@@ -1145,7 +1145,7 @@ Known domain failures: `404` NOT_FOUND; `409` REVISION_CONFLICT.
 
 #### `POST /api/papers/{ident}/export`
 
-Resolve an existing paper/project ID. Optional expected_revision compares PaperDocument revision. format=pdf requires an existing compiled PDF of the CURRENT revision; other/omitted values return paper.tex/references.bib/assets ZIP and a current PDF when available. Source ZIP excludes .aux/.blg/.log artifacts.
+Resolve an existing paper/project ID. Optional expected_revision compares PaperDocument revision. For a source ZIP, optional source and bibtex fields export the editor's current draft without saving it. format=pdf requires an existing compiled PDF of the CURRENT revision; source ZIP includes a PDF only when its source matches the saved revision. Source ZIP excludes .aux/.blg/.log artifacts.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -3508,6 +3508,8 @@ Additional properties: extensible JSON.
 | --- | --- | --- | --- |
 | `expected_revision` | integer | no |  |
 | `format` | string | no | pdf returns the current compiled PDF; other/omitted values return a source ZIP. |
+| `source` | string | no |  |
+| `bibtex` | string | no |  |
 
 Additional properties: extensible JSON.
 
