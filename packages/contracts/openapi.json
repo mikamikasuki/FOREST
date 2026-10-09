@@ -4994,8 +4994,12 @@
             "$ref": "#/components/schemas/JsonObject"
           },
           "expected_revision": {
-            "description": "Optional resource revision; data is merged one level into the existing record.",
+            "description": "Optional resource revision; omission uses the current resource revision.",
             "type": "integer"
+          },
+          "replace_data": {
+            "description": "When true, replace the complete resource data object instead of merging it.",
+            "type": "boolean"
           },
           "status": {
             "type": "string"
@@ -7552,7 +7556,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
         "operationId": "analyses_edit_api_analyses__ident__patch",
         "parameters": [
           {
@@ -8715,7 +8719,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
         "operationId": "claims_edit_api_claims__ident__patch",
         "parameters": [
           {
@@ -9453,7 +9457,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
         "operationId": "datasets_edit_api_datasets__ident__patch",
         "parameters": [
           {
@@ -10260,7 +10264,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
         "operationId": "experiments_edit_api_experiments__ident__patch",
         "parameters": [
           {
@@ -10951,7 +10955,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
         "operationId": "figures_edit_api_figures__ident__patch",
         "parameters": [
           {
@@ -12348,7 +12352,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
         "operationId": "ideas_edit_api_ideas__ident__patch",
         "parameters": [
           {
@@ -13606,7 +13610,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
         "operationId": "library_edit_api_library__ident__patch",
         "parameters": [
           {
@@ -23768,7 +23772,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
         "operationId": "reviews_edit_api_reviews__ident__patch",
         "parameters": [
           {
@@ -26477,7 +26481,7 @@
         }
       },
       "patch": {
-        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
+        "description": "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.",
         "operationId": "theories_edit_api_theories__ident__patch",
         "parameters": [
           {

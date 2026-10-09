@@ -484,8 +484,12 @@ def install_resource_routes(name,model):
             if 'title' in body: r.title=body['title']
             if 'data' in body:
                 from services.interventions.dependencies import validate_bindings
-                validate_bindings(s,r.project_id,{**r.data,**body['data']})
-                r.data={**r.data,**body['data']}
+                if body.get('replace_data') is True:
+                    validate_bindings(s,r.project_id,body['data'])
+                    r.data=body['data']
+                else:
+                    validate_bindings(s,r.project_id,{**r.data,**body['data']})
+                    r.data={**r.data,**body['data']}
             if 'status' in body: r.status=body['status']
             r.revision+=1; touch_dependents(s,r.project_id,r.id); return asdict(r)
     def remove(ident:str):

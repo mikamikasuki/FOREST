@@ -119,6 +119,7 @@ function RecordEditor({
                 project_id: projectId,
                 title,
                 data: parseJson(data),
+                ...(resource === "library" ? { replace_data: true } : {}),
                 ...(item ? { expected_revision: item.revision } : {}),
               },
             ),

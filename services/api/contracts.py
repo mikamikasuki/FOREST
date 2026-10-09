@@ -141,7 +141,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "archived": B, "expected_revision": field("integer", "The PROJECT graph revision, not the node revision.")},
         description="Passed to edit_node with optional project revision. Kernel-managed id/project_id/revision/execution_status/last_run_id/last_run_revision cannot be changed here. Other editable node metadata is extensible."),
     "ResourcePatch": obj({"title": S, "status": S, "data": J,
-        "expected_revision": field("integer", "Optional resource revision; data is merged one level into the existing record.")}),
+        "replace_data": field("boolean", "When true, replace the complete resource data object instead of merging it."),
+        "expected_revision": field("integer", "Optional resource revision; omission uses the current resource revision.")}),
     "RunActionRequest": obj({"request_id": field("string", "Used by retry; other run actions ignore it."),
         "priority": field("integer", "Used by priority, default 0; handler converts with int()."),
         "context_char_budget": field("integer", "resume only; Agent run, integer >= 1000."),
@@ -632,7 +633,7 @@ for kind in RESOURCE_KINDS:
     operation("get", f"/api/{kind}/{{ident}}", "Resources", f"Read a {kind} record",
         "Return the persisted resource; data structure depends on the resource kind.", ref(record_type), errors={404: "NOT_FOUND"})
     operation("patch", f"/api/{kind}/{{ident}}", "Resources", f"Edit a {kind} record",
-        "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status and shallow-merge data; ignore other top-level keys. Increment resource revision and mark consuming materials stale.", ref(record_type), body="ResourcePatch", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
+        "Optional expected_revision compares this RESOURCE revision, default current. Replace supplied title/status; shallow-merge data unless replace_data:true, which replaces the complete data object. Ignore other top-level keys. Increment resource revision and mark consuming materials stale.", ref(record_type), body="ResourcePatch", errors={404: "NOT_FOUND", 409: "REVISION_CONFLICT"})
     operation("delete", f"/api/{kind}/{{ident}}", "Resources", f"Delete a {kind} record",
         "Delete the metadata record and mark consuming materials stale; this handler does not delete all associated workspace files. Return deleted identifier.", ref("Deleted"), errors={404: "NOT_FOUND"})
 
