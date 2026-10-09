@@ -908,7 +908,7 @@ function ExperimentForm({
   const [command, setCommand] = useState(item?.data.command || "");
   const [code, setCode] = useState(item?.data.code || "");
   const [dataset, setDataset] = useState(item?.data.dataset || "");
-  const [seeds, setSeeds] = useState((item?.data.seeds || [0, 1, 2]).join(","));
+  const [seeds, setSeeds] = useState<string>((item?.data.seeds || [0, 1, 2]).join(","));
   const [params, setParams] = useState(
     JSON.stringify(item?.data.parameters || {}, null, 2),
   );
