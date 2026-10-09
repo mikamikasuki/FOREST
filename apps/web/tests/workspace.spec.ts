@@ -72,13 +72,30 @@ test("Files folders expand and collapse nested entries", async ({
   request,
 }) => {
   const filePath = "records/2026/notes.md";
+  const otherFilePath = "archive/summary.txt";
   const saved = await request.put(`/api/projects/${projectId}/file`, {
     data: { path: filePath, content: "Nested file contents\n" },
   });
   expect(saved.ok()).toBeTruthy();
+  const otherSaved = await request.put(`/api/projects/${projectId}/file`, {
+    data: { path: otherFilePath, content: "Other directory contents\n" },
+  });
+  expect(otherSaved.ok()).toBeTruthy();
 
   await page.goto(`/projects/${projectId}/files`);
   const fileTree = page.locator(".file-tree");
+  const rowLabels = await fileTree.locator("button span").allTextContents();
+  const archiveIndex = rowLabels.indexOf("archive");
+  const recordsIndex = rowLabels.indexOf("records");
+  expect(rowLabels.slice(archiveIndex, archiveIndex + 2)).toEqual([
+    "archive",
+    otherFilePath,
+  ]);
+  expect(rowLabels.slice(recordsIndex, recordsIndex + 3)).toEqual([
+    "records",
+    "records/2026",
+    filePath,
+  ]);
   const file = fileTree.getByRole("button", { name: filePath });
   const records = fileTree.getByRole("button", {
     name: "records",

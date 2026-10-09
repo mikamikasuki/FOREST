@@ -1,6 +1,7 @@
 import { SourceExplorer } from "./progress/SourceExplorer";
 import { DependencyImpact } from "./interventions/DependencyImpact";
-import { useState, useEffect, useRef } from "react";
+import { orderFileTreeEntries, visibleFileTreeEntries } from "./files/fileTree";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useParams, NavLink } from "react-router-dom";
 import {
   Plus,
@@ -2632,10 +2633,9 @@ function PaperFigureInsertion({
 export function FilesPage() {
   const { id } = useParams();
   const { t, action } = useUI();
-  const { data, error, reload } = useLoad<{ files: Json[] }>(
-    `/projects/${id}/files`,
-    { files: [] },
-  );
+  const { data, error, reload } = useLoad<{
+    files: Array<Json & { path: string; is_dir?: boolean; size: number }>;
+  }>(`/projects/${id}/files`, { files: [] });
   const [path, setPath] = useState("");
   const [content, setContent] = useState("");
   const [original, setOriginal] = useState("");
@@ -2661,21 +2661,15 @@ export function FilesPage() {
   const binary = ["parquet", "zip", "pkl", "npy", "npz"].includes(
     extension || "",
   );
-  const matchingFiles = data.files.filter((file) =>
-    file.path.toLowerCase().includes(filter.toLowerCase()),
+  const orderedFiles = useMemo(
+    () => orderFileTreeEntries(data.files),
+    [data.files],
   );
-  const visibleFiles = data.files.filter((file) => {
-    const matches = matchingFiles.some((match) => match.path === file.path);
-    const containsMatch =
-      file.is_dir &&
-      matchingFiles.some((match) => match.path.startsWith(`${file.path}/`));
-    if (!matches && !containsMatch) return false;
-    const parts = file.path.split("/");
-    for (let index = 1; index < parts.length; index++)
-      if (collapsedDirectories.has(parts.slice(0, index).join("/")))
-        return false;
-    return true;
-  });
+  const visibleFiles = visibleFileTreeEntries(
+    orderedFiles,
+    filter,
+    collapsedDirectories,
+  );
   const url = `/api/projects/${id}/download?path=${encodeURIComponent(path)}`;
   const open = async (p: string) => {
     if (dirty && !confirm(t("放弃未保存修改？", "Discard unsaved changes?")))
@@ -2734,7 +2728,9 @@ export function FilesPage() {
     const selected = [...files].map((file) => {
       const relativePath = file.webkitRelativePath || file.name;
       const parts = relativePath.split("/");
-      const safeParts = parts.every((part) => part && part !== "." && part !== "..");
+      const safeParts = parts.every(
+        (part) => part && part !== "." && part !== "..",
+      );
       const path = `uploads/${safeParts ? relativePath : file.name}`;
       return {
         file,
@@ -2748,7 +2744,8 @@ export function FilesPage() {
     const seen = new Set<string>();
     const conflicts = new Set<string>();
     for (const item of selected) {
-      if (existing.has(item.path) || seen.has(item.path)) conflicts.add(item.path);
+      if (existing.has(item.path) || seen.has(item.path))
+        conflicts.add(item.path);
       seen.add(item.path);
     }
     if (conflicts.size) {
@@ -2930,10 +2927,14 @@ export function FilesPage() {
                     const next = prompt(t("新文件路径", "New file path"), path);
                     if (next && next !== path)
                       void action(async () => {
-                        const renamed = await api(`/projects/${id}/file/rename`, "POST", {
-                          path,
-                          new_path: next,
-                        });
+                        const renamed = await api(
+                          `/projects/${id}/file/rename`,
+                          "POST",
+                          {
+                            path,
+                            new_path: next,
+                          },
+                        );
                         setPath(next);
                         setRevision(renamed.revision);
                         await reload();
