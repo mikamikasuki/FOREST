@@ -48,6 +48,10 @@ class ArtifactResolver:
         if ref.get("kind") == "idea" and ref.get("id") and not ref.get("path"):
             record = self.graph.get("_context_ideas", {}).get(ref["id"])
             if record is None:
+                snapshot = ref.get("snapshot")
+                if isinstance(snapshot, dict):
+                    return {**result, "available": True, "record": snapshot,
+                            "stale": True, "source_deleted": True}
                 return {**result, "error": "missing_record", "message": "The referenced saved idea is no longer available."}
             expected_revision = ref.get("revision")
             return {**result, "available": True, "record": record,

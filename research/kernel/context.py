@@ -129,7 +129,8 @@ class ContextBuilder:
                 append(identifier, "idea_reference", {"id": record["id"], "title": record["title"],
                        "revision": record["revision"], "status": record["status"], "data": record["data"]},
                        source=ref, branch_id=ref_branch, priority=priority, available=True,
-                       stale=resolved.get("stale", False))
+                       stale=resolved.get("stale", False), source_deleted=resolved.get("source_deleted", False),
+                       snapshot=resolved.get("source_deleted", False))
                 return
             if resolved.get("path"):
                 path = Path(resolved["path"])
