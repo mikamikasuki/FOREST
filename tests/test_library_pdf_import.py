@@ -110,3 +110,22 @@ def test_non_public_pdf_imports_keep_existing_behavior(tmp_path, monkeypatch):
     assert "pdf_path" not in doi
     assert (tmp_path / "metadata.json").exists()
     assert (tmp_path / "references.bib").exists()
+
+
+@pytest.mark.parametrize("suffix", ["?utm_source=forest-check", "#citation"])
+def test_doi_resolver_urls_ignore_query_and_fragment(tmp_path, monkeypatch, suffix):
+    requested = []
+
+    class Response:
+        def json(self):
+            return {"message": {"title": ["DOI source"], "DOI": "10.1234/control"}}
+
+    def get(url, *args, **kwargs):
+        requested.append(url)
+        return Response()
+
+    monkeypatch.setattr(sources, "_get", get)
+    record = sources.import_identifier(f"https://doi.org/10.1234/control{suffix}", tmp_path)
+
+    assert record["doi"] == "10.1234/control"
+    assert requested == ["https://api.crossref.org/works/10.1234%2Fcontrol"]
