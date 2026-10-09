@@ -535,6 +535,12 @@ for collection, name, response, create_body, patch_body in (
         ref(response), body=patch_body, errors={404: "NOT_FOUND"})
 operation("post", "/api/providers/{ident}/test", "Configuration", "Test a model with a real request",
     "Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; success contains status plus extensible ModelClient result fields.", obj({"status": S}, ("status",)), errors={404: "NOT_FOUND", 502: "PROVIDER_CONNECTION_FAILED (retryable)"})
+operation("get", "/api/providers/{ident}/references", "Configuration", "Inspect active provider references",
+    "List project, node, Agent, reporting and global-default references, plus the count of preserved historical model requests.", obj({"references": array(JSON), "historical_request_count": I}, ("references", "historical_request_count")), errors={404: "NOT_FOUND"})
+operation("post", "/api/providers/{ident}/retire", "Configuration", "Retire a model provider safely",
+    "Replace or clear every active reference, remove the stored credential, and mark the provider retired while preserving historical model request records. replacement_provider_id may be null to clear references.", JSON, body="JsonObject", errors={404: "NOT_FOUND", 422: "INVALID_REPLACEMENT"})
+operation("post", "/api/providers/{ident}/restore", "Configuration", "Restore a retired model provider",
+    "Mark a retired provider untested so it can be edited and used again. Credentials removed during retirement must be configured again.", ref("Provider"), errors={404: "NOT_FOUND"})
 operation("get", "/api/providers/{ident}/usage", "Configuration", "Read account-wide provider spending",
     "Read configured-rate estimates and reservations across all projects using this provider. requests contains the 100 most recent records; request_count is the full count. Missing limit/remaining/individual estimate values are null, not zero.", ref("ProviderUsage"), errors={404: "NOT_FOUND"})
 operation("get", "/api/providers/{ident}/models", "Configuration", "Read the provider-native model list",

@@ -22728,6 +22728,349 @@
         }
       }
     },
+    "/api/providers/{ident}/references": {
+      "get": {
+        "description": "List project, node, Agent, reporting and global-default references, plus the count of preserved historical model requests.",
+        "operationId": "get_provider_references_api_providers__ident__references_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "historical_request_count": {
+                      "type": "integer"
+                    },
+                    "references": {
+                      "items": {
+                        "$ref": "#/components/schemas/JsonValue"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "references",
+                    "historical_request_count"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "NOT_FOUND"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Inspect active provider references",
+        "tags": [
+          "Configuration"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/providers/{ident}/restore": {
+      "post": {
+        "description": "Mark a retired provider untested so it can be edited and used again. Credentials removed during retirement must be configured again.",
+        "operationId": "provider_restore_api_providers__ident__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "NOT_FOUND"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request validation or documented domain field validation failed."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Restore a retired model provider",
+        "tags": [
+          "Configuration"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
+    "/api/providers/{ident}/retire": {
+      "post": {
+        "description": "Replace or clear every active reference, remove the stored credential, and mark the provider retired while preserving historical model request records. replacement_provider_id may be null to clear references.",
+        "operationId": "provider_retire_api_providers__ident__retire_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ident",
+            "required": true,
+            "schema": {
+              "title": "Ident",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonObject"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful response; queued work may still be incomplete."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "UNAUTHORIZED: owner authentication required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "ORIGIN_DENIED: nonmatching nontrusted Origin denied; PATH_ESCAPE where workspace paths are accepted."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "NOT_FOUND"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INVALID_REPLACEMENT"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "INTERNAL_ERROR: unexpected handler, transport or persistence failure."
+          }
+        },
+        "security": [
+          {
+            "ForestOwnerBearer": []
+          },
+          {
+            "ForestOwnerCookie": []
+          },
+          {}
+        ],
+        "summary": "Retire a model provider safely",
+        "tags": [
+          "Configuration"
+        ],
+        "x-forest-local-owner-access": {
+          "client_hosts": [
+            "127.0.0.1",
+            "::1",
+            "testclient"
+          ],
+          "effect": "No prior token required only when both conditions match; response sets owner cookie.",
+          "request_hostnames": [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "testserver"
+          ]
+        }
+      }
+    },
     "/api/providers/{ident}/test": {
       "post": {
         "description": "Send a short JSON-status prompt through ModelClient. This DOES perform a model call and can consume tokens/cost. Persist connected/failed; success contains status plus extensible ModelClient result fields.",
