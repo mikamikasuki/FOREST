@@ -2715,6 +2715,36 @@ export function FilesPage() {
     | { kind: "missing"; path: string }
     | null
   >(null);
+  const fileDraftKey = (relativePath: string) => `forest-file-draft:${id}:${relativePath}`;
+  const loadTextFile = async (relativePath: string) => {
+    const saved = await api(`/projects/${id}/file?path=${encodeURIComponent(relativePath)}`);
+    const key = fileDraftKey(relativePath);
+    let draft: Json | null = null;
+    try {
+      draft = JSON.parse(sessionStorage.getItem(key) || "null");
+    } catch {
+      sessionStorage.removeItem(key);
+    }
+    if (draft && typeof draft.content === "string" && draft.content !== draft.original) {
+      setContent(draft.content);
+      setOriginal(typeof draft.original === "string" ? draft.original : saved.content);
+      setRevision(typeof draft.revision === "number" ? draft.revision : saved.revision);
+      setDirty(true);
+      return;
+    }
+    sessionStorage.removeItem(key);
+    setContent(saved.content);
+    setOriginal(saved.content);
+    setRevision(saved.revision);
+    setDirty(false);
+  };
+  const changeContent = (value: string) => {
+    setContent(value);
+    setDirty(value !== original);
+    const key = fileDraftKey(path);
+    if (value === original) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, JSON.stringify({ content: value, original, revision }));
+  };
   const extension = path.split(".").pop()?.toLowerCase();
   const image = ["png", "jpg", "jpeg", "svg", "webp", "gif"].includes(
     extension || "",
@@ -2738,6 +2768,7 @@ export function FilesPage() {
   const open = async (p: string) => {
     if (dirty && !confirm(t("放弃未保存修改？", "Discard unsaved changes?")))
       return;
+    if (dirty && path) sessionStorage.removeItem(fileDraftKey(path));
     setPath(p);
     setDiff(false);
     setTablePreview(false);
@@ -2750,10 +2781,7 @@ export function FilesPage() {
       return;
     }
     if (!/\.(pdf|png|jpe?g|svg|webp|gif|parquet|zip|pkl|npy|npz)$/i.test(p)) {
-      const r = await api(`/projects/${id}/file?path=${encodeURIComponent(p)}`);
-      setContent(r.content);
-      setOriginal(r.content);
-      setRevision(r.revision);
+      await loadTextFile(p);
     }
   };
   const save = async (force = false) => {
@@ -2767,6 +2795,7 @@ export function FilesPage() {
       setOriginal(content);
       setDirty(false);
       setConflict(null);
+      sessionStorage.removeItem(fileDraftKey(path));
       await reload();
     } catch (e) {
       if ((e as any).status === 409) {
@@ -2981,12 +3010,7 @@ export function FilesPage() {
                           setTablePreview(false);
                         } else {
                           void action(async () => {
-                            const result = await api(
-                              `/projects/${id}/file?path=${encodeURIComponent(path)}`,
-                            );
-                            setContent(result.content);
-                            setOriginal(result.content);
-                            setRevision(result.revision);
+                            await loadTextFile(path);
                             setTablePreview(false);
                           });
                         }
@@ -3100,10 +3124,7 @@ export function FilesPage() {
                     <span>{t("当前编辑", "Current edit")}</span>
                     <CodeEditor
                       value={content}
-                      onChange={(v) => {
-                        setContent(v);
-                        setDirty(true);
-                      }}
+                      onChange={changeContent}
                       language={extension}
                     />
                   </div>
@@ -3111,10 +3132,7 @@ export function FilesPage() {
               ) : (
                 <CodeEditor
                   value={content}
-                  onChange={(v) => {
-                    setContent(v);
-                    setDirty(true);
-                  }}
+                  onChange={changeContent}
                   language={
                     extension === "py"
                       ? "python"
