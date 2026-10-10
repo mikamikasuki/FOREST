@@ -13,6 +13,7 @@ import pytest
 
 from forest_cli import server
 from scripts import install, service, start
+from services.api.config_paths import resolve_database_url
 
 
 @pytest.fixture
@@ -102,6 +103,12 @@ def test_data_environment_and_explicit_database_priority(clean_server_env, monke
     monkeypatch.setenv("FOREST_DATABASE_URL", "postgresql://localhost/envdb")
     assert server.server_environment(host="localhost", port=8000, data_dir=tmp_path / "elsewhere")["FOREST_DATABASE_URL"] == "postgresql://localhost/envdb"
     assert server.server_environment(host="localhost", port=8000, database_url="sqlite:///explicit.db")["FOREST_DATABASE_URL"] == "sqlite:///explicit.db"
+
+
+def test_api_default_database_follows_configured_data_dir(tmp_path):
+    directory = tmp_path / "writable data"
+    assert resolve_database_url("", False, directory) == "sqlite:///" + str(directory / "forest.db")
+    assert resolve_database_url("postgresql://example/db", True, directory) == "postgresql://example/db"
 
 
 @pytest.mark.parametrize("system,xdg,relative", [("darwin", None, "Library/Application Support/FOREST"), ("linux", None, ".local/share/forest"), ("linux", "xdg-data", "xdg-data/forest")])

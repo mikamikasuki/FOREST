@@ -1,5 +1,6 @@
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from .config_paths import resolve_database_url
 
 ROOT = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
@@ -20,5 +21,10 @@ else:
     # macOS /var aliases and configured symlinks must use the same root as
     # safe_path() when returning project-relative file and artifact locators.
     settings.data_dir = settings.data_dir.resolve()
+settings.database_url = resolve_database_url(
+    settings.database_url,
+    'database_url' in settings.model_fields_set,
+    settings.data_dir,
+)
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 (settings.data_dir / 'projects').mkdir(exist_ok=True)
