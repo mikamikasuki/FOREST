@@ -51,6 +51,15 @@ def _parse_model_json_object(text):
     """Accept JSON objects wrapped in the prose or fences common in local output."""
     if not isinstance(text, str):
         raise ValueError('Model response must contain a JSON object')
+    candidate = text.strip()
+    # If the response starts like JSON, it is a bare (possibly malformed)
+    # payload. Do not salvage a nested object from it: callers use this error
+    # to request the existing bounded format repair.
+    if candidate.startswith(('{', '[')):
+        value = json.loads(candidate)
+        if isinstance(value, dict):
+            return value
+        raise ValueError('Model response must contain a JSON object')
     decoder = json.JSONDecoder()
     for index, character in enumerate(text):
         if character != '{':
