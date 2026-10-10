@@ -262,7 +262,12 @@ def make_request_guard(provider):
                 # Use the reservation's API, never an event-supplied settlement mode.
                 measured = None if record.details.get('api') == 'images' or record.details.get('cost_source') == 'unpriced_local_provider' else usage_micro(usage, record.details['pricing'])
                 record.estimated_microusd = measured
-                record.status = 'settled' if measured is not None else 'uncertain'
+                # A completed Codex CLI turn has acknowledged its usage even
+                # though its subscription charge is not priced in USD. Keep
+                # the cost unknown, but do not report a successful response as
+                # awaiting usage confirmation.
+                record.status = ('completed' if record.details.get('api') == 'codex_cli' else
+                                 'settled' if measured is not None else 'uncertain')
                 record.details = {**record.details,'usage':usage,'outcome':event.get('outcome') or event.get('status'),
                     'response_status': event.get('status'),
                     'incomplete_reason': event.get('incomplete_reason') if event.get('incomplete_reason') in ('max_output_tokens', 'content_filter') else None,

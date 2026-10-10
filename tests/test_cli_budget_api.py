@@ -69,10 +69,17 @@ if __name__ == "__main__":
             session.add(unpriced)
             session.flush()
             unpriced_id = unpriced.id
-            session.add(ModelRequest(provider_id=unpriced_id, project_id=pid, model="gpt-6-luna",
-                status="uncertain", estimated_microusd=None, reserved_microusd=0,
-                details={"api": "codex_cli", "cost_source": "unpriced_local_provider",
-                         "usage": {"input_tokens": 100, "output_tokens": 20}}))
+            unpriced_snapshot = {"id": unpriced.id, "model": unpriced.model,
+                "kind": unpriced.kind, "base_url": unpriced.base_url,
+                "allow_paid": unpriced.allow_paid, "config": unpriced.config}
+        from research.agents.budget import make_request_guard
+        guard = make_request_guard({**unpriced_snapshot,
+            "_usage_context": {"project_id": pid}})
+        reservation = guard({"phase": "before", "api": "codex_cli", "model": "gpt-6-luna",
+            "input_bytes": 100, "max_output_tokens": 1024, "attempt": 1})
+        guard({"phase": "after", "reservation": reservation, "request_id": "local-cli-turn",
+            "status": "completed", "usage": {"input_tokens": 100, "output_tokens": 20,
+            "cached_input_tokens": 10, "cost": None, "cost_source": "codex_subscription_unpriced"}})
         incomplete = client.get(f"/api/projects/{pid}/usage").json()
         assert incomplete["estimated_cost_usd"] is None
         assert incomplete["known_cost_usd"] == 1
@@ -83,8 +90,11 @@ if __name__ == "__main__":
         assert cli_usage["estimated_cost_usd"] is None
         assert cli_usage["known_cost_usd"] == 0
         assert cli_usage["unknown_cost_requests"] == 1
+        assert cli_usage["uncertain_requests"] == 0
+        assert cli_usage["requests"][0]["status"] == "completed"
         assert cli_usage["cost_source"] == "unpriced_local_provider"
         assert cli_usage["remaining_usd"] is None
+        assert cli_usage["requests"][0]["reserved_usd"] == 0
         assert cli_usage["requests"][0]["usage"]["output_tokens"] == 20
 
         paper = client.get(f"/api/papers/{pid}").json()
