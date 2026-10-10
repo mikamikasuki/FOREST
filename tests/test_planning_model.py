@@ -100,6 +100,24 @@ def test_small_document_keeps_the_original_json_request_and_response(tmp_path):
     assert json.loads((Path(response['context_session_path']) / 'direct_response.json').read_text())['text'] == '{"ok":true}'
 
 
+@pytest.mark.parametrize(
+    'wrapped',
+    [
+        'Here is the result:\n{"ideas": []}\nDone.',
+        '```json\n{"ideas": []}\n```',
+    ],
+)
+def test_small_document_accepts_local_model_json_wrapped_in_prose(tmp_path, wrapped):
+    driver = ProtocolDriver(tmp_path, direct_text=wrapped)
+    result, response = context_model_json(
+        driver,
+        [{'role': 'system', 'content': 'Return JSON.'}, {'role': 'user', 'content': 'Propose ideas.'}],
+        tmp_path,
+    )
+    assert result == {'ideas': []}
+    assert response['model_requests'] == 1
+
+
 def test_invalid_direct_json_gets_one_bounded_repair_request(tmp_path):
     driver = ProtocolDriver(
         tmp_path,

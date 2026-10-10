@@ -47,6 +47,32 @@ def _usage_total(responses):
     return result
 
 
+def _parse_model_json_object(text):
+    """Accept JSON objects wrapped in the prose or fences common in local output."""
+    if not isinstance(text, str):
+        raise ValueError('Model response must contain a JSON object')
+    candidate = text.strip()
+    # If the response starts like JSON, it is a bare (possibly malformed)
+    # payload. Do not salvage a nested object from it: callers use this error
+    # to request the existing bounded format repair.
+    if candidate.startswith(('{', '[')):
+        value = json.loads(candidate)
+        if isinstance(value, dict):
+            return value
+        raise ValueError('Model response must contain a JSON object')
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(text):
+        if character != '{':
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError('Model response did not contain a valid JSON object')
+
+
 def _decode(response, native):
     if native:
         calls = response.get('tool_calls', [])
@@ -54,7 +80,7 @@ def _decode(response, native):
             raise ValueError('Planner must call exactly one read-only planning tool')
         call = calls[0]
         return call['name'], call.get('arguments'), call.get('call_id')
-    action = json.loads(response['text'])
+    action = _parse_model_json_object(response.get('text'))
     return action.get('tool'), action.get('arguments'), None
 
 
@@ -96,7 +122,7 @@ def context_model_json(client, messages, workspace, *, char_hint=48000, material
                 return None, response
             repair_attempted = False
             try:
-                proposal = json.loads(response['text'])
+                proposal = _parse_model_json_object(response.get('text'))
                 if not isinstance(proposal, dict):
                     raise ValueError('The requested result must be a JSON object')
             except (json.JSONDecodeError, TypeError, ValueError) as format_error:
@@ -158,7 +184,7 @@ def context_model_json(client, messages, workspace, *, char_hint=48000, material
                 if direct_failure is None and repair_attempted:
                     atomic_json(directory / 'direct_repair_response.json', repaired)
                     try:
-                        proposal = json.loads(repaired['text'])
+                        proposal = _parse_model_json_object(repaired.get('text'))
                         if not isinstance(proposal, dict):
                             raise ValueError('The repaired result must be a JSON object')
                     except (json.JSONDecodeError, TypeError, ValueError) as repair_format_error:
