@@ -64,6 +64,30 @@ class ProtocolDriver:
                 'model': 'offline-protocol-driver', 'usage': {'input_tokens': 1, 'output_tokens': 1, 'cost': 0}, 'elapsed': 0}
 
 
+class TruncatedOllamaDriver:
+    api = 'ollama'
+    base = 'http://127.0.0.1:11434'
+    native_tools = False
+
+    def __init__(self, cap=1024, *, error=None):
+        self.config = {'max_output_tokens': cap, 'context_length': 8192}
+        self.error = error or ProviderError('Local response truncated', code='incomplete_response',
+            incomplete_reason='max_output_tokens', partial_output='private partial JSON',
+            usage={'input_tokens': 10, 'output_tokens': 5, 'cached_input_tokens': 0,
+                   'reasoning_tokens': 0, 'cost': None})
+        self.requests = []
+        self.request_caps = []
+
+    def complete(self, messages, json_mode=True, tools=None):
+        self.requests.append(messages)
+        self.request_caps.append(self.config['max_output_tokens'])
+        if len(self.requests) == 1:
+            raise self.error
+        return {'text': '{"ideas":[]}', 'model': 'offline-local-model',
+                'usage': {'input_tokens': 20, 'output_tokens': 8, 'cached_input_tokens': 0,
+                          'reasoning_tokens': 0, 'cost': None}, 'elapsed': .25}
+
+
 def test_provider_rejected_controls_are_paged_and_early_submission_is_rejected(tmp_path):
     goal = 'A mandatory original constraint. ' * 1500 + 'FINAL_UNSHORTENED_GOAL_CONDITION'
     driver = ProtocolDriver(tmp_path, early_submit=True, reject_direct=True)
@@ -116,6 +140,41 @@ def test_small_document_accepts_local_model_json_wrapped_in_prose(tmp_path, wrap
     )
     assert result == {'ideas': []}
     assert response['model_requests'] == 1
+
+
+def test_local_output_truncation_retries_once_and_aggregates_usage(tmp_path):
+    driver = TruncatedOllamaDriver()
+    result, response = context_model_json(
+        driver,
+        [{'role': 'system', 'content': 'Return JSON.'}, {'role': 'user', 'content': 'Propose ideas.'}],
+        tmp_path,
+        output_retry_attempts=1,
+    )
+    assert result == {'ideas': []}
+    assert driver.request_caps == [1024, 2048]
+    assert response['model_requests'] == 2
+    assert response['output_recovery_attempts'] == 1
+    assert response['usage']['input_tokens'] == 30
+    assert response['usage']['output_tokens'] == 13
+    assert response['usage']['cost'] is None
+    assert 'private partial JSON' not in json.dumps(driver.requests[1])
+    assert 'complete JSON response from the beginning' in driver.requests[1][-1]['content']
+
+
+def test_local_output_retry_respects_cap_and_ignores_ambiguous_truncation(tmp_path):
+    capped = TruncatedOllamaDriver(cap=32768)
+    with pytest.raises(ProviderError):
+        context_model_json(capped, [{'role': 'user', 'content': 'Return JSON.'}], tmp_path,
+                           output_retry_attempts=1)
+    assert capped.request_caps == [32768]
+
+    ambiguous = TruncatedOllamaDriver(error=ProviderError(
+        'Unknown completion outcome', code='incomplete_response',
+        incomplete_reason='max_output_tokens', ambiguous=True))
+    with pytest.raises(ProviderError, match='Unknown completion outcome'):
+        context_model_json(ambiguous, [{'role': 'user', 'content': 'Return JSON.'}], tmp_path,
+                           output_retry_attempts=1)
+    assert ambiguous.request_caps == [1024]
 
 
 def test_invalid_direct_json_gets_one_bounded_repair_request(tmp_path):
