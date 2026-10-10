@@ -79,6 +79,49 @@ def case_bootstrap_and_persistence(client, app):
     assert client.get(f"/api/projects/{p['id']}").status_code == 404
 
 
+def case_library_reindex_replaces_passage_rows(client, app):
+    from services.api.common import project_dir
+    from services.api.db import Session, SourcePassage
+    from sqlalchemy import select
+    from research.literature import sources
+
+    project = create(client)
+    pdf_path = project_dir(project["id"]) / "library" / "source.pdf"
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf_path.write_bytes(b"test PDF placeholder")
+    source = ok(client.post("/api/library/import", json={
+        "project_id": project["id"],
+        "paper": {"title": "Reindexed source", "pdf_path": str(pdf_path),
+                  "passages": [{"text": "OLD ABSTRACT SENTINEL", "page": 0}]},
+    }))
+    endpoint = f"/api/library/{source['id']}"
+    assert [row["data"]["text"] for row in ok(client.get(endpoint + "/passages"))] == ["OLD ABSTRACT SENTINEL"]
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(sources, "extract_pdf", lambda _path: [
+            {"text": "NEW FULLTEXT SENTINEL", "page": 1},
+            {"text": "SECOND FULLTEXT SENTINEL", "page": 2},
+        ])
+        ok(client.post(endpoint + "/reindex"))
+        passages = ok(client.get(endpoint + "/passages"))
+        assert [row["data"]["text"] for row in passages] == [
+            "NEW FULLTEXT SENTINEL", "SECOND FULLTEXT SENTINEL",
+        ]
+        with Session() as session:
+            rows = list(session.scalars(select(SourcePassage).where(
+                SourcePassage.project_id == project["id"])))
+            assert [row.data["text"] for row in rows if row.data.get("paper_id") == source["id"]] == [
+                "NEW FULLTEXT SENTINEL", "SECOND FULLTEXT SENTINEL",
+            ]
+
+        monkeypatch.setattr(sources, "extract_pdf", lambda _path: [])
+        ok(client.post(endpoint + "/reindex"))
+        assert ok(client.get(endpoint + "/passages")) == []
+    finally:
+        monkeypatch.undo()
+
+
 def case_graph_receipts_cycles_and_schema(client, app):
     p = create(client)
     path = f"/api/projects/{p['id']}/graph/commands"

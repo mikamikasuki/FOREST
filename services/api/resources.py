@@ -70,6 +70,15 @@ def reindex(ident:str):
         from services.worker.scheduler import _lock_project
         _lock_project(s,pid);r=get(s,SourcePaper,ident,for_update=True)
         if r.revision!=revision:error('REVISION_CONFLICT','Source changed during extraction; reindex the current source',409)
+        # Keep the normalized passage rows in sync with the source snapshot. The
+        # passages endpoint prefers these rows over data.passages, so updating
+        # only the JSON field leaves stale text visible after a reindex.
+        for passage in s.scalars(select(SourcePassage).where(SourcePassage.project_id==r.project_id)):
+            if passage.data.get('paper_id')==ident:
+                s.delete(passage)
+        for passage in passages:
+            s.add(SourcePassage(project_id=r.project_id,title=r.title,
+                                data={'paper_id':r.id,**passage},status='available'))
         r.data={**r.data,'passages':passages,'reading_scope':'fulltext'}; r.revision+=1; touch_dependents(s,r.project_id,ident); return asdict(r)
 @router.post('/api/research/ideas')
 def generate_ideas(body:dict=Body(...)):
