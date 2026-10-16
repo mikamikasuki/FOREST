@@ -581,6 +581,59 @@ def case_export_import_reference_roundtrip(client, app):
     assert ok(client.get(f"/api/runs/{new_runs[0]['id']}/output"))["text"] == "actual saved output\n"
 
 
+def case_export_rejects_oversized_files_and_keeps_boundary_roundtrip(client, app):
+    p = create(client)
+    root = Path(os.environ["FOREST_DATA_DIR"]) / "projects" / p["id"]
+    (root / "keep.txt").write_text("retained export file\n")
+
+    oversized = root / "research" / "oversized-artifact.bin"
+    oversized.parent.mkdir(parents=True)
+    with oversized.open("wb") as stream:
+        stream.truncate(100 * 1024 * 1024 + 1)
+
+    rejected = client.post(f"/api/projects/{p['id']}/export", json={})
+    assert rejected.status_code == 413
+    detail = rejected.json()["detail"]
+    assert detail["code"] == "EXPORT_FILE_TOO_LARGE"
+    assert "research/oversized-artifact.bin" in detail["message"]
+    assert "100 MiB" in detail["message"]
+
+    selected = client.post(f"/api/projects/{p['id']}/export", json={"paths": ["keep.txt"]})
+    assert selected.status_code == 200, selected.text
+    with zipfile.ZipFile(io.BytesIO(selected.content)) as archive:
+        assert archive.read("files/keep.txt") == b"retained export file\n"
+        assert "files/research/oversized-artifact.bin" not in archive.namelist()
+
+    oversized.unlink()
+    boundary = root / "boundary-artifact.bin"
+    with boundary.open("wb") as stream:
+        stream.truncate(100 * 1024 * 1024)
+        stream.seek(0)
+        stream.write(b"boundary-start")
+        stream.seek(-len(b"boundary-end"), os.SEEK_END)
+        stream.write(b"boundary-end")
+    exported = client.post(f"/api/projects/{p['id']}/export", json={})
+    assert exported.status_code == 200, exported.text
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        assert archive.getinfo("files/boundary-artifact.bin").file_size == 100 * 1024 * 1024
+        boundary_member = archive.open("files/boundary-artifact.bin")
+        assert boundary_member.read(len(b"boundary-start")) == b"boundary-start"
+        boundary_member.seek(-len(b"boundary-end"), os.SEEK_END)
+        assert boundary_member.read() == b"boundary-end"
+        assert archive.testzip() is None
+    restored = client.post("/api/projects/import", files={
+        "file": ("boundary-project.zip", exported.content, "application/zip"),
+    })
+    assert restored.status_code == 200, restored.text
+    restored_root = Path(os.environ["FOREST_DATA_DIR"]) / "projects" / restored.json()["id"]
+    assert (restored_root / "boundary-artifact.bin").stat().st_size == 100 * 1024 * 1024
+    with (restored_root / "boundary-artifact.bin").open("rb") as restored_boundary:
+        assert restored_boundary.read(len(b"boundary-start")) == b"boundary-start"
+        restored_boundary.seek(-len(b"boundary-end"), os.SEEK_END)
+        assert restored_boundary.read() == b"boundary-end"
+    assert (restored_root / "keep.txt").read_text() == "retained export file\n"
+
+
 def case_project_provider_roundtrip_requires_explicit_resolution_when_missing(client, app):
     provider = ok(client.post('/api/providers', json={
         'name': 'Project archive provider', 'kind': 'openai',

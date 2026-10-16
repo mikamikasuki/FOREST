@@ -36,6 +36,7 @@ router=APIRouter()
 # short-lived and process-local; the API currently runs as one Uvicorn worker.
 _FILE_CURSOR_TTL=600
 _FILE_CURSOR_LIMIT=256
+_EXPORT_MAX_FILE_BYTES=100*1024*1024
 _FILE_CURSOR_LOCK=threading.RLock()
 _FILE_CURSORS=OrderedDict()
 
@@ -542,7 +543,10 @@ def project_export(s,p,selection=None):
             rel=str(f.relative_to(root))
             if f.is_file() and not f.is_symlink() and f.name not in ('config.json','secrets.json','.env','owner-token') and not any(part.startswith('.') for part in f.relative_to(root).parts):
                 if selection and not any(rel.startswith(x) for x in selection): continue
-                if f.stat().st_size<=100*1024*1024: z.write(f,'files/'+rel)
+                size=f.stat().st_size
+                if size>_EXPORT_MAX_FILE_BYTES:
+                    error('EXPORT_FILE_TOO_LARGE',f'Cannot export {rel}: file exceeds 100 MiB limit',413)
+                z.write(f,'files/'+rel)
             elif f.is_file() and not f.is_symlink() and f.name=='config.json' and not any(part.startswith('.') for part in f.relative_to(root).parts):
                 if selection and not any(rel.startswith(x) for x in selection): continue
                 try:

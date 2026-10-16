@@ -683,7 +683,7 @@ Known domain failures: `400` NOT_FILE; `403` PATH_ESCAPE; `404` NOT_FOUND or MIS
 
 #### `POST /api/projects/{ident}/export`
 
-ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and machine fields while preserving the nonsecret project provider ID; credentials remain excluded. Large individual files (>100 MiB), symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.
+ZIP contains forest-project.json and eligible workspace files. Optional paths selects included file prefixes, not a smaller graph/resource/run manifest. Export omits private graph history and machine fields while preserving the nonsecret project provider ID; credentials remain excluded. An included ordinary file above 100 MiB is rejected with a structured 413 EXPORT_FILE_TOO_LARGE error naming its relative path; symlinks and hidden paths are skipped. Do not treat the archive as an encrypted secret store.
 
 | Parameter | Location | Type | Required | Default / description |
 | --- | --- | --- | --- | --- |
@@ -693,7 +693,7 @@ Body: `application/json`: `ProjectExportRequest`; optional.
 
 Success `200`: `application/zip`: `string`.
 
-Known domain failures: `404` NOT_FOUND.
+Known domain failures: `404` NOT_FOUND; `413` EXPORT_FILE_TOO_LARGE.
 
 #### `DELETE /api/projects/{ident}/file`
 

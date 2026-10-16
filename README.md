@@ -154,6 +154,8 @@ PDF compilation requires `tectonic` or `pdflatex`. Configure spending and execut
 
 See [Deployment](https://github.com/mikamikasuki/FOREST/blob/main/docs/DEPLOYMENT.md) for Docker, PostgreSQL, background services, backups, and Windows via WSL2 or Docker Desktop. See [Security](https://github.com/mikamikasuki/FOREST/blob/main/SECURITY.md) for execution boundaries.
 
+Project exports include ordinary workspace files up to 100 MiB each. If an export would include a larger ordinary file, the API rejects it with a structured error naming the relative path, so the archive cannot silently omit that file. Existing hidden, secret, symlink, and sanitized-config rules still apply.
+
 ### Runtime Notes
 
 - Prefer a remote model API when experiments need the local GPU. Local model inference and long attention caches compete with training and evaluation for memory.

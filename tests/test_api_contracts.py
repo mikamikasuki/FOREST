@@ -178,6 +178,8 @@ def case_documented_transports(client, app):
                                   ("/api/library/export-bibtex", "get", "application/x-bibtex"),
                                   ("/api/papers/{ident}/export", "post", "application/pdf")):
         assert media in paths[endpoint][method]["responses"]["200"]["content"]
+    export_contract = paths["/api/projects/{ident}/export"]["post"]
+    assert export_contract["responses"]["413"]["description"] == "EXPORT_FILE_TOO_LARGE"
     assert "/ws/projects/{ident}/terminal" in json.dumps(document["x-forest-websockets"])
 
 
