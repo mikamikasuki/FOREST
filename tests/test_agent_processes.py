@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 
+import psutil
 import pytest
 
 from research.agents.processes import ManagedProcesses, TERMINAL, is_alive
@@ -37,6 +38,407 @@ def wait_for_file(path, timeout=4):
     while not path.exists() and time.monotonic() < deadline:
         time.sleep(.01)
     return path.exists()
+
+
+def _process_identity_alive(pid, created):
+    if not pid or created is None:
+        return False
+    try:
+        process = psutil.Process(int(pid))
+        return (abs(process.create_time() - float(created)) < .1
+                and process.status() != psutil.STATUS_ZOMBIE)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+        return False
+
+
+def _owned_group_has_live_member(group_id, members):
+    bindings = dict(members or {})
+    for pid, created in bindings.items():
+        if not _process_identity_alive(pid, created):
+            continue
+        try:
+            if os.getpgid(int(pid)) == int(group_id):
+                return True
+        except (ProcessLookupError, PermissionError, ValueError):
+            continue
+    return False
+
+
+def _process_bindings(processes):
+    bindings = {}
+    groups = {}
+    for process in processes:
+        try:
+            created = process.create_time()
+            if process.status() == psutil.STATUS_ZOMBIE:
+                continue
+            bindings[str(process.pid)] = created
+            group_id = str(os.getpgid(process.pid))
+            groups.setdefault(group_id, {})[str(process.pid)] = created
+        except (ProcessLookupError, psutil.NoSuchProcess, psutil.AccessDenied,
+                PermissionError):
+            continue
+    return {'processes': bindings, 'groups': groups}
+
+
+def _kill_bound_snapshot(snapshot, owner_group=None):
+    """Kill only processes and groups bound by PID creation identity."""
+    for group_id, members in snapshot.get('groups', {}).items():
+        if owner_group is not None and int(group_id) == int(owner_group):
+            continue
+        if not _owned_group_has_live_member(group_id, members):
+            continue
+        # Recheck immediately before the one signal sent to this group.
+        if _owned_group_has_live_member(group_id, members):
+            try:
+                os.killpg(int(group_id), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+    for pid, created in snapshot.get('processes', {}).items():
+        if not _process_identity_alive(pid, created):
+            continue
+        # Recheck immediately before the individual fallback signal.
+        if _process_identity_alive(pid, created):
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+def _new_owned_descendants(owner, baseline, direct=False):
+    try:
+        processes = owner.children(recursive=not direct)
+    except (ProcessLookupError, psutil.NoSuchProcess, psutil.AccessDenied):
+        return []
+    owned = []
+    for process in processes:
+        try:
+            if (process.pid, process.create_time()) not in baseline:
+                owned.append(process)
+        except (ProcessLookupError, psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return owned
+
+
+def _stop_owned_process(process):
+    try:
+        created = process.create_time()
+        if (process.status() != psutil.STATUS_ZOMBIE
+                and _process_identity_alive(process.pid, created)):
+            os.kill(process.pid, signal.SIGSTOP)
+    except (ProcessLookupError, psutil.NoSuchProcess, psutil.AccessDenied,
+            PermissionError):
+        return
+
+
+def _freeze_owned_descendants(owner, baseline, owner_group, after_census=None):
+    """Stop supervisors, rescan until stable, and emergency-clean unstable owners."""
+    deadline = time.monotonic() + 1
+    previous = None
+    while time.monotonic() < deadline:
+        for process in _new_owned_descendants(owner, baseline, direct=True):
+            _stop_owned_process(process)
+        processes = _new_owned_descendants(owner, baseline)
+        if after_census is not None:
+            callback, after_census = after_census, None
+            callback()
+        for process in processes:
+            _stop_owned_process(process)
+        pending = []
+        identities = []
+        for process in processes:
+            try:
+                identity = (process.pid, process.create_time())
+                identities.append(identity)
+                if process.status() not in (psutil.STATUS_STOPPED,
+                                            psutil.STATUS_ZOMBIE):
+                    pending.append(process)
+            except (ProcessLookupError, psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        identities = tuple(sorted(identities))
+        if not pending and identities == previous:
+            return processes
+        previous = identities
+        time.sleep(.01)
+    emergency = _process_bindings(_new_owned_descendants(owner, baseline))
+    _kill_bound_snapshot(emergency, owner_group=owner_group)
+    deadline = time.monotonic() + .5
+    while (time.monotonic() < deadline
+           and (any(_process_identity_alive(pid, created)
+                   for pid, created in emergency['processes'].items())
+                or _new_owned_descendants(owner, baseline))):
+        time.sleep(.01)
+    if (any(_process_identity_alive(pid, created)
+            for pid, created in emergency['processes'].items())
+            or _new_owned_descendants(owner, baseline)):
+        raise RuntimeError('test process cleanup could not obtain a stable stopped census')
+    return []
+
+
+class _ManagedProcessTestScope:
+    """Own only descendants created by this test's live pytest process."""
+
+    def __init__(self, workspace, request):
+        self.manager = ManagedProcesses(workspace)
+        self.owner = psutil.Process()
+        self.baseline = {(process.pid, process.create_time())
+                         for process in self.owner.children(recursive=True)}
+        request.addfinalizer(self.cleanup)
+
+    def _new_descendants(self, direct=False):
+        return _new_owned_descendants(self.owner, self.baseline, direct)
+
+    @staticmethod
+    def _stop(process):
+        _stop_owned_process(process)
+
+    def _freeze(self):
+        return _freeze_owned_descendants(self.owner, self.baseline,
+                                         os.getpgid(self.owner.pid))
+
+    def cleanup(self):
+        self._freeze()
+        snapshot = _process_bindings(self._new_descendants())
+        metadata = os.environ.get('FOREST_TEST_CLEANUP_METADATA')
+        if metadata:
+            Path(metadata).write_text(json.dumps({**snapshot, 'ready': True}))
+        owner_group = os.getpgid(self.owner.pid)
+        _kill_bound_snapshot(snapshot, owner_group=owner_group)
+
+    def __getattr__(self, name):
+        return getattr(self.manager, name)
+
+
+@pytest.fixture
+def managed_process_scope(tmp_path, request):
+    return _ManagedProcessTestScope(tmp_path, request)
+
+
+def _wait_for_nested_cleanup_ready(metadata, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            state = json.loads(Path(metadata).read_text())
+        except (FileNotFoundError, OSError, ValueError, UnicodeError):
+            time.sleep(.02)
+            continue
+        if state.get('ready'):
+            return state
+        time.sleep(.02)
+    pytest.fail(f'nested process did not publish a ready ownership record: {metadata}')
+
+
+def _assert_nested_process_cleanup(state, timeout=5):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if (not any(_process_identity_alive(pid, created)
+                    for pid, created in state.get('processes', {}).items())
+                and not any(_owned_group_has_live_member(group_id, members)
+                            for group_id, members in state.get('groups', {}).items())):
+            break
+        time.sleep(.03)
+    assert not any(_process_identity_alive(pid, created)
+                   for pid, created in state.get('processes', {}).items())
+    assert not any(_owned_group_has_live_member(group_id, members)
+                   for group_id, members in state.get('groups', {}).items())
+
+
+def _external_cleanup_metadata(metadata):
+    try:
+        snapshot = json.loads(Path(metadata).read_text())
+    except (FileNotFoundError, OSError, ValueError, UnicodeError):
+        return
+    _kill_bound_snapshot(snapshot)
+
+
+def _external_cleanup_process(pid, metadata=None):
+    """Freeze a nested runner and all supervisors before killing the bound set."""
+    runner = None
+    created = None
+    try:
+        runner = psutil.Process(int(pid))
+        created = runner.create_time()
+        if not _process_identity_alive(runner.pid, created):
+            return False
+        if _process_identity_alive(runner.pid, created):
+            os.kill(runner.pid, signal.SIGSTOP)
+        deadline = time.monotonic() + 1
+        while (time.monotonic() < deadline
+               and runner.status() not in (psutil.STATUS_STOPPED, psutil.STATUS_ZOMBIE)):
+            time.sleep(.01)
+        if runner.status() != psutil.STATUS_STOPPED:
+            raise RuntimeError('nested runner did not stop before external cleanup census')
+        outer_group = os.getpgid(os.getpid())
+        processes = _freeze_owned_descendants(runner, set(), outer_group)
+        processes = [runner] + processes
+        snapshot = _process_bindings(processes)
+        snapshot['processes'][str(runner.pid)] = created
+        if metadata:
+            Path(metadata).write_text(json.dumps({**snapshot, 'ready': True}))
+        _kill_bound_snapshot(snapshot, owner_group=outer_group)
+        deadline = time.monotonic() + .5
+        while (time.monotonic() < deadline
+               and any(_process_identity_alive(process_pid, process_created)
+                       for process_pid, process_created in snapshot['processes'].items())):
+            time.sleep(.01)
+        if any(_process_identity_alive(process_pid, process_created)
+               for process_pid, process_created in snapshot['processes'].items()):
+            raise RuntimeError('external cleanup left a creation-bound survivor')
+        return True
+    except (FileNotFoundError, ProcessLookupError, psutil.NoSuchProcess,
+            psutil.AccessDenied, PermissionError):
+        return False
+    except RuntimeError:
+        if runner is not None and created is not None and _process_identity_alive(runner.pid, created):
+            os.kill(runner.pid, signal.SIGKILL)
+        raise
+
+
+def _run_nested_cleanup_case(tmp_path, outcome):
+    project = Path(__file__).resolve().parents[1]
+    metadata = tmp_path / f'nested-{outcome}.json'
+    script = tmp_path / f'nested-{outcome}.py'
+    script.write_text(f'''import json, os, signal, time
+from pathlib import Path
+import pytest
+from test_agent_processes import completed
+
+pytest_plugins = ("test_agent_processes",)
+
+
+def test_nested_process_lifetime(managed_process_scope):
+    manager = managed_process_scope
+    process_id = "interrupt-start" if {outcome!r} == "interrupt-start" else None
+    if process_id:
+        folder = manager.folder(process_id)
+        def interrupt_start():
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    record = json.loads((folder / "state.json").read_text())
+                    if record.get("host_pid") and record.get("process_group_id"):
+                        os.kill(os.getpid(), signal.SIGINT)
+                        return
+                except (FileNotFoundError, OSError, ValueError):
+                    pass
+                time.sleep(.005)
+        interrupter = __import__("threading").Thread(target=interrupt_start)
+        interrupter.start()
+        interrupted = False
+        try:
+            state = manager.start([os.environ["PYTHON"], "-c", "import time; end=time.monotonic()+8; n=0\\nwhile time.monotonic()<end: n=(n*n+1)%1000000007"], process_id=process_id)
+        except KeyboardInterrupt:
+            interrupted = True
+            state = {{"process_id": process_id}}
+        finally:
+            interrupter.join(timeout=2)
+        assert interrupted
+        assert state["process_id"] == process_id
+        return
+    state = manager.start([os.environ["PYTHON"], "-c", "import time; end=time.monotonic()+8; n=0\\nwhile time.monotonic()<end: n=(n*n+1)%1000000007"])
+    deadline = time.monotonic() + 5
+    ownership = None
+    while time.monotonic() < deadline:
+        ownership = manager.inspect(state["process_id"])
+        if (ownership.get("pid") and ownership.get("process_created") is not None
+                and ownership.get("process_group_id")):
+            break
+        time.sleep(.02)
+    assert ownership and ownership.get("process_created") is not None
+    Path(os.environ["FOREST_TEST_READY"]).touch()
+    if {outcome!r} == "fail":
+        raise AssertionError("intentional nested failure")
+    if {outcome!r} == "observation-timeout":
+        completed(manager, state["process_id"], timeout=.05)
+    if {outcome!r} == "ctrl-c":
+        end = time.monotonic() + 8
+        while time.monotonic() < end:
+            time.sleep(1)
+        pytest.fail("Ctrl-C did not interrupt the nested test")
+''')
+    environment = os.environ.copy()
+    environment.update({'FOREST_TEST_READY': str(tmp_path / f'ready-{outcome}'),
+                        'FOREST_TEST_CLEANUP_METADATA': str(metadata),
+                        'PYTHON': sys.executable,
+                        'PYTHONPATH': str(project / 'tests') + os.pathsep + str(project)})
+    command = [sys.executable, '-m', 'pytest', '-q', '--basetemp',
+               str(tmp_path / '.cleanup-small-worker'), str(script)]
+    child = subprocess.Popen(command, cwd=project, env=environment,
+                             start_new_session=True, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True)
+    try:
+        if outcome == 'ctrl-c':
+            ready = Path(environment['FOREST_TEST_READY'])
+            assert wait_for_file(ready, timeout=8)
+            os.killpg(child.pid, signal.SIGINT)
+        observer_timeout = .2 if outcome == 'observer-timeout' else 12
+        output, _ = child.communicate(timeout=observer_timeout)
+    except subprocess.TimeoutExpired as timeout:
+        # This is the negative control: the nested finalizer has not published metadata.
+        if outcome == 'observer-timeout':
+            assert not metadata.exists()
+        output = timeout.stdout or ''
+        if isinstance(output, bytes):
+            output = output.decode(errors='replace')
+        _external_cleanup_process(child.pid, metadata)
+        trailing, _ = child.communicate(timeout=4)
+        if isinstance(trailing, bytes):
+            trailing = trailing.decode(errors='replace')
+        output += trailing or ''
+    finally:
+        if child.poll() is None:
+            _external_cleanup_process(child.pid, metadata)
+            if child.poll() is None:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            child.wait(timeout=4)
+    return child.returncode, output, _wait_for_nested_cleanup_ready(metadata)
+
+
+@pytest.mark.parametrize('outcome', ('pass', 'fail', 'observation-timeout', 'ctrl-c',
+                                    'interrupt-start', 'observer-timeout'))
+def test_nested_process_cleanup_for_each_test_outcome(tmp_path, outcome):
+    metadata = tmp_path / f'nested-{outcome}.json'
+    try:
+        returncode, output, state = _run_nested_cleanup_case(tmp_path, outcome)
+        _assert_nested_process_cleanup(state)
+        # Keep the nested runner's result meaningful, while allowing pytest's
+        # normal failure and KeyboardInterrupt exits to exercise the finalizer.
+        if outcome in ('pass', 'interrupt-start'):
+            assert returncode == 0, output
+        else:
+            assert returncode != 0, output
+    finally:
+        _external_cleanup_metadata(metadata)
+
+
+def test_cleanup_census_captures_descendant_created_after_first_scan():
+    owner = psutil.Process()
+    baseline = {(process.pid, process.create_time())
+                for process in owner.children(recursive=True)}
+    child = None
+    owner_group = os.getpgid(owner.pid)
+
+    def launch_late_child():
+        nonlocal child
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)'],
+                                 start_new_session=True)
+
+    try:
+        captured = _freeze_owned_descendants(owner, baseline, owner_group,
+                                             after_census=launch_late_child)
+        snapshot = _process_bindings(captured)
+        assert child is not None
+        assert str(child.pid) in snapshot['processes']
+        _kill_bound_snapshot(snapshot, owner_group=owner_group)
+        child.wait(timeout=2)
+    finally:
+        if child is not None and child.poll() is None:
+            if _process_identity_alive(child.pid, child.create_time()):
+                os.kill(child.pid, signal.SIGKILL)
+            child.wait(timeout=2)
 
 
 def test_real_general_command_and_incremental_log(tmp_path):
@@ -297,18 +699,20 @@ while not Path('finish_done').exists():
         server_thread.join(timeout=2)
 
 
-def test_real_failure_cancel_timeout_and_environment(tmp_path):
-    manager = ManagedProcesses(tmp_path)
-    state = manager.start([sys.executable, '-c', "import os,sys; print(os.environ['FOREST_TEST_VALUE'],flush=True); sys.exit(7)"], env={'FOREST_TEST_VALUE': 'observed'})
+def test_real_failure_cancel_timeout_and_environment(managed_process_scope):
+    manager = managed_process_scope
+    state = managed_process_scope.start([sys.executable, '-c', "import os,sys; print(os.environ['FOREST_TEST_VALUE'],flush=True); sys.exit(7)"], env={'FOREST_TEST_VALUE': 'observed'})
     result = completed(manager, state['process_id'])
     assert result['status'] == 'failed' and result['exit_code'] == 7
     assert manager.read_output(state['process_id'])['content'].strip() == 'observed'
-    calculating = "n=0\nwhile True:\n n=(n*n+1)%1_000_000_007"
-    state = manager.start([sys.executable, '-c', calculating])
+    calculating = ("import time\nend=time.monotonic()+8\n"
+                   "n=0\nwhile time.monotonic()<end:\n"
+                   " n=(n*n+1)%1_000_000_007")
+    state = managed_process_scope.start([sys.executable, '-c', calculating])
     manager.cancel(state['process_id'])
     result = completed(manager, state['process_id'])
     assert result['status'] == 'cancelled' and result['exit_code'] != 0
-    timed = manager.start([sys.executable, '-c', calculating], timeout=.2)
+    timed = managed_process_scope.start([sys.executable, '-c', calculating], timeout=.2)
     result = completed(manager, timed['process_id'])
     assert result['status'] == 'failed' and 'timeout' in result['error']
 
